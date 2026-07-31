@@ -6,6 +6,8 @@ order sheet → dispatch dates, machine load and material procurement recompute 
 
 Vite + React frontend, Vercel serverless functions, Postgres.
 
+
+
 ---
 
 ## The one thing to understand first
