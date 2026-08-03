@@ -5,6 +5,8 @@ import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbigu
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
+import PiDocument from "./PiDocument.jsx";
+import { comboSizes } from "../shared/pi.js";
 
 /* ------------- UI helpers (shared) ------------- */
 const SOLE_COLOR = {PVC:"#4f46e5",PU:"#0f9d6b",EVA:"#c2410c","STUCK-ON":"#7c3aed"};
@@ -173,6 +175,20 @@ function NewOrderFlow({onSaved}){
   const [orderDate,setOrderDate]=useState(new Date().toISOString().slice(0,10));
   const [prices,setPrices]=useState({...DEFAULT_PRICES});
   const [saving,setSaving]=useState(false);
+  const [readingPi,setReadingPi]=useState(false);
+  const [piCards,setPiCards]=useState(null);
+  const [customerCity,setCustomerCity]=useState("");
+  const [vl,setVl]=useState("");
+  const [soleColour,setSoleColour]=useState("Black");
+  const [upperColour,setUpperColour]=useState("");
+  const [remarks,setRemarks]=useState("None");
+  const [discountPct,setDiscountPct]=useState(40);
+  const [piTerms,setPiTerms]=useState(null);
+  const [piConfig,setPiConfig]=useState(null);
+  useEffect(()=>{ api.getSettings()
+    .then(v=>{ if(v.pi_terms) setPiTerms(v.pi_terms); if(v.pi_config) setPiConfig(v.pi_config);
+               if(v.pi_terms && v.pi_terms.discount_pct!=null) setDiscountPct(v.pi_terms.discount_pct); })
+    .catch(()=>{}); },[]);
   const [piNo,setPiNo]=useState("PI-"+new Date().getFullYear()+"-"+String(Math.floor(Math.random()*900)+100));
   const [savedMsg,setSavedMsg]=useState("");
   const [pasteText,setPasteText]=useState("");
@@ -206,6 +222,63 @@ function NewOrderFlow({onSaved}){
       else setErr("Read the sheet date as "+parsed.date+", which looks wrong (dates are DD/MM in India) — kept today's date. Edit it in step 2 if needed.");
     }
     ingest(parsed);
+  }
+
+  /* Read an existing Proforma Invoice (PDF or scan) straight into the order
+     sheet. Per-size quantities are kept exactly as printed — they are not
+     re-derived from a carton count, so the regenerated PI matches the original
+     line for line. */
+  async function ingestPi(file){
+    setReadingPi(true); setErr(""); setSavedMsg("");
+    try{
+      const b64 = await new Promise((res,rej)=>{
+        const r=new FileReader();
+        r.onload=()=>res(String(r.result).split(",")[1]);
+        r.onerror=()=>rej(new Error("Could not read that file."));
+        r.readAsDataURL(file);
+      });
+      let text = await api.readPi(b64, file.type || "application/pdf");
+      const a=text.indexOf("{"), z=text.lastIndexOf("}");
+      if(a>-1&&z>-1) text=text.slice(a,z+1);
+      const d=JSON.parse(text);
+      setRawRead(JSON.stringify(d,null,1));
+
+      if(d.customer) setParty(d.customer);
+      if(d.customer_city) setCustomerCity(d.customer_city);
+      if(d.pi_date && /^\d{4}-\d{2}-\d{2}$/.test(d.pi_date)) setOrderDate(d.pi_date);
+      if(d.order_no) setPiNo(d.order_no);
+      if(d.discount_pct!=null) setDiscountPct(Number(d.discount_pct));
+
+      const built=[]; const notes=[];
+      for(const item of (d.items||[])){
+        const art = matchArticle(item.article,"") || item.article;
+        if(!INPUTS.articles[art]){ notes.push(`"${item.article}" is not a known article`); continue; }
+        if(item.vl) setVl(item.vl);
+        if(item.sole_colour) setSoleColour(item.sole_colour);
+        if(item.upper_colour) setUpperColour(item.upper_colour);
+
+        // group the per-size rows back onto the article's own size ranges
+        const combos=INPUTS.articles[art].combo_order||Object.keys(INPUTS.articles[art].combos||{});
+        const bySize={}; for(const r of (item.rows||[])) if(r&&r.size!=null) bySize[String(r.size)]=Number(r.qty)||0;
+        const lines=[];
+        for(const combo of combos){
+          const sizes=comboSizes(combo);
+          const hit=sizes.filter(sz=>bySize[sz]!=null);
+          if(!hit.length) continue;
+          const sizeMap={}; let qty=0;
+          for(const sz of sizes){ const v=bySize[sz]||0; sizeMap[sz]=v; qty+=v; delete bySize[sz]; }
+          if(qty>0) lines.push({combo, qty, sizes:sizeMap, label:combo});
+        }
+        const leftover=Object.keys(bySize).filter(k=>bySize[k]>0);
+        if(leftover.length) notes.push(`${art}: sizes ${leftover.join(", ")} do not fall in any of its size ranges`);
+        if(lines.length) built.push({article:art, lines, fromPi:true});
+      }
+      if(!built.length) throw new Error("No recognisable article lines were found in that PI.");
+      setPiCards(built);
+      setSavedMsg(`Read ${built.length} article(s), ${built.reduce((a,c)=>a+c.lines.length,0)} size ranges from the PI.`
+        + (notes.length ? "  Check: "+notes.join("; ") : ""));
+    }catch(e){ setErr("Could not read that PI: "+(e.message||e)); }
+    finally{ setReadingPi(false); }
   }
 
   function shrink(dataUrl,maxDim,quality){
@@ -288,9 +361,26 @@ function NewOrderFlow({onSaved}){
   },[cards,prices]);
 
   async function save(){
-    if(!cards||!totals||totals.pairs<=0){ setErr("Add at least one line with cartons before saving."); return; }
+    if(!piCards && (!cards||!totals||totals.pairs<=0)){ setErr("Add at least one line with cartons before saving."); return; }
     // No order_no here — the server assigns it from a sequence, so two clerks
     // saving at the same moment can never collide.
+    if(piCards){
+      const piDrafts=piCards.map(c=>({
+        order_date:orderDate, article_code:c.article,
+        priority:Number(priority)||2, party:party||"—",
+        lines:c.lines.map(l=>({combo:l.combo, qty:l.qty, label:l.label||l.combo, sizes:l.sizes})),
+        pi:{pi_no:piNo, discount_pct:Number(discountPct)||0, customer_city:customerCity,
+            vl, sole_colour:soleColour, upper_colour:upperColour},
+      }));
+      setSaving(true); setErr("");
+      try{
+        const created=await onSaved(piDrafts);
+        setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
+        setPiCards(null); setCards(null); setImg(null);
+      }catch(e){ setErr("Could not save: "+(e.message||e)); }
+      finally{ setSaving(false); }
+      return;
+    }
     const drafts=cards.filter((c,i)=>totals.per[i].pairs>0).map((c,i)=>({
       order_date:orderDate, article_code:c.article,
       priority:Number(priority)||2, party:party||"—",
@@ -336,6 +426,11 @@ function NewOrderFlow({onSaved}){
       <div className="flex gap-2 mt-3 flex-wrap">
         <button disabled={!img||busy} onClick={readOrder}
           className="font-semibold text-white rounded-xl px-4 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300">{busy?"Reading…":"Read the order"}</button>
+        <label className={"font-semibold rounded-xl px-4 py-2.5 text-sm text-indigo-800 bg-indigo-50 border border-indigo-200 cursor-pointer "+(readingPi?"opacity-60":"")}>
+          {readingPi ? "Reading PI…" : "Upload a PI"}
+          <input type="file" accept="application/pdf,image/*" className="hidden" disabled={readingPi}
+            onChange={e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=""; if(f) ingestPi(f); }} />
+        </label>
         <button onClick={startBlank} className="font-semibold rounded-xl px-4 py-2.5 text-sm text-indigo-800 bg-indigo-50 hover:bg-indigo-100">Enter by hand</button>
       </div>
       {err && <div className="mt-3 rounded-xl px-3 py-2.5 text-sm bg-orange-50 text-orange-900 border border-orange-200">{err}</div>}
@@ -414,7 +509,7 @@ function NewOrderFlow({onSaved}){
     </div>}
 
     {/* step 3: PI + save */}
-    {cards && totals && <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+    {((cards && totals) || piCards) && <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
       <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
         <div className="serif text-lg font-semibold">3 · Proforma Invoice</div>
         <div className="flex gap-2">
@@ -422,40 +517,41 @@ function NewOrderFlow({onSaved}){
           <button onClick={save} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700">Save & send to production →</button>
         </div>
       </div>
-      <div id="pi-area" className="border border-slate-200 rounded-xl px-6 py-6">
-        <div className="flex justify-between items-start flex-wrap gap-3 pb-3 mb-4" style={{borderBottom:"2px solid #1e2230"}}>
-          <div><div className="serif text-xl font-semibold">Proforma Invoice</div>
-            <div className="text-xs text-slate-500">{party||"—"} · {niceDate(orderDate)}</div></div>
-          <input value={piNo} onChange={e=>setPiNo(e.target.value)} className="mono text-sm border border-dashed border-slate-200 rounded px-2 py-1 text-right" style={{width:130}}/>
-        </div>
-        {cards.map((c,i)=>(
-          <div key={i} className="mb-3">
-            <div className="flex justify-between items-baseline pb-1" style={{borderBottom:"1px solid #e2e5ec"}}>
-              <span className="serif font-semibold text-sm">{c.article}</span>
-              <span className="mono text-xs text-slate-500">₹<input type="number" min="0" value={prices[c.article]}
-                onChange={e=>setPrices(p=>({...p,[c.article]:Number(e.target.value)||0}))}
-                className="border border-dashed border-slate-200 rounded px-1 text-right" style={{width:64}}/> /pair</span></div>
-            <table className="w-full" style={{fontSize:13}}>
-              <tbody>
-                {c.lines.filter(l=>(Number(l.cartons)||0)>0).map((l,k)=>{
-                  const pairs=(Number(l.cartons)||0)*(Number(l.ppc)||0);
-                  return <tr key={k}>
-                    <td className="py-1">{l.raw||l.combo}{l.raw && l.raw!==l.combo ? <span className="text-slate-400" style={{fontSize:10}}> ({l.combo} rate)</span> : null}</td>
-                    <td className="py-1 text-right mono">{fmt(l.cartons)} ctn</td>
-                    <td className="py-1 text-right mono">{fmt(pairs)} prs</td>
-                    <td className="py-1 text-right mono">₹{inr(pairs*(Number(prices[c.article])||0))}</td></tr>;})}
-                <tr className="font-semibold"><td className="pt-1" style={{borderTop:"1px solid #eef0f4"}}>{totals.per[i].cartons} cartons</td>
-                  <td style={{borderTop:"1px solid #eef0f4"}}/>
-                  <td className="pt-1 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>{fmt(totals.per[i].pairs)} prs</td>
-                  <td className="pt-1 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>₹{inr(totals.per[i].amount)}</td></tr>
-              </tbody></table>
-          </div>))}
-        <div className="flex justify-end gap-8 pt-3 flex-wrap" style={{borderTop:"2px solid #1e2230"}}>
-          <div className="text-right"><div className="text-xs uppercase tracking-wide text-slate-400">Cartons</div><div className="serif text-lg font-semibold">{fmt(totals.cartons)}</div></div>
-          <div className="text-right"><div className="text-xs uppercase tracking-wide text-slate-400">Pairs</div><div className="serif text-lg font-semibold">{fmt(totals.pairs)}</div></div>
-          <div className="text-right"><div className="text-xs uppercase tracking-wide text-slate-400">Total</div><div className="serif text-lg font-semibold">₹{inr(totals.amount)}</div></div>
-        </div>
+      <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
+        {[["Customer city",customerCity,setCustomerCity,"text"],
+          ["V/L",vl,setVl,"text"],
+          ["Sole colour",soleColour,setSoleColour,"text"],
+          ["Upper colour",upperColour,setUpperColour,"text"],
+          ["Discount %",discountPct,setDiscountPct,"number"],
+          ["Special remarks",remarks,setRemarks,"text"]].map(([lab,val,set,type])=>(
+          <label key={lab} className="text-xs text-slate-500">{lab}
+            <input type={type} value={val} onChange={e=>set(type==="number"?e.target.value:e.target.value)}
+              className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        ))}
       </div>
+
+      <PiDocument
+        piNo={piNo}
+        order={{
+          order_no: piNo,
+          party, customer_city: customerCity,
+          order_date: orderDate, pi_date: orderDate,
+          article_code: (piCards||cards)[0] ? (piCards||cards)[0].article : "",
+          article_label: (piCards||cards).map(c=>c.article).join(", "),
+          vl: vl, sole_colour: soleColour, upper_colour: upperColour,
+          remarks: remarks,
+          lines: piCards
+            ? piCards.flatMap(c=>c.lines)
+            : cards.flatMap(c=>c.lines
+                .filter(l=>(Number(l.cartons)||0)>0)
+                .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo }))),
+        }}
+        article={{}}
+        mrp={(piCards||cards)[0] ? ((INPUTS.mrp||{})[(piCards||cards)[0].article]||{}) : {}}
+        terms={{ ...(piTerms||{}), discount_pct: Number(discountPct)||0 }}
+        config={piConfig}
+        image={(piCards||cards)[0] ? (CATALOGUE[(piCards||cards)[0].article]||{}).image : null}
+      />
     </div>}
   </div>;
 }

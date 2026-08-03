@@ -11,7 +11,7 @@
     "dev:ui-only": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/engine.test.mjs",
+    "test": "node tests/engine.test.mjs && node tests/pi.test.mjs",
     "db:setup": "psql \"$DATABASE_URL\" -f db/schema.sql"
   },
   "dependencies": {

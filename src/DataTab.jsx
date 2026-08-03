@@ -100,7 +100,65 @@ export default function DataTab({ onChanged }){
       </div>
     </div>}
 
+    <MrpEditor onChanged={onChanged} />
     <StockEditor onChanged={onChanged} />
+  </div>;
+}
+
+/* MRP per size range. The PI prints one row per size, and every size in a range
+   shares that range's MRP — so this is the smallest thing that has to be filled
+   in before an invoice can be issued. */
+function MrpEditor({ onChanged }){
+  const [article,setArticle]=useState("");
+  const [edits,setEdits]=useState({});
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  const arts=Object.keys(INPUTS.articles);
+  const mrp=INPUTS.mrp||{};
+  const chosen=article||arts[0]||"";
+  const combos=chosen?(INPUTS.articles[chosen].combo_order||Object.keys(INPUTS.articles[chosen].combos||{})):[];
+  const priced=arts.filter(a=>{
+    const cs=INPUTS.articles[a].combo_order||[];
+    return cs.length && cs.every(c=>(mrp[a]||{})[c]!=null);
+  }).length;
+
+  async function save(){
+    const clean={};
+    for(const [c,v] of Object.entries(edits)) if(v!==""&&v!=null) clean[c]=Number(v);
+    if(!Object.keys(clean).length) return;
+    setBusy(true);
+    try{
+      await api.patchReference({ mrp:{ [chosen]: clean } });
+      await reloadReference();
+      setMsg(`${Object.keys(clean).length} MRP figures saved for ${chosen}.`);
+      setEdits({}); onChanged && onChanged();
+    }catch(e){ setMsg(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  return <div className="border-t border-slate-200 pt-4 mb-5">
+    <div className="text-sm font-semibold text-slate-700 mb-1">MRP by size range</div>
+    <p className="text-xs text-slate-500 mb-3">
+      The Proforma Invoice needs an MRP for every size range. Rate is MRP less the customer&rsquo;s
+      discount. {priced} of {arts.length} articles are fully priced &mdash; an unpriced range prints
+      as a dash and is left out of the invoice total rather than being guessed.
+    </p>
+    <select value={chosen} onChange={e=>{setArticle(e.target.value); setEdits({}); setMsg("");}}
+      className="text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white mb-3">
+      {arts.map(a=><option key={a} value={a}>{a}{(mrp[a]&&Object.keys(mrp[a]).length)?"":"  — not priced"}</option>)}
+    </select>
+    <div className="flex gap-2 flex-wrap">
+      {combos.map(c=>(
+        <label key={c} className="text-xs text-slate-600">
+          <span className="mono font-semibold">{c}</span>
+          <input type="number" min={0} placeholder={(mrp[chosen]||{})[c]??"—"}
+            value={edits[c]??""} onChange={e=>setEdits(x=>({...x,[c]:e.target.value}))}
+            className="block mt-0.5 w-24 text-sm border border-slate-300 rounded px-1.5 py-1 mono" /></label>))}
+    </div>
+    {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
+    <button disabled={busy||!Object.keys(edits).length} onClick={save}
+      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      {busy?"Saving…":"Save MRP"}</button>
   </div>;
 }
 

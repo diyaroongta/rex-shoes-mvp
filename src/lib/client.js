@@ -48,6 +48,10 @@ export async function readOrderPhoto(imageBase64){
   const d = await post("/api/read-order-photo", { image_base64: imageBase64 });
   return d.text || "";
 }
+export async function readPi(fileBase64, mediaType){
+  const d = await post("/api/read-pi", { file_base64: fileBase64, media_type: mediaType });
+  return d.text || "";
+}
 export async function askCopilot(question, context){
   const d = await post("/api/copilot", { question, context });
   return d.text || "";

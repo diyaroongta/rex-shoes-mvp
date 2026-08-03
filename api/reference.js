@@ -50,7 +50,7 @@ export default wrap(async (req, res) => {
   /* Direct edits: stock figures, packing chart, an article's sole type. */
   if(req.method === "PATCH"){
     const ref = await current();
-    const { stock, packing, sole_type } = req.body || {};
+    const { stock, packing, sole_type } = req.body || {};   // mrp handled below
     if(stock && typeof stock === "object"){
       for(const [key, v] of Object.entries(stock)){
         if(!ref.materials[key]) return fail(res, 400, `unknown material: ${key}`);
@@ -70,6 +70,19 @@ export default wrap(async (req, res) => {
           clean[combo] = n;
         }
         ref.packing[art] = clean;
+      }
+    }
+    if(req.body.mrp && typeof req.body.mrp === "object"){
+      ref.mrp = ref.mrp || {};
+      for(const [art, chart] of Object.entries(req.body.mrp)){
+        if(!ref.articles[art]) return fail(res, 400, `unknown article: ${art}`);
+        const clean = { ...(ref.mrp[art] || {}) };
+        for(const [combo, v] of Object.entries(chart)){
+          const n = Math.round(Number(v));
+          if(!Number.isFinite(n) || n < 0) return fail(res, 400, `MRP for ${art} ${combo} must be 0 or more`);
+          clean[combo] = n;
+        }
+        ref.mrp[art] = clean;
       }
     }
     if(sole_type && typeof sole_type === "object"){

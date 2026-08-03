@@ -2207,6 +2207,41 @@ export const INPUTS = {
           }
         }
       }
+    },
+    "REX GOLA PLUS": {
+      "sole_type": "PVC",
+      "sole_assumed": false,
+      "combo_order": [
+        "7X10",
+        "11X1",
+        "2X5",
+        "6X12B"
+      ],
+      "routing": [
+        "CUTTING",
+        "STITCHING",
+        "MOLDING",
+        "PACKING",
+        "DISPATCH"
+      ],
+      "combos": {
+        "7X10": {
+          "stitching_combo": "7X10",
+          "rates": {}
+        },
+        "11X1": {
+          "stitching_combo": "11X1",
+          "rates": {}
+        },
+        "2X5": {
+          "stitching_combo": "2X5",
+          "rates": {}
+        },
+        "6X12B": {
+          "stitching_combo": "6X12B",
+          "rates": {}
+        }
+      }
     }
   },
   "materials": {
@@ -2787,6 +2822,42 @@ export const INPUTS = {
       "stage": "PACKING",
       "capacity_per_day": 3000,
       "sole_type": null
+    }
+  },
+  "packing": {
+    "REX GOLA PLUS": {
+      "7X10": 18,
+      "11X1": 18,
+      "2X5": 18,
+      "6X12B": 18
+    },
+    "JILL": {
+      "11X1": 24,
+      "2X5": 18
+    },
+    "ARMOUR": {
+      "11X1": 24,
+      "2X5": 18
+    },
+    "PERCY": {
+      "11X1": 24,
+      "2X5": 18
+    },
+    "SPADE": {
+      "11X1": 24,
+      "2X5": 18
+    },
+    "SPIKE": {
+      "11X1": 24,
+      "2X5": 18
+    }
+  },
+  "mrp": {
+    "REX GOLA PLUS": {
+      "7X10": 679,
+      "11X1": 749,
+      "2X5": 799,
+      "6X12B": 869
     }
   }
 };

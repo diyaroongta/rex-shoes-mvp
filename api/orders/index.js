@@ -25,6 +25,7 @@ function validate(o){
   for(const l of o.lines){
     if(!art.combos[l.combo]) return `unknown combo "${l.combo}" for article ${o.article_code}`;
     if(!(Number(l.qty) > 0)) return `line ${l.combo}: qty must be > 0`;
+    if(l.sizes != null && typeof l.sizes !== "object") return `line ${l.combo}: sizes must be an object`;
   }
   return null;
 }

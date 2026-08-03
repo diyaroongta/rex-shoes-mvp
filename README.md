@@ -6,8 +6,6 @@ order sheet → dispatch dates, machine load and material procurement recompute 
 
 Vite + React frontend, Vercel serverless functions, Postgres.
 
-
-
 ---
 
 ## The one thing to understand first
@@ -178,6 +176,9 @@ No database, no network, no install beyond `npm install`. Five groups:
 
 - **A** empty input doesn't throw
 - **B** one order, hand-checkable: dispatch 2026-07-09, and 0.065037 × 960 = **62.44 MTR**
+
+`npm test` also runs `tests/pi.test.mjs`, which reconciles all nineteen lines of the real
+invoice PI/596 — every size, rate and amount — plus the deduction ladder and the payment split.
 - **C** the molding machine is one machine — PVC, PU and EVA occupy days 24–26, 27–29, 30–33
 - **D** contention invariants: block length is exactly `ceil(qty/capacity)`, no overlaps, no
   overbooked days, every pair reconciled, priority respected
@@ -280,6 +281,38 @@ they're real, procurement shows full requirements instead of shortfalls — it o
 than under-orders.
 
 **Delivery targets.** Machine load tab. See "How lateness is decided" below.
+
+## Proforma Invoices
+
+The PI matches the format the factory already issues: one row per size, MRP and rate per row,
+then the deduction ladder and the payment split.
+
+**Reading an existing PI.** Intake &rarr; **Upload a PI**, accepting a PDF or a scan. Per-size
+quantities are stored exactly as printed rather than re-derived from carton counts, so a PI
+read in and re-issued reproduces line for line.
+
+**Generating one.** Combos explode into their sizes, and a combo total is split across those
+sizes with the remainder going to the earliest &mdash; 750 across 4 sizes becomes
+188/188/187/187, matching how the factory writes them.
+
+**Size runs.** Positions 6&ndash;13 of the roll are the kids run, printed with an `s` suffix;
+1&ndash;5 are adult. `B` combos are the adult repeat of the same numerals, 6&ndash;12, printed
+without a suffix. This is why one invoice legitimately shows both `8s` and `8`.
+
+**The ladder** (`settings.pi_terms`, editable): rate = MRP less the customer discount, rounded.
+Then F.O.R., Cash Discount and GST Dis are deducted **in order, each from the running balance**,
+and GST is added to what is left. Re-ordering the steps changes the total, so the order is
+preserved as stored.
+
+**MRP** lives in reference data per article per size range, editable in **Data &amp; BOM**. An
+unpriced range prints as a dash and is excluded from the total rather than guessed, and the
+invoice carries a visible note naming what is unpriced.
+
+> **Known defect in the source spreadsheet.** On the reference invoice PI/596, the stated
+> subtotal is 23,84,731 while the nineteen lines sum to 24,35,606 &mdash; short by exactly the
+> first line (125 @ 407 = 50,875). The SUM range appears to start one row late. Carried through
+> the ladder that under-invoices by 48,363 on that one PI. This app sums every line; test E in
+> `tests/pi.test.mjs` locks that behaviour in.
 
 ## How lateness is decided
 
