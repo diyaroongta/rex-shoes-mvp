@@ -99,6 +99,31 @@ test("an unpriced size range is reported and excluded from money", () => {
   }
 });
 
+console.log("\nH — multi-article invoices");
+test("each article prices from its OWN mrp and keeps its OWN image", () => {
+  const pi = buildPI({
+    order_no:"PI/MULTI", party:"Multi Co",
+    items:[
+      { article_code:"A", article_label:"Alpha", image:"IMG-A", mrp:{ "7X10":679 },
+        lines:[{ combo:"7X10", qty:400 }] },
+      { article_code:"B", article_label:"Beta",  image:"IMG-B", mrp:{ "2X5":999 },
+        lines:[{ combo:"2X5", qty:400 }] },
+    ],
+  });
+  assert.equal(pi.groups.length, 2, "one group per article");
+  assert.equal(pi.groups[0].image, "IMG-A");
+  assert.equal(pi.groups[1].image, "IMG-B", "an article must not inherit another's photo");
+
+  const a = pi.lines.filter(l => l.article_code === "A");
+  const b = pi.lines.filter(l => l.article_code === "B");
+  assert.ok(a.length && b.length);
+  // The regression this guards: B used to be priced off A's MRP table.
+  for(const l of a) assert.equal(l.mrp, 679, "Alpha must price from its own MRP");
+  for(const l of b) assert.equal(l.mrp, 999, "Beta must NOT inherit Alpha's MRP");
+  assert.equal(pi.totals.total_qty, 800, "every pair across both articles is counted");
+  assert.equal(pi.totals.subtotal, 4*100*407 + 4*100*599);
+});
+
 console.log("\nG — Indian digit grouping");
 test("lakh/crore separators", () => {
   assert.equal(inr(2266970), "22,66,970");

@@ -72,6 +72,26 @@ export default wrap(async (req, res) => {
         ref.packing[art] = clean;
       }
     }
+    if(req.body.stock_meta && typeof req.body.stock_meta === "object"){
+      ref.stock_meta = ref.stock_meta || {};
+      for(const [key, fields] of Object.entries(req.body.stock_meta)){
+        if(!ref.materials[key]) return fail(res, 400, `unknown material: ${key}`);
+        const cur = { ...(ref.stock_meta[key] || {}) };
+        for(const [f, v] of Object.entries(fields)){
+          if(["category","size"].includes(f)){ cur[f] = String(v).slice(0,60); continue; }
+          if(!["opening","rec","issue","min_stock","min","rate"].includes(f))
+            return fail(res, 400, `unknown stock field: ${f}`);
+          const n = Number(v);
+          if(!isFinite(n) || n < 0) return fail(res, 400, `${f} for ${key} must be 0 or more`);
+          cur[f === "min" ? "min_stock" : f] = n;
+        }
+        ref.stock_meta[key] = cur;
+        // keep materials.stock in step so procurement nets against the same number
+        const md = ref.stock_meta[key];
+        if(md.opening != null || md.rec != null || md.issue != null)
+          ref.materials[key].stock = (Number(md.opening)||0) + (Number(md.rec)||0) - (Number(md.issue)||0);
+      }
+    }
     if(req.body.mrp && typeof req.body.mrp === "object"){
       ref.mrp = ref.mrp || {};
       for(const [art, chart] of Object.entries(req.body.mrp)){

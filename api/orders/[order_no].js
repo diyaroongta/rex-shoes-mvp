@@ -32,7 +32,10 @@ function validatePatch(body, current){
     }
     out.lines = body.lines.map(l => ({ combo:l.combo, qty:Number(l.qty), label:l.label || l.combo }));
   }
-  if("pi" in body && body.pi && typeof body.pi === "object") out.pi = body.pi;
+  // pi is a free-form blob (pi_no, price, remarks, attachment, order_nature...).
+  // MERGE rather than replace, so editing just the remarks doesn't wipe pi_no.
+  if("pi" in body && body.pi && typeof body.pi === "object")
+    out.pi = { ...(current.pi || {}), ...body.pi };
   if(!Object.keys(out).length) return { err:"nothing to update" };
   return { patch: out };
 }

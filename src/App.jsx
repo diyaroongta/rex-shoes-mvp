@@ -1,11 +1,14 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { compute, fromDay, dayIndex } from "../shared/engine.js";
-import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbiguous, mapToCombo, readPrompt } from "../shared/bridge.js";
+import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbiguous, mapToCombo, singlePackQty, readPrompt } from "../shared/bridge.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
 import PiDocument from "./PiDocument.jsx";
+import BulkOrderTab from "./BulkOrderTab.jsx";
+import StockTab from "./StockTab.jsx";
+import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes } from "../shared/pi.js";
 
 /* ------------- UI helpers (shared) ------------- */
@@ -77,11 +80,32 @@ export default function App(){
 
   async function askAI(){
     if(!aiQ.trim()||!state)return; setAiBusy(true); setAiA("");
+    // The engine computes per-stage detail — which stage is late, by how many
+    // days, what's queued behind what. The copilot is only as specific as the
+    // context we hand it, so send the reasoning, not just the headline.
+    const worstStage = o => {
+      const bad = o.stages.filter(s=>s.status!=="on_track");
+      if(!bad.length) return null;
+      const w = bad.reduce((a,b)=> (b.slip_days>a.slip_days ? b : a));
+      return { stage:w.stage, status:w.status, slip_days:w.slip_days, work_center:w.work_center, end_date:w.end_date };
+    };
     const ctx = {
-      orders: state.orders.map(o=>({order:o.order_no,party:o.party,article:o.article,qty:o.qty,priority:o.priority,dispatch:o.dispatch_date,sla:o.sla})),
-      bottlenecks: state.machine_load.map(m=>({center:m.name,avg_util_pct:m.avg_util_pct})),
-      procurement: state.procurement.slice(0,12).map(p=>({material:p.name,buy:p.shortfall,uom:p.uom})),
-      last_dispatch: state.totals.last_dispatch,
+      today: fromDay(0, INPUTS.origin),
+      orders: state.orders.map(o=>({
+        order:o.order_no, party:o.party, article:o.article, sole_type:o.sole_type,
+        qty:o.qty, priority:o.priority, order_date:o.order_date,
+        dispatch:o.dispatch_date, lead_days:o.lead_days, sla:o.sla,
+        worst_stage: worstStage(o),
+        unknown_combos: o.unknown_combos && o.unknown_combos.length ? o.unknown_combos : undefined,
+      })),
+      sla_targets: targets || {CUTTING:8,STITCHING:15,PRINTING:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30},
+      machines: state.machine_load.map(m=>({
+        center:m.name, work_center:m.work_center, capacity_per_day:m.capacity_per_day,
+        peak_util_pct:m.peak_util_pct, avg_util_pct:m.avg_util_pct, busy_days:m.busy_days,
+      })),
+      schedule_problems: state.schedule_problems,
+      procurement: state.procurement.slice(0,15).map(p=>({material:p.name,uom:p.uom,required:p.required,stock:p.stock,shortfall:p.shortfall})),
+      totals: state.totals,
     };
     try{
       const text = await api.askCopilot(aiQ, ctx);
@@ -123,7 +147,7 @@ export default function App(){
         </div>
 
         <div className="flex gap-2 mb-4 flex-wrap">
-          {[["intake","➕ New order (photo → PI)"],["orders","Orders & dispatch"],["schedule","Schedule"],["plan","Production plan"],["procurement","Procurement"],["machines","Machine load"],["catalogue","Catalogue"],["data","Data & BOM"],["copilot","AI copilot"]].map(([k,l])=>(
+          {[["intake","➕ PI generation"],["bulk","Bulk upload"],["orders","Orders & dispatch"],["schedule","Schedule"],["plan","Production plan"],["procurement","Procurement"],["stock","Stock register"],["machines","Machine load"],["catalogue","Catalogue"],["data","Data & BOM"],["copilot","AI copilot"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} className="text-sm font-semibold rounded-lg px-3.5 py-2 border transition-colors"
               style={{background:tab===k?"#4f46e5":"#fff",color:tab===k?"#fff":"#475569",borderColor:tab===k?"#4f46e5":"#e2e8f0"}}>{l}</button>
           ))}
@@ -140,6 +164,8 @@ export default function App(){
         {tab==="plan" && <PlanTab state={state} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
+        {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="bulk" && <BulkOrderTab onImported={()=>{ refresh(); setTab("orders"); }} />}
         {tab==="catalogue" && <CatalogueTab />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
@@ -182,6 +208,8 @@ function NewOrderFlow({onSaved}){
   const [soleColour,setSoleColour]=useState("Black");
   const [upperColour,setUpperColour]=useState("");
   const [remarks,setRemarks]=useState("None");
+  const [orderNature,setOrderNature]=useState("");
+  const [attachment,setAttachment]=useState(null);
   const [discountPct,setDiscountPct]=useState(40);
   const [piTerms,setPiTerms]=useState(null);
   const [piConfig,setPiConfig]=useState(null);
@@ -320,8 +348,17 @@ function NewOrderFlow({onSaved}){
         lines:(o.lines||[]).map(l=>{
           const big=(l.group||"").toUpperCase()==="BIG";
           const m=mapToCombo(l.sizes,combos,big);
-          return {combo:m.combo, exact:m.exact, raw:(l.sizes||[]).join("|")+(big?" (Big)":""),
+          // A genuine size match to a named combo (m.combo) has a real pack rate
+          // and real BOM material rates. A single size with no combo match
+          // (m.single) has neither — it must NOT be silently folded into the
+          // nearest combo, because that changes both the pack quantity and
+          // what material gets ordered. Surface it and let the clerk resolve it.
+          if(m.combo) return {combo:m.combo, exact:m.exact, raw:(l.sizes||[]).join("|")+(big?" (Big)":""),
                   cartons:Number(l.cartons)||0, ppc:(PACKING[art]&&PACKING[art][m.combo])||24};
+          return {combo:null, single:m.single, exact:false,
+                  raw:(l.sizes||[]).join("|")+(big?" (Big)":""),
+                  cartons:Number(l.cartons)||0, ppc: singlePackQty(art,m.single) || 24,
+                  ppcKnown: singlePackQty(art,m.single)!=null};
         })};
     });
     setCards(out.length?out:null);
@@ -362,6 +399,13 @@ function NewOrderFlow({onSaved}){
 
   async function save(){
     if(!piCards && (!cards||!totals||totals.pairs<=0)){ setErr("Add at least one line with cartons before saving."); return; }
+    // A single-size line with no combo has no material rate — saving it would
+    // silently under-order for that size. Block the save and name which lines
+    // still need a combo picked, rather than guessing one.
+    const unresolved=(cards||[]).flatMap((c,ci)=>c.lines
+      .map((l,li)=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
+      .filter(Boolean));
+    if(unresolved.length){ setErr("Pick a combo for: "+unresolved.join(", ")+" before saving — or set its cartons to 0 to leave it out."); return; }
     // No order_no here — the server assigns it from a sequence, so two clerks
     // saving at the same moment can never collide.
     if(piCards){
@@ -370,13 +414,14 @@ function NewOrderFlow({onSaved}){
         priority:Number(priority)||2, party:party||"—",
         lines:c.lines.map(l=>({combo:l.combo, qty:l.qty, label:l.label||l.combo, sizes:l.sizes})),
         pi:{pi_no:piNo, discount_pct:Number(discountPct)||0, customer_city:customerCity,
-            vl, sole_colour:soleColour, upper_colour:upperColour},
+            vl, sole_colour:soleColour, upper_colour:upperColour,
+            remarks, order_nature:orderNature||undefined, attachment:attachment||undefined},
       }));
       setSaving(true); setErr("");
       try{
         const created=await onSaved(piDrafts);
         setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
-        setPiCards(null); setCards(null); setImg(null);
+        setPiCards(null); setCards(null); setImg(null); setAttachment(null);
       }catch(e){ setErr("Could not save: "+(e.message||e)); }
       finally{ setSaving(false); }
       return;
@@ -385,13 +430,14 @@ function NewOrderFlow({onSaved}){
       order_date:orderDate, article_code:c.article,
       priority:Number(priority)||2, party:party||"—",
       lines:c.lines.filter(l=>(Number(l.cartons)||0)>0).map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:(l.raw||l.combo)})),
-      pi:{pi_no:piNo, price:prices[c.article]},
+      pi:{pi_no:piNo, price:prices[c.article],
+          remarks, order_nature:orderNature||undefined, attachment:attachment||undefined},
     }));
     setSaving(true); setErr("");
     try{
       const created=await onSaved(drafts);
       setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
-      setCards(null); setImg(null);
+      setCards(null); setImg(null); setAttachment(null);
     }catch(e){ setErr("Could not save: "+(e.message||e)); }
     finally{ setSaving(false); }
   }
@@ -410,9 +456,34 @@ function NewOrderFlow({onSaved}){
   }
 
   return <div>
-    {/* step 1: photo */}
+    {/* step 0: who the order is for, and what kind. Set first so it frames
+        everything downstream rather than being an afterthought on the PI. */}
     <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
-      <div className="serif text-lg font-semibold mb-1">1 · Order photo</div>
+      <div className="serif text-lg font-semibold mb-1">1 · Party &amp; order nature</div>
+      <p className="text-slate-500 text-xs mb-3">Set the customer and the kind of order before entering lines.</p>
+      <div className="grid gap-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))"}}>
+        <label className="text-xs text-slate-600">Party
+          <input value={party} onChange={e=>setParty(e.target.value)} placeholder="Customer name"
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        <label className="text-xs text-slate-600">City
+          <input value={customerCity} onChange={e=>setCustomerCity(e.target.value)}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        <label className="text-xs text-slate-600">Order nature
+          <input list="order-nature-options" value={orderNature} onChange={e=>setOrderNature(e.target.value)}
+            placeholder="MTS / Institutional / MTO, or type your own"
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" />
+          <datalist id="order-nature-options">
+            <option value="MTS" /><option value="Institutional" /><option value="MTO" />
+          </datalist></label>
+        <label className="text-xs text-slate-600">Order date
+          <input type="date" value={orderDate} onChange={e=>setOrderDate(e.target.value)}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono" /></label>
+      </div>
+    </div>
+
+    {/* step 2: photo */}
+    <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
+      <div className="serif text-lg font-semibold mb-1">2 · Order photo</div>
       {img
         ? <div className="rounded-xl overflow-hidden border border-slate-200">
             <img src={img} alt="order" className="w-full object-contain bg-slate-800" style={{maxHeight:260}}/>
@@ -454,7 +525,7 @@ function NewOrderFlow({onSaved}){
 
     {/* step 2: match & check */}
     {cards && <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
-      <div className="serif text-lg font-semibold mb-1">2 · Match & check</div>
+      <div className="serif text-lg font-semibold mb-1">3 · Match & check</div>
       <p className="text-slate-500 text-xs mb-3">Each category is matched to a real factory article; each size entry to a real combo pack. Yellow = mapped approximately — please confirm. Pairs = cartons × pairs/carton (from your packing chart, editable).</p>
       <div className="flex gap-3 flex-wrap mb-3">
         <label className="text-xs text-slate-500">Party<br/><input value={party} onChange={e=>setParty(e.target.value)} placeholder="Customer name" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-0.5"/></label>
@@ -489,11 +560,21 @@ function NewOrderFlow({onSaved}){
                     className="text-sm font-semibold w-full bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-white rounded-md px-1.5 py-1 -ml-1.5 outline-none"/>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="mono text-slate-400" style={{fontSize:9}}>{l.raw?"rates from:":"combo:"}</span>
-                    <select value={l.combo} onChange={e=>{const combo=e.target.value; setLine(i,k,{combo,exact:true,ppc:(PACKING[c.article]&&PACKING[c.article][combo])||l.ppc});}}
+                    <select value={l.combo || ""} onChange={e=>{const combo=e.target.value; setLine(i,k,{combo,single:undefined,exact:true,ppc:(PACKING[c.article]&&PACKING[c.article][combo])||l.ppc});}}
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
+                      {!l.combo && <option value="">— pick a combo —</option>}
                       {INPUTS.articles[c.article].combo_order.map(cb=><option key={cb} value={cb}>{cb}</option>)}</select>
-                    {!l.exact && <span className="text-amber-700 font-semibold" style={{fontSize:10}}>confirm</span>}
+                    {!l.exact && l.combo && <span className="text-amber-700 font-semibold" style={{fontSize:10}}>confirm</span>}
                   </div>
+                  {!l.combo && l.single && (
+                    <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 mt-1">
+                      <b>Size {l.single}</b> on its own — {INPUTS.articles[c.article].combo_order.length
+                        ? "it doesn't fall inside any of this article's named combos, so it has no material rate. "
+                        : ""}
+                      {l.ppcKnown ? `Packed ${l.ppc}/carton per the single-size chart. ` : "No packing rate on file for it either. "}
+                      Pick the combo it should be costed against, or leave it and it stays uncosted.
+                    </div>
+                  )}
                 </div>
                 <input type="number" min="0" value={l.cartons} onChange={e=>setLine(i,k,{cartons:e.target.value===""?0:Number(e.target.value)})}
                   className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
@@ -511,13 +592,27 @@ function NewOrderFlow({onSaved}){
     {/* step 3: PI + save */}
     {((cards && totals) || piCards) && <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
       <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
-        <div className="serif text-lg font-semibold">3 · Proforma Invoice</div>
+        <div className="serif text-lg font-semibold">4 · Proforma Invoice</div>
         <div className="flex gap-2">
           <button onClick={printPI} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Print / Save PDF</button>
           <button onClick={save} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700">Save & send to production →</button>
         </div>
       </div>
       <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
+        <label className="text-xs text-slate-500">Order nature
+          <input list="order-nature-options" value={orderNature} onChange={e=>setOrderNature(e.target.value)}
+            placeholder="MTS / Institutional / MTO"
+            className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        <label className="text-xs text-slate-500">Attach screenshot
+          <input type="file" accept="image/*" capture={undefined} onChange={async e=>{
+              const f=e.target.files&&e.target.files[0]; e.target.value="";
+              if(!f) return;
+              try{ setAttachment(await shrinkImage(f)); }
+              catch(err){ setErr("Could not attach that image: "+(err.message||err)); }
+            }}
+            className="block mt-0.5 w-full text-xs" />
+          {attachment && <span className="text-xs text-emerald-700">attached — will save with this order</span>}
+        </label>
         {[["Customer city",customerCity,setCustomerCity,"text"],
           ["V/L",vl,setVl,"text"],
           ["Sole colour",soleColour,setSoleColour,"text"],
@@ -530,27 +625,62 @@ function NewOrderFlow({onSaved}){
         ))}
       </div>
 
+      {piCards && (
+        <div className="border border-indigo-200 bg-indigo-50/50 rounded-xl p-4 mb-4">
+          <div className="text-sm font-semibold text-indigo-900 mb-1">Review before saving</div>
+          <p className="text-xs text-slate-600 mb-3">
+            These quantities came straight off the PI you uploaded. Correct anything before saving —
+            once saved, per-size quantities can still be changed from Orders &amp; Dispatch, but fixing
+            them here avoids re-issuing the invoice.
+          </p>
+          {piCards.map((c,ci)=>(
+            <div key={ci} className="mb-3 last:mb-0">
+              <div className="text-xs font-semibold text-slate-700 mb-1">{c.article}</div>
+              {c.lines.map((l,li)=>(
+                <div key={li} className="flex items-center gap-2 flex-wrap mb-1.5">
+                  <span className="mono text-xs text-slate-500 w-16">{l.combo}</span>
+                  {Object.keys(l.sizes||{}).map(sz=>(
+                    <label key={sz} className="text-xs text-slate-500">
+                      <span className="mono">{sz}</span>
+                      <input type="number" min={0} value={l.sizes[sz]}
+                        onChange={e=>{
+                          const v=Number(e.target.value)||0;
+                          setPiCards(pcs=>pcs.map((c2,ci2)=>ci2!==ci?c2:{...c2,lines:c2.lines.map((l2,li2)=>li2!==li?l2:
+                            {...l2, sizes:{...l2.sizes,[sz]:v}, qty:Object.values({...l2.sizes,[sz]:v}).reduce((a,b)=>a+(Number(b)||0),0)})}));
+                        }}
+                        className="block mt-0.5 w-16 text-sm border border-slate-300 rounded px-1 py-0.5 mono" /></label>))}
+                  <span className="text-xs text-slate-400 ml-1">= {l.qty} pairs</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
       <PiDocument
         piNo={piNo}
         order={{
           order_no: piNo,
           party, customer_city: customerCity,
           order_date: orderDate, pi_date: orderDate,
-          article_code: (piCards||cards)[0] ? (piCards||cards)[0].article : "",
-          article_label: (piCards||cards).map(c=>c.article).join(", "),
-          vl: vl, sole_colour: soleColour, upper_colour: upperColour,
           remarks: remarks,
-          lines: piCards
-            ? piCards.flatMap(c=>c.lines)
-            : cards.flatMap(c=>c.lines
-                .filter(l=>(Number(l.cartons)||0)>0)
-                .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo }))),
+          // One item per article: its own MRP table and its own catalogue photo,
+          // so a multi-article PI prices and pictures each correctly.
+          items: (piCards||cards).map(c=>({
+            article_code: c.article,
+            article_label: c.article,
+            vl, sole_colour: soleColour, upper_colour: upperColour,
+            image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
+            mrp: (INPUTS.mrp||{})[c.article] || {},
+            lines: piCards
+              ? c.lines
+              : c.lines.filter(l=>(Number(l.cartons)||0)>0)
+                  .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo })),
+          })).filter(it=>it.lines.length),
         }}
         article={{}}
-        mrp={(piCards||cards)[0] ? ((INPUTS.mrp||{})[(piCards||cards)[0].article]||{}) : {}}
         terms={{ ...(piTerms||{}), discount_pct: Number(discountPct)||0 }}
         config={piConfig}
-        image={(piCards||cards)[0] ? (CATALOGUE[(piCards||cards)[0].article]||{}).image : null}
       />
     </div>}
   </div>;
@@ -624,6 +754,14 @@ function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
               <div className="flex gap-1.5 flex-wrap">{o.lines.map((l,i)=>(
                 <span key={i} className="mono text-xs bg-white border border-slate-200 rounded-lg px-2 py-1">{l.label||l.combo}: {fmt(l.qty)}</span>))}</div>
             </div>
+            {(o.pi && (o.pi.remarks || o.pi.order_nature || o.pi.attachment)) && (
+              <div>
+                <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Notes</div>
+                {o.pi.order_nature && <div className="text-xs text-slate-600 mb-1">Nature: <b>{o.pi.order_nature}</b></div>}
+                {o.pi.remarks && <div className="text-xs text-slate-600 mb-1 max-w-xs">{o.pi.remarks}</div>}
+                {o.pi.attachment && <img src={o.pi.attachment} alt="" className="max-h-20 rounded border border-slate-200" />}
+              </div>
+            )}
             <div>
               <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Stages</div>
               <div className="flex gap-2 flex-wrap">{o.stages.filter(s=>!s.instant).map((s,i)=>(
@@ -642,22 +780,55 @@ function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
   </div>;
 }
 
+/* Resize before upload. A phone photo is several MB as base64 — past the
+   serverless request limit — so an unresized upload silently fails. */
+function shrinkImage(file, maxDim=900, quality=0.75){
+  return new Promise((resolve,reject)=>{
+    const fr=new FileReader();
+    fr.onload=()=>{
+      const img=new Image();
+      img.onload=()=>{
+        const scale=Math.min(1, maxDim/Math.max(img.width,img.height));
+        const c=document.createElement("canvas");
+        c.width=Math.round(img.width*scale); c.height=Math.round(img.height*scale);
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        resolve(c.toDataURL("image/jpeg",quality));
+      };
+      img.onerror=()=>reject(new Error("That file is not a readable image."));
+      img.src=fr.result;
+    };
+    fr.onerror=()=>reject(new Error("Could not read that file."));
+    fr.readAsDataURL(file);
+  });
+}
+
 function EditOrder({o,onSave,onCancel}){
   const [party,setParty]=useState(o.party||"");
   const [date,setDate]=useState(o.order_date);
   const [prio,setPrio]=useState(o.priority);
   const [lines,setLines]=useState(o.lines.map(l=>({...l})));
+  const [remarks,setRemarks]=useState((o.pi&&o.pi.remarks)||"");
+  const [nature,setNature]=useState((o.pi&&o.pi.order_nature)||"");
+  const [attachment,setAttachment]=useState((o.pi&&o.pi.attachment)||null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
 
   const setQty=(i,v)=>setLines(ls=>ls.map((l,j)=>j===i?{...l,qty:v}:l));
   const total=lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
 
+  async function pickFile(f){
+    if(!f) return;
+    setErr("");
+    try{ setAttachment(await shrinkImage(f)); }
+    catch(e){ setErr("Could not attach that image: "+(e.message||e)); }
+  }
+
   async function save(){
     const clean=lines.filter(l=>(Number(l.qty)||0)>0).map(l=>({combo:l.combo,qty:Number(l.qty),label:l.label||l.combo}));
     if(!clean.length){ setErr("Keep at least one line with a quantity above zero."); return; }
     setBusy(true); setErr("");
-    try{ await onSave({party,order_date:date,priority:Number(prio)||2,lines:clean}); }
+    try{ await onSave({party,order_date:date,priority:Number(prio)||2,lines:clean,
+      pi:{remarks, order_nature:nature||undefined, attachment:attachment||undefined}}); }
     catch(e){ setErr(String(e.message||e)); setBusy(false); }
   }
 
@@ -673,6 +844,13 @@ function EditOrder({o,onSave,onCancel}){
       <label className="text-xs text-slate-600">Priority
         <input type="number" min={1} value={prio} onChange={e=>setPrio(e.target.value)}
           className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-20 mono" /></label>
+      <label className="text-xs text-slate-600">Order nature
+        <input list="order-nature-options" value={nature} onChange={e=>setNature(e.target.value)}
+          placeholder="MTS / Institutional / MTO, or type your own"
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-56" />
+        <datalist id="order-nature-options">
+          <option value="MTS" /><option value="Institutional" /><option value="MTO" />
+        </datalist></label>
     </div>
     <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Quantities (pairs)</div>
     <div className="flex gap-2 flex-wrap mb-2">
@@ -682,6 +860,29 @@ function EditOrder({o,onSave,onCancel}){
           <input type="number" min={0} value={l.qty} onChange={e=>setQty(i,e.target.value)}
             className="block mt-1 w-24 text-sm border border-slate-300 rounded px-1.5 py-1 mono" /></label>))}
     </div>
+    <div className="flex gap-2 items-end flex-wrap mb-3">
+      <label className="text-xs text-slate-600">Add a size range
+        <select defaultValue="" onChange={e=>{
+            const cb=e.target.value; e.target.value="";
+            if(cb && !lines.some(l=>l.combo===cb)) setLines(ls=>[...ls,{combo:cb,qty:0,label:cb}]);
+          }}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          <option value="">Pick a size range…</option>
+          {((INPUTS.articles[o.article_code||o.article]||{}).combo_order||[])
+            .filter(cb=>!lines.some(l=>l.combo===cb))
+            .map(cb=><option key={cb} value={cb}>{cb}</option>)}
+        </select></label>
+      <span className="text-xs text-slate-400">Set a line to 0 to drop it.</span>
+    </div>
+
+    <label className="text-xs text-slate-600 block mb-2">Remarks
+      <textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={2}
+        className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+    <label className="text-xs text-slate-600 block mb-2">Attached screenshot
+      <input type="file" accept="image/*" onChange={e=>{const f=e.target.files&&e.target.files[0]; e.target.value=""; pickFile(f);}}
+        className="block mt-1 text-xs" />
+      {attachment && <img src={attachment} alt="" className="mt-1 max-h-24 rounded border border-slate-200" />}
+    </label>
     <div className="text-xs text-slate-500 mb-2">Total <b className="mono">{fmt(total)}</b> pairs.
       The article and its size combos cannot be changed here — remove the order and re-enter it instead.</div>
     {err && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5 mb-2">{err}</div>}

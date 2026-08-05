@@ -282,6 +282,54 @@ than under-orders.
 
 **Delivery targets.** Machine load tab. See "How lateness is decided" below.
 
+## Order remarks, order nature, and attachments
+
+`pi` is a free-form JSON blob on each order (no schema migration needed to extend it), and now
+carries `remarks`, `order_nature` (MTS / Institutional / MTO), and `attachment` (a base64
+screenshot). Set on intake — both the photo/manual flow and the PI-read flow — and editable
+afterward from **Orders &amp; Dispatch → Edit**, which is also where this data now shows in the
+order's detail row. `PATCH /api/orders/:order_no` **merges** the `pi` blob rather than replacing
+it, so editing just the remarks can't silently wipe `pi_no` or the price.
+
+## Editable PI review
+
+After reading an existing PI, the per-size quantities the reader extracted are now editable
+before saving — previously only the header fields (party, city, discount) had inputs, so a
+misread quantity had no way to be corrected before the order was scheduled.
+
+## Single sizes vs combination packs
+
+The factory's own packing chart draws a real distinction: a **SINGLE PACKSIZE** is one size
+sold on its own, at its own pairs-per-carton rate; a **COMBINATION PACK** is a named range of
+sizes (like `6X8`) packed and priced together. `mapToCombo` used to collapse that distinction —
+every parsed size, even one that matched no combo, was snapped to the *nearest* range combo, so
+a genuinely individual-size order silently became a combination-pack order with the wrong
+quantity and the wrong (or missing) material rate.
+
+It no longer does that. A size that falls inside a named combo still matches it normally. A size
+that doesn't is returned as `{combo:null, single:"8"}` rather than guessed, and the intake screen
+shows it as its own line with an amber note rather than folding it into a combo silently. Its
+carton size comes from `packing_singles` (the chart's blue rows) when known.
+
+**The real limit this doesn't remove:** the BOM only has material rates per named combo. A
+single-size line, correctly identified as such, still can't be costed or scheduled until you
+tell the app which combo's rates it should draw from — that's a data gap, not a bug, and the app
+now says so explicitly instead of hiding it. Saving is blocked until every single-size line has
+a combo picked or its cartons are zeroed out.
+
+## AI copilot — what it can see
+
+The copilot only answers from the state it's handed — it never recalculates. That state now
+includes, per order, its **worst stage**: which stage is causing any At risk / Delayed status
+and by how many days it slipped past target, not just the headline colour. It also gets the
+per-machine utilisation and busy-day counts, `schedule_problems`, and any `unknown_combos`
+flagged on an order.
+
+If it's giving vague answers again, the first thing to check is whether that detail actually
+reached it — log `ctx` in `askAI()` (App.jsx) and confirm `worst_stage` is populated on the
+orders you're asking about, and that `machines` shows real utilisation numbers rather than
+zeros.
+
 ## Proforma Invoices
 
 The PI matches the format the factory already issues: one row per size, MRP and rate per row,
@@ -325,6 +373,85 @@ Those defaults encode a 30-day order-to-dispatch promise that was never confirme
 so they are editable in the Machine load tab and stored in `settings`. Changing them re-colours
 every order without moving a single date — the schedule is unchanged, only the promise it is
 measured against.
+
+## Article photos
+
+`shared/catalogue-seed.js` holds the 21 article photos and MRP bands extracted from the client's
+catalogue PDF, resized to 420px JPEG (~400 KB total). `articlePhoto(code)` maps a system article
+code onto its catalogue entry, since one catalogue name covers several coded variants — "Gola"
+serves REX GOLA (V), (L) and PLUS.
+
+Every PI uses the Catalogue tab's uploaded photo when there is one and falls back to the seeded
+catalogue photo otherwise, so invoices picture the right shoe with no manual step.
+
+12 of the 14 loaded articles have a photo. **PERCY and SPADE do not** — they have BOMs but no
+catalogue entry. 15 catalogue articles (Toddler, Courage, Jem, Thunder, Ryder, Glide, Grace,
+Bolt, Nova, Swan, Trek, Symbol, Apex, Aero, Tennis shoe) have photos and MRP bands but no BOM,
+so they cannot be scheduled or costed yet.
+
+## Multi-article invoices, and per-article images
+
+A PI can cover several articles. Each item carries **its own MRP table and its own catalogue
+photo**, because pricing one article against another's MRP is silently wrong money — that
+defect existed and is now fixed, with test H in `tests/pi.test.mjs` locking it in. The renderer
+groups rows per article and spans each photo over exactly the rows it belongs to.
+
+`buildPI` accepts either shape. Pass `order.items` (each with `article_code`, `mrp`, `image`,
+`lines`) for multi-article; the older single-article call still works unchanged, which is why
+the original PI/596 reconciliation tests are unaffected.
+
+Article photos come from the Catalogue tab — upload one per article there and it flows into
+every invoice for that article automatically.
+
+## Stock register
+
+**Stock register** tab, laid out to match the factory's own STOCK MASTER sheet: S.N · Category ·
+Item Description · Size · UOM · Opening Stock · Rec. · Issue · Stock · Min. Stock · Alert ·
+Order Qty · Rate · Stock Value.
+
+`Stock` is derived, never typed: **Opening + Rec − Issue**. That identity is what makes the
+register auditable — a stock figure that can be edited directly can't be reconciled against
+movements. `Alert` fires and the row turns red when stock falls below Min. Stock, and Order Qty
+is the shortfall. Categories are pre-filled by a name-matching guess and are editable; the guess
+is a starting point, not an authority. Exports to xlsx in the same column order.
+
+Editing here also updates `materials.stock`, so **procurement nets against the same number** the
+register shows rather than a second, drifting copy.
+
+## Bulk order upload
+
+**Bulk upload** tab. One row per size range; rows sharing party + date + article merge into a
+single order with several lines. Give either `Pairs` or `Cartons` — cartons convert through the
+packing chart, and pairs wins when both are present so no packing assumption is needed.
+
+Columns (order doesn't matter, names do; common aliases like Qty/Ctn/Customer are accepted):
+`Party`, `Order Date`, `Article`, `Size Range`, `Cartons`, `Pairs`, `Priority`, `Order Nature`,
+`Remarks`. A blank template is downloadable from the tab itself.
+
+**Nothing is imported while any row is rejected.** A partly-imported batch is harder to unpick
+than a corrected sheet, so the preview lists every bad row with its reason and the import button
+stays disabled until the sheet is clean. Article and size-range names are validated against live
+reference data — the same guard that stops an unknown combo consuming capacity while ordering
+zero material.
+
+## Known open requests from the client
+
+Received as two feedback documents, 2026-08-04. Status of each:
+
+- **PI upload not editable** — fixed, see "Editable PI review" above.
+- **Order remarks / order nature / screenshot attachment** — fixed, see above.
+- **Order modification** — already existed (Orders &amp; Dispatch → Edit); now also covers
+  remarks/nature/attachment.
+- **Multi-article PI pricing bug** — caught and blocked, not yet properly supported; needs a
+  decision on whether combined invoices are actually required.
+- **Excel bulk order upload** — not started. Needs the client's fixed field template before
+  building; guessing the mapping risks the same silent-wrong-quantity failure mode as an
+  unvalidated BOM import.
+- **"PI addition in a separate tab" / initial party-nature tab** — the intake tab is already
+  separate from order management; unclear whether the client means a deeper restructuring.
+  Needs a concrete description of the desired tab layout before rebuilding navigation.
+- **Audit trail on edits** — blocked on authentication (known gap 1) — there is no user identity
+  to attach an edit to yet.
 
 ## Swapping the AI provider
 

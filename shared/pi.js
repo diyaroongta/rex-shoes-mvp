@@ -113,9 +113,49 @@ export function buildTotals(lines, terms = DEFAULT_TERMS){
   };
 }
 
+/* One PI can cover several articles. Each item carries its OWN mrp table, its
+   own catalogue image and its own descriptive columns, because pricing an
+   article against another article's MRP is silently wrong money. Lines keep an
+   `item` index so the renderer can group rows and span each image over exactly
+   the rows it belongs to. */
+export function buildMultiPI(items = [], terms = DEFAULT_TERMS){
+  const allLines = [], missing = [], groups = [];
+  items.forEach((item, i) => {
+    const built = buildLines({ lines: item.lines || [] }, item.mrp || {}, terms);
+    built.lines.forEach(l => { l.item = i; l.article_code = item.article_code; });
+    built.missing.forEach(m => missing.push({ ...m, article: item.article_code }));
+    groups.push({
+      index: i,
+      article_code: item.article_code,
+      article_label: item.article_label || item.article_code,
+      vl: item.vl || "", sole_colour: item.sole_colour || "", upper_colour: item.upper_colour || "",
+      source: item.source || "As per catalogue",
+      image: item.image || null,
+      lines: built.lines,
+    });
+    built.lines.forEach(l => allLines.push(l));
+  });
+  return { lines: allLines, groups, missing, totals: buildTotals(allLines, terms), terms };
+}
+
 export function buildPI(order, article, mrp = {}, terms = DEFAULT_TERMS){
+  // Multi-article form: the order carries `items`, each with its own MRP+image.
+  if(order && Array.isArray(order.items) && order.items.length)
+    return buildMultiPI(order.items, terms);
+
+  // Single-article form, kept so existing callers and tests are unaffected.
   const { lines, missing } = buildLines(order, mrp, terms);
-  return { lines, missing, totals: buildTotals(lines, terms), terms };
+  const groups = [{
+    index: 0,
+    article_code: order.article_code,
+    article_label: order.article_label || order.article_code,
+    vl: order.vl || "", sole_colour: order.sole_colour || "", upper_colour: order.upper_colour || "",
+    source: order.catalogue_source || "As per catalogue",
+    image: order.image || null,
+    lines,
+  }];
+  lines.forEach(l => { l.item = 0; l.article_code = order.article_code; });
+  return { lines, groups, missing, totals: buildTotals(lines, terms), terms };
 }
 
 /* Indian digit grouping: 2,266,970 -> 22,66,970 */

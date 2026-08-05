@@ -45,7 +45,7 @@ test("dates, SLA and one material rate", () => {
 });
 
 console.log("\nC — the molding machine is ONE machine");
-test("three sole types queue sequentially, sole sticking runs independently", () => {
+test("every sole type queues sequentially on the one molding machine", () => {
   const s = run([
     { order_no:"JO1", order_date:"2026-07-26", article_code:"SMART BOY (L) BLACK", priority:2, party:"A", lines:[{combo:"6X8",  qty:3600}] },
     { order_no:"JO2", order_date:"2026-07-26", article_code:"SILKY BELLY BLACK",   priority:2, party:"B", lines:[{combo:"6X8",  qty:3000}] },
@@ -57,12 +57,15 @@ test("three sole types queue sequentially, sole sticking runs independently", ()
     for(const st of o.stages)
       if(st.work_center === "MOLDING" && !st.instant) blocks.push([st.start, st.end, o.order_no]);
   blocks.sort((a,b) => a[0] - b[0]);
-  assert.equal(blocks.length, 3, "PVC, PU and EVA all belong on MOLDING");
-  assert.deepEqual(blocks.map(b => [b[0], b[1]]), [[24,26],[27,29],[30,33]]);
-  // the stuck-on order is on its own line
-  const stk = s.orders.find(o => o.order_no === "JO4").stages.find(x => x.stage === "ASSEMBLY");
-  assert.equal(stk.work_center, "ASSEMBLY_STUCK-ON");
-  assert.equal(s.totals.last_dispatch, "2026-08-10");
+  // Since the client's catalogue confirmed Armour is EVA (not stuck-on), every
+  // article molds — so all four orders contend for the single molding machine.
+  assert.equal(blocks.length, 4, "all four articles mold");
+  for(let i = 1; i < blocks.length; i++)
+    assert.ok(blocks[i][0] > blocks[i-1][1],
+      `${blocks[i][2]} overlaps ${blocks[i-1][2]} — molding is one machine`);
+  // no article routes to sole sticking any more
+  const anyAssembly = s.orders.some(o => o.stages.some(x => x.work_center === "ASSEMBLY_STUCK-ON"));
+  assert.equal(anyAssembly, false, "sole sticking is unused now that Armour is EVA");
 });
 
 console.log("\nD — contention invariants (the ones that matter)");

@@ -40,7 +40,9 @@ const N = { ...C, textAlign:"center" };
 export default function PiDocument({ order, article, mrp, terms, config, image, piNo, confirmationDate }){
   const t   = { ...DEFAULT_TERMS, ...(terms||{}) };
   const cfg = { ...DEFAULT_PI_CONFIG, ...(config||{}) };
-  const pi  = buildPI(order, article, mrp || {}, t);
+  // `image` is the single-article convenience prop; multi-article orders carry
+  // an image per item instead.
+  const pi  = buildPI({ ...order, image: order.image || image }, article, mrp || {}, t);
   const { lines, totals } = pi;
 
   const vl     = order.vl           || (/LACE/i.test(order.article_code) ? "Lace" : /VELCRO|\(V\)/i.test(order.article_code) ? "Velcro" : "");
@@ -90,17 +92,18 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
           </tr>
         </thead>
         <tbody>
-          {lines.map((l,i)=>(
-            <tr key={i}>
-              <td style={N}>{label}</td>
-              <td style={N}>{vl}</td>
-              <td style={N}>{sole}</td>
-              <td style={N}>{upper}</td>
-              <td style={N}>{source}</td>
-              {i === 0 && (
-                <td style={{ ...N, width:"90px" }} rowSpan={lines.length}>
-                  {image
-                    ? <img src={image} alt="" style={{ maxWidth:"84px", maxHeight:"84px", objectFit:"contain" }} />
+          {pi.groups.map(g => g.lines.map((l,li)=>(
+            <tr key={`${g.index}-${li}`}>
+              <td style={N}>{g.article_label}</td>
+              <td style={N}>{g.vl}</td>
+              <td style={N}>{g.sole_colour}</td>
+              <td style={N}>{g.upper_colour}</td>
+              <td style={N}>{g.source}</td>
+              {li === 0 && (
+                <td style={{ ...N, width:"90px" }} rowSpan={g.lines.length}>
+                  {g.image
+                    ? <img src={g.image} alt={g.article_label}
+                        style={{ maxWidth:"84px", maxHeight:"84px", objectFit:"contain" }} />
                     : ""}
                 </td>
               )}
@@ -111,7 +114,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
               <td style={N}>{l.rate == null ? "—" : l.rate}</td>
               <td style={R}>{l.amount == null ? "—" : inr(l.amount)}</td>
             </tr>
-          ))}
+          )))}
 
           <tr>
             <td style={{ ...C, fontWeight:700 }} colSpan={6}>

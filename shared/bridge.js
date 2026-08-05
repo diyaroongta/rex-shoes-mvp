@@ -106,41 +106,45 @@ export function comboRangeB(combo){ // B combos: range over the numeric part
   const i=seq.indexOf(a), j=seq.indexOf(b);
   return (i<0||j<0)?null:[i,Math.max(i,j),seq];
 }
+/* A parsed order line is EITHER a single size on its own (the sheet wrote just
+   "8 - 24 ctn") OR a size range that matches one of the article's named combos
+   (the sheet wrote "6X8 - 5 ctn"). These are different things on the factory's
+   own packing chart — a "SINGLE PACKSIZE" packs at its own rate per size, a
+   "COMBINATION PACK" packs multiple sizes together at the combo's rate.
+   Forcing a single size into the nearest range combo silently turns an
+   individual-size order into a combination-pack order, which is the bug this
+   function used to have: every fallback path returned SOME combo, never "this
+   is just one size." Only return a combo when the sizes genuinely match one;
+   otherwise say so and let the caller keep it as a single-size line. */
 export function mapToCombo(sizes, articleCombos, big){
   const ss=(sizes||[]).map(String).filter(s=>s);
-  if(big){ // adult sizes -> only B combos
+
+  if(big){ // adult sizes -> only B combos, and only on a real range match
     const bCombos=articleCombos.filter(c=>c.endsWith("B"));
-    if(bCombos.length){
-      const s0=ss[0];
-      let best=null,bestDist=1e9;
-      for(const c of bCombos){
-        const r=comboRangeB(c); if(!r) continue;
-        const p=r[2].indexOf(s0);
-        if(p>=0 && p>=r[0] && p<=r[1]) return {combo:c, exact:false};
-        const dist=p<0?9:Math.min(Math.abs(p-r[0]),Math.abs(p-r[1]));
-        if(dist<bestDist){best=c;bestDist=dist;}
-      }
-      if(best) return {combo:best, exact:false};
+    for(const c of bCombos){
+      const r=comboRangeB(c); if(!r) continue;
+      const p=r[2].indexOf(ss[0]);
+      if(p>=0 && p>=r[0] && p<=r[1]) return {combo:c, exact:true};
     }
   }
+
   if(ss.length>=2){
     const k1=ss[0]+"X"+ss[1], k2=ss[1]+"X"+ss[0];
     if(articleCombos.includes(k1)) return {combo:k1, exact:true};
     if(articleCombos.includes(k2)) return {combo:k2, exact:true};
   }
+
   const pos = ss.length ? ROLL_KY.indexOf(ss[0]) : -1;
   if(pos>=0){
-    let best=null, bestDist=1e9;
     for(const c of articleCombos){
       const r=comboRangeKY(c);
-      if(!r) continue;
-      if(pos>=r[0] && pos<=r[1]) return {combo:c, exact:false};
-      const dist=Math.min(Math.abs(pos-r[0]), Math.abs(pos-r[1]));
-      if(dist<bestDist){ best=c; bestDist=dist; }
+      if(r && pos>=r[0] && pos<=r[1]) return {combo:c, exact:true};
     }
-    if(best) return {combo:best, exact:false};
   }
-  return {combo:articleCombos[0], exact:false};
+
+  // No range combo actually contains this size — it is a single-size line,
+  // not a combination pack. Report it as such rather than guessing a combo.
+  return {combo:null, single:ss[0]||null, exact:false};
 }
 const productList = () => [...new Set(articleIndex().map(a=>a.base.join(" ")))]
   .map(n=>n.replace(/\b\w/g,c=>c.toUpperCase())).join(", ");
@@ -161,3 +165,22 @@ Four separate lines, and 2+3+1+2 = 8, which matches the stated total - so the re
 
 Return ONLY valid JSON, no prose, no code fences:
 {"date":"YYYY-MM-DD or empty","party":"","orders":[{"category":"Smart Boy","color":"Black","lines":[{"sizes":["6","8"],"cartons":2,"group":null}]}]}`; };
+
+/* Pairs-per-carton for a SINGLE size on its own (the chart's "SINGLE
+   PACKSIZES" rows), as opposed to a named range combo. Falls back to null
+   when the article has no single-size chart on file, so callers can tell
+   distinguishes an unknown rate from a real zero — never invents a number. */
+export function singlePackQty(article, size){
+  const ref = reference();
+  const section = (ref.packing_singles_by_article || {})[article];
+  const chart = section && (ref.packing_singles || {})[section];
+  if(!chart || !size) return null;
+  const pos = ROLL_KY.indexOf(String(size));
+  if(pos < 0) return null;
+  // kids run: positions 0-7 (6..13); adult run: 8-13 (1..5,5.5) then the
+  // repeated adult roll printed again as 6..12 further along the sheet.
+  if(chart.kids != null || chart.adult != null) return pos <= 7 ? chart.kids : chart.adult;
+  if(pos <= 7) return chart["6-13"] ?? null;
+  if(pos <= 12) return chart["1-5"] ?? chart["5.5-12"] ?? null;
+  return chart["5.5"] ?? chart["6-12"] ?? chart["5.5-12"] ?? null;
+}

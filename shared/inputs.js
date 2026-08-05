@@ -7,8 +7,8 @@ export const INPUTS = {
   "origin": "2026-07-06",
   "articles": {
     "ARMOUR (VELCRO)": {
-      "sole_type": "STUCK-ON",
-      "sole_assumed": true,
+      "sole_type": "EVA",
+      "sole_assumed": false,
       "combo_order": [
         "8X10",
         "11X1",
@@ -18,7 +18,7 @@ export const INPUTS = {
       "routing": [
         "CUTTING",
         "STITCHING",
-        "ASSEMBLY",
+        "MOLDING",
         "PACKING",
         "DISPATCH"
       ],
@@ -140,8 +140,8 @@ export const INPUTS = {
       }
     },
     "ARMOUR (LACE)": {
-      "sole_type": "STUCK-ON",
-      "sole_assumed": true,
+      "sole_type": "EVA",
+      "sole_assumed": false,
       "combo_order": [
         "8X10",
         "11X1",
@@ -151,7 +151,7 @@ export const INPUTS = {
       "routing": [
         "CUTTING",
         "STITCHING",
-        "ASSEMBLY",
+        "MOLDING",
         "PACKING",
         "DISPATCH"
       ],
@@ -2826,7 +2826,7 @@ export const INPUTS = {
   },
   "packing": {
     "REX GOLA PLUS": {
-      "7X10": 18,
+      "7X10": 24,
       "11X1": 18,
       "2X5": 18,
       "6X12B": 18
@@ -2859,5 +2859,42 @@ export const INPUTS = {
       "2X5": 799,
       "6X12B": 869
     }
+  },
+  "packing_singles": {
+    "GOLA": {
+      "kids": 24,
+      "adult": 18
+    },
+    "SMART BOY": {
+      "6-13": 48,
+      "1-5": 36,
+      "5.5": 24,
+      "6-12": 18
+    },
+    "SILKY BLY": {
+      "6-13": 48,
+      "1-5": 36,
+      "5.5-12": 24
+    },
+    "ARMOUR": {
+      "kids": 24,
+      "adult": 18
+    }
+  },
+  "packing_singles_by_article": {
+    "REX GOLA (V)": "GOLA",
+    "REX GOLA (L)": "GOLA",
+    "REX GOLA PLUS": "GOLA",
+    "SMART BOY (L) BLACK": "SMART BOY",
+    "SMART BOY (L) WHITE": "SMART BOY",
+    "SILKY BELLY BLACK": "SILKY BLY",
+    "SILKY BELLY WHITE": "SILKY BLY",
+    "JILL": "ARMOUR",
+    "ARMOUR": "ARMOUR",
+    "PERCY": "ARMOUR",
+    "SPADE": "ARMOUR",
+    "SPIKE": "ARMOUR",
+    "ARMOUR (VELCRO)": "ARMOUR",
+    "ARMOUR (LACE)": "ARMOUR"
   }
 };
