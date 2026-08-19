@@ -8,7 +8,7 @@ import { INPUTS } from "../shared/inputs.js";
 export default wrap(async (req, res) => {
   if(req.method === "GET"){
     const { rows } = await q(
-      `select id, order_no, dispatched, cartons, kind, note, dispatched_on
+      `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order
          from dispatches order by dispatched_on desc, id desc`);
     return res.status(200).json(rows.map(r => ({
       ...r,
@@ -18,7 +18,7 @@ export default wrap(async (req, res) => {
   }
 
   if(req.method === "POST"){
-    const { order_no, dispatched, cartons, kind, note, dispatched_on } = req.body || {};
+    const { order_no, dispatched, cartons, kind, note, dispatched_on, closes_order } = req.body || {};
     if(!order_no) return fail(res, 400, "order_no is required");
     if(!dispatched || typeof dispatched !== "object")
       return fail(res, 400, "dispatched must be { combo: pairs }");
@@ -49,14 +49,18 @@ export default wrap(async (req, res) => {
         return fail(res, 400, `${combo}: only ${remaining} pairs remain outstanding, cannot dispatch ${n}`);
       clean[combo] = n;
     }
-    if(!Object.keys(clean).length) return fail(res, 400, "nothing to dispatch");
+    // A closing dispatch may ship nothing at all — writing the whole remaining
+    // balance off short is legitimate. Any other dispatch must ship something.
+    if(!Object.keys(clean).length && !closes_order) return fail(res, 400, "nothing to dispatch");
 
-    const k = ["partial","full","shortage"].includes(kind) ? kind : "partial";
+    const k = closes_order ? "shortage"
+            : ["partial","full","shortage"].includes(kind) ? kind : "partial";
     const { rows } = await q(
-      `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on)
-       values ($1,$2,$3,$4,$5, coalesce($6::date, current_date))
-       returning id, order_no, dispatched, cartons, kind, note, dispatched_on`,
-      [order_no, JSON.stringify(clean), JSON.stringify(cartons || {}), k, note || null, dispatched_on || null]);
+      `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on, closes_order)
+       values ($1,$2,$3,$4,$5, coalesce($6::date, current_date), $7)
+       returning id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order`,
+      [order_no, JSON.stringify(clean), JSON.stringify(cartons || {}), k, note || null,
+       dispatched_on || null, !!closes_order]);
     return res.status(201).json(rows[0]);
   }
 

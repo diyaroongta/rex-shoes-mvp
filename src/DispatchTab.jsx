@@ -53,7 +53,7 @@ export default function DispatchTab({ orders, onChanged }){
 
   const list=Object.values(pending);
   const totals=list.reduce((a,r)=>({ord:a.ord+r.total_ordered,disp:a.disp+r.total_dispatched,
-    pend:a.pend+r.total_pending}),{ord:0,disp:0,pend:0});
+    pend:a.pend+r.total_pending,short:a.short+(r.shortfall||0)}),{ord:0,disp:0,pend:0,short:0});
 
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
@@ -61,10 +61,15 @@ export default function DispatchTab({ orders, onChanged }){
     setDraft(d);
   }
 
-  async function submit(rec){
+  async function submit(rec, closes=false){
     const dispatched={};
     for(const [c,v] of Object.entries(draft)){ const n=Number(v)||0; if(n>0) dispatched[c]=n; }
-    if(!Object.keys(dispatched).length){ setErr("Enter at least one quantity."); return; }
+    if(!Object.keys(dispatched).length && !closes){ setErr("Enter at least one quantity."); return; }
+    const short=rec.total_ordered-rec.total_dispatched-Object.values(dispatched).reduce((a,b)=>a+b,0);
+    if(closes && short>0 &&
+       !confirm(`Close ${rec.order.order_no} with ${fmt(short)} pairs never delivered?\n\n`+
+                `The balance stops counting as pending and is recorded as a shortage. This cannot be undone from here.`))
+      return;
     setBusy(true); setErr("");
     try{
       const cartons={};
@@ -72,8 +77,12 @@ export default function DispatchTab({ orders, onChanged }){
         const ppc=((INPUTS.packing||{})[rec.order.article]||{})[c];
         if(ppc) cartons[c]=v/ppc;
       }
-      await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons, kind, note });
-      await load(); setOpen(null); setMsg(`Packing report recorded for ${rec.order.order_no}.`);
+      await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
+        kind: closes ? "shortage" : kind, note, closes_order: closes });
+      await load(); setOpen(null);
+      setMsg(closes
+        ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
+        : `Packing report recorded for ${rec.order.order_no}.`);
       onChanged && onChanged();
     }catch(e){ setErr(String(e.message||e)); }
     finally{ setBusy(false); }
@@ -90,6 +99,7 @@ export default function DispatchTab({ orders, onChanged }){
       <span className="text-slate-500">Ordered <b className="mono text-slate-800">{fmt(totals.ord)}</b></span>
       <span className="text-slate-500">Dispatched <b className="mono text-emerald-700">{fmt(totals.disp)}</b></span>
       <span className="text-slate-500">Pending <b className="mono text-amber-700">{fmt(totals.pend)}</b></span>
+      {totals.short>0 && <span className="text-slate-500">Closed short <b className="mono text-rose-700">{fmt(totals.short)}</b></span>}
     </div>
 
     <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
@@ -112,11 +122,14 @@ export default function DispatchTab({ orders, onChanged }){
                   {fmt(rec.total_pending)}</td>
                 <td className="pl-3">
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{
-                    background: rec.status==="complete"?"#dcfce7":rec.status==="partial"?"#fef3c7":"#f1f5f9",
-                    color: rec.status==="complete"?"#166534":rec.status==="partial"?"#92400e":"#64748b"}}>
-                    {rec.status}</span></td>
+                    background: rec.status==="complete"?"#dcfce7":rec.status==="closed short"?"#ffe4e6"
+                               :rec.status==="partial"?"#fef3c7":"#f1f5f9",
+                    color: rec.status==="complete"?"#166534":rec.status==="closed short"?"#9f1239"
+                          :rec.status==="partial"?"#92400e":"#64748b"}}>
+                    {rec.status}</span>
+                  {rec.shortfall>0 && <div className="text-xs text-rose-700 mono">−{fmt(rec.shortfall)} short</div>}</td>
                 <td className="text-right">
-                  {rec.total_pending>0 && <button onClick={()=>open===rec.order.order_no?setOpen(null):startReport(rec)}
+                  {rec.total_pending>0 && !rec.closed && <button onClick={()=>open===rec.order.order_no?setOpen(null):startReport(rec)}
                     className="text-xs font-semibold text-indigo-700 hover:underline">
                     {open===rec.order.order_no?"Cancel":"Packing report"}</button>}</td>
               </tr>
@@ -161,13 +174,29 @@ export default function DispatchTab({ orders, onChanged }){
                         <input value={note} onChange={e=>setNote(e.target.value)}
                           placeholder={kind==="shortage"?"Reason for the shortage":"Vehicle, LR number, etc."}
                           className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1" /></label>
-                      <button disabled={busy} onClick={()=>submit(rec)}
+                      <button disabled={busy} onClick={()=>submit(rec,false)}
                         className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
                         {busy?"Recording…":"Record dispatch"}</button>
+                      <button disabled={busy} onClick={()=>submit(rec,true)}
+                        title="Dispatch what is entered above and close the order, accepting the rest as never coming"
+                        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-300 text-rose-700 bg-white disabled:opacity-50">
+                        Complete order despite shortage</button>
                     </div>
-                    {kind==="shortage" && <div className="text-xs text-amber-800 mt-2">
-                      Recorded as a shortage — the outstanding balance stays visible rather than being written off.
-                    </div>}
+                    {(() => {
+                      const entered=Object.values(draft).reduce((a,b)=>a+(Number(b)||0),0);
+                      const short=rec.total_pending-entered;
+                      return short>0 ? (
+                        <div className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5 mt-2">
+                          <b>Complete order despite shortage</b> ships the {fmt(entered)} pairs entered above and closes
+                          {" "}{rec.order.order_no} with <b>{fmt(short)} pairs</b> never delivered. The balance stops
+                          counting as pending; the shortfall stays on record against the order.
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-500 mt-2">
+                          Nothing outstanding once this is recorded — either button completes the order.
+                        </div>
+                      );
+                    })()}
                   </div>
                 </td></tr>
               )}
@@ -190,7 +219,7 @@ export default function DispatchTab({ orders, onChanged }){
               <tr key={d.id} className="border-t border-slate-100">
                 <td className="py-1 mono">{d.dispatched_on}</td>
                 <td className="mono">{d.order_no}</td>
-                <td>{d.kind}</td>
+                <td>{d.closes_order ? <span className="text-rose-700 font-semibold">closed short</span> : d.kind}</td>
                 <td className="mono">{Object.entries(d.dispatched).map(([c,v])=>`${c}:${fmt(v)}`).join("  ")}</td>
                 <td className="text-slate-500">{d.note||""}</td>
               </tr>))}

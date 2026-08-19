@@ -403,6 +403,30 @@ the original PI/596 reconciliation tests are unaffected.
 Article photos come from the Catalogue tab — upload one per article there and it flows into
 every invoice for that article automatically.
 
+## Interface
+
+Thirteen screens is past what a row of tabs can carry, so navigation is a grouped sidebar:
+
+- **Orders** — PI generation, Bulk upload, Orders &amp; dispatch, Dispatch &amp; packing
+- **Production** — Schedule, Production plan, Machine load
+- **Materials** — Procurement, Stock register
+- **Setup** — Parties &amp; terms, Catalogue, Data &amp; BOM
+
+Copilot sits on its own at the foot of the sidebar. On narrow screens the sidebar collapses to a
+grouped dropdown.
+
+**Sidebar badges show work outstanding** — orders at risk, materials short — so the nav answers
+"what needs me?" without opening anything. They are driven by live computed state, not decoration.
+
+The five KPI cards became three figures in a sticky header alongside the view's name and a line
+saying what the screen is for. That reclaims most of a screenful of vertical space on every view.
+
+Type is deliberate rather than default: **Barlow Condensed** for labels and headings (the
+condensed caps of factory signage), **Inter** for body, **IBM Plex Mono** with tabular figures
+for every number — the numbers are the content here, so they get their own face and stay aligned
+in columns. The palette is steel navy against near-white with a working blue accent; warm ambers
+and rose are reserved for genuine attention states so they still mean something.
+
 ## Work centres and routing
 
 Seven stages, eleven work centres:
@@ -460,6 +484,13 @@ hiding the whole range; and pack quantity didn't recognise the `s` suffix on kid
 **Dispatch & packing** tab. A packing report records what actually shipped against an order, by
 size range, as **partial**, **full**, or **shortage**. Pending = ordered − dispatched, shown in
 pairs and (where a packing chart exists) in cartons.
+
+**Complete order despite shortage** closes an order with part of it never delivered. It ships
+whatever is entered, then stops the balance counting as pending — but records it as a
+**shortfall** against the order rather than erasing it, because an order closed 40 pairs short
+must still be answerable for those 40. The panel states the exact shortfall before you confirm,
+and confirms again on click. Closing an order that is already fully shipped reads "complete",
+not "closed short".
 
 Dispatches are their own table and never edit the order, so what was ordered stays auditable
 against what shipped. The API refuses a dispatch for a size range that isn't on the order, or

@@ -128,44 +128,144 @@ export default function App(){
     finally{ setAiBusy(false); }
   }
 
-  if(!orders || !state) return <div className="min-h-screen flex items-center justify-center" style={{background:"#eef0f4",fontFamily:"Inter,system-ui,sans-serif"}}>
-    <div className="text-slate-500 text-sm">Loading the order sheet…</div></div>;
+  if(!orders || !state) return <div className="min-h-screen flex items-center justify-center"
+      style={{background:"#F6F8FA",fontFamily:"Inter,system-ui,sans-serif",color:"#6B7C90",fontSize:14}}>
+    Loading the order sheet…</div>;
 
   const t = state.totals;
+
+  /* Grouped navigation. Badges show work actually outstanding, so the sidebar
+     answers "what needs me?" without opening anything. */
+  const lateCount = state.orders.filter(o=>o.sla!=="on_track").length;
+  const nav = [
+    ["Orders", [
+      ["intake","PI generation"],
+      ["bulk","Bulk upload"],
+      ["orders","Orders & dispatch", {n:lateCount, tone:"#BE123C"}],
+      ["dispatch","Dispatch & packing"],
+    ]],
+    ["Production", [
+      ["schedule","Schedule"],
+      ["plan","Production plan"],
+      ["machines","Machine load"],
+    ]],
+    ["Materials", [
+      ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
+      ["stock","Stock register"],
+    ]],
+    ["Setup", [
+      ["parties","Parties & terms"],
+      ["catalogue","Catalogue"],
+      ["data","Data & BOM"],
+    ]],
+  ];
+
   const errBanner = loadErr ? <div className="text-xs rounded-xl border border-red-200 bg-red-50 text-red-800 px-3 py-2 mb-3">
     Could not reach the server: {loadErr}. Check that <code className="mono">DATABASE_URL</code> is set and the schema has been applied.
   </div> : null;
   return (
-    <div className="min-h-screen w-full text-slate-800" style={{background:"#eef0f4",fontFamily:"Inter,system-ui,sans-serif"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap');
-        .serif{font-family:'Fraunces',Georgia,serif} .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
-        *::-webkit-scrollbar{height:8px;width:8px} *::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}`}</style>
+    <div className="min-h-screen w-full" style={{background:"var(--paper)",color:"var(--text)",fontFamily:"Inter,system-ui,sans-serif"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+        :root{
+          --ink:#0F2233; --ink-2:#183149; --ink-3:#24425E;
+          --paper:#F6F8FA; --card:#FFFFFF; --rule:#E4E9F0;
+          --text:#1B2836; --muted:#6B7C90;
+          --accent:#0B6BCB; --warn:#B45309; --bad:#BE123C; --good:#047857;
+        }
+        /* Factory signage vernacular: condensed caps for labels, monospace for
+           every figure. The numbers are the content here, so they get their
+           own face rather than sharing the body font. */
+        .sign{font-family:'Barlow Condensed',Inter,sans-serif;letter-spacing:.06em;text-transform:uppercase}
+        .serif{font-family:'Barlow Condensed',Inter,sans-serif;letter-spacing:.01em}
+        .mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums}
+        *::-webkit-scrollbar{height:8px;width:8px}
+        *::-webkit-scrollbar-thumb{background:#C3CDD9;border-radius:4px}
+        .navitem{display:flex;align-items:center;gap:.5rem;width:100%;text-align:left;
+          padding:.44rem .7rem;border-radius:7px;font-size:13.5px;color:#B9C7D6;
+          transition:background .12s,color .12s}
+        .navitem:hover{background:#183149;color:#fff}
+        .navitem[data-on="1"]{background:#0B6BCB;color:#fff;font-weight:600}
+        .navitem:focus-visible{outline:2px solid #7DB3F0;outline-offset:1px}
+        .navbadge{margin-left:auto;font-size:10.5px;padding:1px 6px;border-radius:99px;
+          font-family:'IBM Plex Mono',monospace;font-weight:600;color:#fff}
+        @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+      `}</style>
 
-      <div className="max-w-6xl mx-auto px-4 pt-6 pb-24">
-        <div className="flex items-baseline justify-between gap-3 flex-wrap mb-1">
-          <h1 className="serif text-3xl font-semibold tracking-tight">Factory OS</h1>
-          <span className="mono text-xs tracking-widest uppercase text-emerald-800 bg-emerald-50 px-3 py-1.5 rounded-full">Clean slate · Photo → PI → Plan</span>
-        </div>
-        <p className="text-slate-500 text-sm mb-2">Starts empty. Every order in the plan below came from a photograph you added — nothing pre-loaded.</p>
-        <div className="text-xs rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-4">
-          <b>Real:</b> articles, combos, material rates (from your BOM file), packing chart. <b>Placeholder:</b> stock, capacities, prices. Order sheet is stored locally — swaps to Google Sheets in production.
-          {state.schedule_problems.length>0 && <div className="text-red-700 font-semibold mt-1">⚠ {state.schedule_problems.join("; ")}</div>}
+      <div style={{display:"flex",minHeight:"100vh"}}>
+
+        <aside className="hidden md:flex"
+               style={{background:"#0F2233",width:212,flexShrink:0,flexDirection:"column",
+                       position:"sticky",top:0,height:"100vh"}}>
+          <div style={{padding:"18px 16px 14px"}}>
+            <div className="sign" style={{color:"#fff",fontSize:19,fontWeight:700,lineHeight:1}}>Factory OS</div>
+            <div className="mono" style={{color:"#7B8FA6",fontSize:10,marginTop:5}}>
+              {fmt(t.orders)} live · {fmt(t.total_pairs)} pairs
+            </div>
+          </div>
+
+          <nav style={{padding:"0 10px",overflowY:"auto",flex:1}}>
+            {nav.map(([group,items])=>(
+              <div key={group} style={{marginBottom:14}}>
+                <div className="sign" style={{color:"#5C7A99",fontSize:10,padding:"0 8px 5px",fontWeight:600}}>{group}</div>
+                {items.map(([k,label,badge])=>(
+                  <button key={k} onClick={()=>setTab(k)} data-on={tab===k?"1":"0"} className="navitem">
+                    <span>{label}</span>
+                    {badge && badge.n>0 && <span className="navbadge" style={{background:badge.tone}}>{badge.n}</span>}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+
+          <div style={{padding:10,borderTop:"1px solid #183149"}}>
+            <button onClick={()=>setTab("copilot")} data-on={tab==="copilot"?"1":"0"} className="navitem">
+              <span>Ask the copilot</span>
+            </button>
+          </div>
+        </aside>
+
+        <div className="md:hidden" style={{position:"sticky",top:0,zIndex:20,background:"#0F2233",padding:"10px 12px"}}>
+          <div className="sign" style={{color:"#fff",fontSize:16,fontWeight:700,marginBottom:8}}>Factory OS</div>
+          <select value={tab} onChange={e=>setTab(e.target.value)}
+            style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #24425E",
+                    background:"#183149",color:"#fff",fontSize:14}}>
+            {nav.map(([group,items])=>(
+              <optgroup key={group} label={group}>
+                {items.map(([k,label])=><option key={k} value={k}>{label}</option>)}
+              </optgroup>
+            ))}
+            <option value="copilot">Ask the copilot</option>
+          </select>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
-          <Kpi label="Live orders" value={fmt(t.orders)} />
-          <Kpi label="Total pairs" value={fmt(t.total_pairs)} />
-          <Kpi label="Last dispatch" value={niceDate(t.last_dispatch)} />
-          <Kpi label="At risk / breach" value={`${t.sla.at_risk} / ${t.sla.breach}`} color={t.sla.breach?"#dc2626":t.sla.at_risk?"#c2410c":"#0f9d6b"} />
-          <Kpi label="To procure" value={`${state.procurement.length} items`} color={state.procurement.length?"#c2410c":"#0f9d6b"} />
-        </div>
+        <main style={{flex:1,minWidth:0}}>
+          <header style={{background:"#fff",borderBottom:"1px solid #E4E9F0",padding:"13px 22px",
+                          display:"flex",alignItems:"center",gap:16,flexWrap:"wrap",
+                          position:"sticky",top:0,zIndex:10}}>
+            <div>
+              <h1 className="serif" style={{fontSize:21,fontWeight:600,margin:0,letterSpacing:"-.01em"}}>
+                {(VIEWS[tab]||{}).title || "Factory OS"}
+              </h1>
+              <div style={{fontSize:12,color:"#6B7C90",marginTop:1}}>{(VIEWS[tab]||{}).sub || ""}</div>
+            </div>
+            <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap"}}>
+              <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
+              <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
+                    tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />
+              <Stat label="To procure" value={state.procurement.length}
+                    tone={state.procurement.length?"#B45309":"#047857"} />
+            </div>
+          </header>
 
-        <div className="flex gap-2 mb-4 flex-wrap">
-          {[["intake","➕ PI generation"],["bulk","Bulk upload"],["orders","Orders & dispatch"],["schedule","Schedule"],["plan","Production plan"],["procurement","Procurement"],["dispatch","Dispatch & packing"],["stock","Stock register"],["machines","Machine load"],["parties","Parties & terms"],["catalogue","Catalogue"],["data","Data & BOM"],["copilot","AI copilot"]].map(([k,l])=>(
-            <button key={k} onClick={()=>setTab(k)} className="text-sm font-semibold rounded-lg px-3.5 py-2 border transition-colors"
-              style={{background:tab===k?"#4f46e5":"#fff",color:tab===k?"#fff":"#475569",borderColor:tab===k?"#4f46e5":"#e2e8f0"}}>{l}</button>
-          ))}
-        </div>
+          {state.schedule_problems.length>0 && (
+            <div style={{margin:"14px 22px 0",padding:"9px 12px",borderRadius:8,fontSize:12.5,
+                         background:"#FFF1F2",border:"1px solid #FECDD3",color:"#9F1239"}}>
+              {state.schedule_problems.join("; ")}
+            </div>
+          )}
+
+          <div style={{padding:"18px 22px 60px"}}>
 
         {tab==="intake" && <NewOrderFlow onSaved={addOrders} />}
         {tab==="orders" && <>
@@ -185,6 +285,8 @@ export default function App(){
         {tab==="catalogue" && <CatalogueTab />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
+          </div>
+        </main>
       </div>
     </div>
   );
@@ -739,11 +841,32 @@ function NewOrderFlow({onSaved}){
     </div>}
   </div>;
 }
-function Kpi({label,value,color}){
-  return <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm">
-    <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold">{label}</div>
-    <div className="serif text-2xl font-semibold mt-1" style={{color}}>{value}</div></div>;
+/* One line of orientation per view — what this screen is for, in the user's
+   terms rather than the system's. */
+const VIEWS = {
+  intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
+  bulk:        {title:"Bulk upload",        sub:"Add many orders at once from a spreadsheet"},
+  orders:      {title:"Orders & dispatch",  sub:"Every live order, its dispatch date and delivery risk"},
+  dispatch:    {title:"Dispatch & packing", sub:"Record what shipped and what is still outstanding"},
+  schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
+  plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
+  machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
+  procurement: {title:"Procurement",        sub:"What to buy, netted against stock"},
+  stock:       {title:"Stock register",     sub:"Opening, received, issued and what is left"},
+  parties:     {title:"Parties & terms",    sub:"Customers and their agreed commercial terms"},
+  catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
+  data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},
+  copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
+};
+
+/* A single figure in the header bar. Label small and quiet, number loud. */
+function Stat({label,value,tone}){
+  return <div>
+    <div className="sign" style={{fontSize:9.5,color:"#8494A6",fontWeight:600}}>{label}</div>
+    <div className="mono" style={{fontSize:15,fontWeight:600,color:tone||"#1B2836",lineHeight:1.25}}>{value}</div>
+  </div>;
 }
+
 function Pill({status}){
   return <span className="mono text-xs font-semibold px-2 py-0.5 rounded-full" style={{color:SLA_COLOR[status],background:status==="on_track"?"#ecfdf5":status==="at_risk"?"#fff7ed":"#fef2f2"}}>{SLA_LABEL[status]}</span>;
 }

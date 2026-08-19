@@ -80,3 +80,8 @@ create table if not exists parties (
   active            boolean not null default true,
   updated_at        timestamptz not null default now()
 );
+
+-- Closing an order short: the balance is accepted as never coming, so it stops
+-- counting as pending. The shortfall stays recorded rather than being erased —
+-- an order closed 40 pairs short must still be answerable for those 40.
+alter table dispatches add column if not exists closes_order boolean not null default false;
