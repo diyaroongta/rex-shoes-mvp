@@ -55,7 +55,10 @@ export default wrap(async (req, res) => {
            values ('JO' || nextval('order_no_seq'), $1, $2, $3, $4, $5, $6)
            returning order_no, order_date, article_code, priority, party, lines, pi`,
           [d.order_date, d.article_code, Number(d.priority), d.party || "—",
-           JSON.stringify(d.lines), JSON.stringify(d.pi || {})]);
+           JSON.stringify(d.lines),
+           JSON.stringify({ ...(d.pi || {}),
+             stitching: d.stitching || "inhouse",
+             printing: !!d.printing })]);
         out.push(row(rows[0]));
       }
       await client.query("commit");

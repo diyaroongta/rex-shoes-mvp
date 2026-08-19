@@ -17,7 +17,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -150,7 +152,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -271,7 +275,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -443,7 +449,8 @@ export const INPUTS = {
             }
           }
         }
-      }
+      },
+      "molding_machine": null
     },
     "REX GOLA (L)": {
       "sole_type": "PVC",
@@ -458,7 +465,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -606,7 +615,8 @@ export const INPUTS = {
             }
           }
         }
-      }
+      },
+      "molding_machine": null
     },
     "SILKY BELLY BLACK": {
       "sole_type": "PVC",
@@ -621,7 +631,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -723,7 +735,8 @@ export const INPUTS = {
             }
           }
         }
-      }
+      },
+      "molding_machine": null
     },
     "SILKY BELLY WHITE": {
       "sole_type": "PVC",
@@ -738,7 +751,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -840,7 +855,8 @@ export const INPUTS = {
             }
           }
         }
-      }
+      },
+      "molding_machine": null
     },
     "SMART BOY (L) BLACK": {
       "sole_type": "PVC",
@@ -854,7 +870,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -956,7 +974,8 @@ export const INPUTS = {
             }
           }
         }
-      }
+      },
+      "molding_machine": null
     },
     "SMART BOY (L) WHITE": {
       "sole_type": "PVC",
@@ -970,7 +989,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -1072,7 +1093,8 @@ export const INPUTS = {
             }
           }
         }
-      }
+      },
+      "molding_machine": null
     },
     "JILL": {
       "sole_type": "EVA",
@@ -1086,7 +1108,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -1315,7 +1339,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -1550,7 +1576,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -1785,7 +1813,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -1995,7 +2025,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -2219,7 +2251,9 @@ export const INPUTS = {
       ],
       "routing": [
         "CUTTING",
+        "PREPARATION",
         "STITCHING",
+        "UPPER_QC",
         "MOLDING",
         "PACKING",
         "DISPATCH"
@@ -2241,7 +2275,8 @@ export const INPUTS = {
           "stitching_combo": "6X12B",
           "rates": {}
         }
-      }
+      },
+      "molding_machine": null
     }
   },
   "materials": {
@@ -2798,17 +2833,50 @@ export const INPUTS = {
       "capacity_per_day": 2500,
       "sole_type": null
     },
+    "PREPARATION": {
+      "name": "Preparation & printing",
+      "stage": "PREPARATION",
+      "capacity_per_day": 2000,
+      "sole_type": null
+    },
     "STITCHING": {
       "name": "Stitching lines",
       "stage": "STITCHING",
       "capacity_per_day": 2000,
       "sole_type": null
     },
-    "MOLDING": {
-      "name": "Sole molding machine",
+    "UPPER_QC": {
+      "name": "Upper QC & preparation",
+      "stage": "UPPER_QC",
+      "capacity_per_day": 2200,
+      "sole_type": null
+    },
+    "MOLDING_PVC_ROTARY": {
+      "name": "PVC rotary",
       "stage": "MOLDING",
       "capacity_per_day": 1200,
-      "sole_type": null,
+      "sole_type": "PVC",
+      "exclusive": true
+    },
+    "MOLDING_PVC_VERTICAL": {
+      "name": "PVC vertical",
+      "stage": "MOLDING",
+      "capacity_per_day": 1000,
+      "sole_type": "PVC",
+      "exclusive": true
+    },
+    "MOLDING_PU": {
+      "name": "PU molding",
+      "stage": "MOLDING",
+      "capacity_per_day": 1000,
+      "sole_type": "PU",
+      "exclusive": true
+    },
+    "MOLDING_EVA": {
+      "name": "EVA molding",
+      "stage": "MOLDING",
+      "capacity_per_day": 1500,
+      "sole_type": "EVA",
       "exclusive": true
     },
     "ASSEMBLY_STUCK-ON": {
@@ -2818,9 +2886,15 @@ export const INPUTS = {
       "sole_type": "STUCK-ON"
     },
     "PACKING": {
-      "name": "Packing & dispatch",
+      "name": "Packing",
       "stage": "PACKING",
       "capacity_per_day": 3000,
+      "sole_type": null
+    },
+    "DISPATCH": {
+      "name": "Dispatch",
+      "stage": "DISPATCH",
+      "capacity_per_day": 4000,
       "sole_type": null
     }
   },
@@ -2896,5 +2970,11 @@ export const INPUTS = {
     "SPIKE": "ARMOUR",
     "ARMOUR (VELCRO)": "ARMOUR",
     "ARMOUR (LACE)": "ARMOUR"
+  },
+  "lead_time_rules": {
+    "stitching_inhouse_prep_days": 1,
+    "stitching_outside_transport_days": 2,
+    "printing_days": 1,
+    "_note": "PLACEHOLDER day counts \u2014 confirm with the factory before trusting any date."
   }
 };

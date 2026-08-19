@@ -3,16 +3,46 @@
    function, and in tests/engine.test.mjs. Keep it that way.
    Verified against the tested Python backend. */
 /* ------------- engines (verified against Python backend) ------------- */
-export const TARGETS = {CUTTING:8,STITCHING:15,PRINTING:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30};
+/* Day offsets from the order date by which each stage should finish.
+   PLACEHOLDERS — they encode a 30-day promise nobody has confirmed. Editable
+   in Machine load; PREPARATION and UPPER_QC are new and slot between their
+   neighbours until the factory gives real figures. */
+export const TARGETS = {CUTTING:8,PREPARATION:11,STITCHING:15,UPPER_QC:18,PRINTING:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30};
 export const RANK = {on_track:0,at_risk:1,breach:2};
 export const round2 = (n,d)=>{const f=10**d;return Math.round(n*f)/f;};
 export const dayIndex = (iso,origin)=>Math.round((new Date(iso)-new Date(origin))/86400000);
 export const fromDay = (i,origin)=>{const d=new Date(origin);d.setUTCDate(d.getUTCDate()+i);return d.toISOString().slice(0,10);};
 // MOLDING is ONE physical machine shared by every sole type (PVC/PU/EVA) —
 // it is never split by sole. ASSEMBLY (stuck-on sole sticking) stays its own line.
-export const wcFor = (stage, sole)=> stage==="MOLDING" ? "MOLDING" : stage==="ASSEMBLY" ? `ASSEMBLY_${sole}` : stage;
+/* Molding is several distinct machines, not one. Which one an order uses
+   depends on its sole type, and for PVC on the article's assigned machine
+   (rotary or vertical) — that assignment is factory knowledge, so when it is
+   missing we fall back to rotary AND report it rather than guessing silently. */
+export const MOLDING_BY_SOLE = {
+  EVA:"MOLDING_EVA", PU:"MOLDING_PU",
+  PVC_ROTARY:"MOLDING_PVC_ROTARY", PVC_VERTICAL:"MOLDING_PVC_VERTICAL",
+};
 
-export function route(a){ return a.routing.map(st=>[st, wcFor(st,a.sole_type), st==="DISPATCH"?"instant":"normal"]); }
+export function wcFor(stage, sole, article){
+  if(stage === "ASSEMBLY") return `ASSEMBLY_${sole}`;
+  if(stage !== "MOLDING")  return stage;
+  if(sole === "STUCK-ON")  return "ASSEMBLY_STUCK-ON";
+  if(sole === "PVC"){
+    const m = article && article.molding_machine;
+    if(m === "VERTICAL") return "MOLDING_PVC_VERTICAL";
+    return "MOLDING_PVC_ROTARY";            // default; flagged via moldingUnassigned
+  }
+  return MOLDING_BY_SOLE[sole] || "MOLDING_EVA";
+}
+
+/* True when a PVC article has not been told which machine it runs on. */
+export const moldingUnassigned = a =>
+  a.sole_type === "PVC" && !a.molding_machine;
+
+/* DISPATCH is now a real stage with its own capacity, not an instant marker. */
+export function route(a){
+  return a.routing.map(st => [st, wcFor(st, a.sole_type, a), "normal"]);
+}
 
 export function orderReq(order, article){
   const req={};
@@ -36,10 +66,26 @@ export function netting(total, materials){
     return {material_key:m,name:mat.name,uom:mat.uom,required:round2(req,2),stock:round2(mat.stock,2),
             shortfall:round2(Math.max(0,req-mat.stock),2)}; });
 }
+/* Extra days an order carries before production can flow: outside stitching
+   needs transport out and back, in-house needs a preparation window, and
+   printing adds its own. Comes off the order, since two orders for the same
+   article can be stitched differently. */
+export function extraLeadDays(order, rules){
+  if(!rules) return 0;
+  let d = 0;
+  const st = (order && order.stitching) || "inhouse";
+  if(st === "outside") d += Number(rules.stitching_outside_transport_days) || 0;
+  else                 d += Number(rules.stitching_inhouse_prep_days) || 0;
+  if(order && order.printing) d += Number(rules.printing_days) || 0;
+  return d;
+}
+
 export function schedule(orders, articles, wcs, origin, horizon=1500){
   const used={};
   const busy={};   // exclusive machines: [{start,end,order_no}] blocks already taken
-  const rel=o=>Math.max(0,dayIndex(o.order_date,origin));
+  // Release day = order date + whatever the order's own routing costs before
+  // production can start (outside stitching transport, printing, prep).
+  const rel=o=>Math.max(0,dayIndex(o.order_date,origin)) + extraLeadDays(o, (wcs && wcs._lead_time_rules) || null);
   const ordered=[...orders].sort((a,b)=>a.priority-b.priority||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)||(a.order_no<b.order_no?-1:1));
   const res={};
   for(const o of ordered){

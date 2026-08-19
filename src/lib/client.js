@@ -31,6 +31,17 @@ export const putSettings = patch   => j("/api/settings", {
   method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(patch)
 });
 
+/* ---- parties and their commercial terms ---- */
+export const listParties = ()   => j("/api/parties");
+export const saveParty   = p    => j("/api/parties", {
+  method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(p) });
+export const removeParty = name => j(`/api/parties?name=${encodeURIComponent(name)}`, { method:"DELETE" });
+
+/* ---- dispatch / packing reports ---- */
+export const listDispatches  = ()      => j("/api/dispatches");
+export const addDispatch     = d       => post("/api/dispatches", d);
+export const deleteDispatch  = id      => j(`/api/dispatches?id=${id}`, { method:"DELETE" });
+
 /* ---- reference data (articles, BOM rates, materials, packing) ---- */
 export const getReference   = ()        => j("/api/reference");
 export const uploadBom      = payload   => post("/api/reference", payload);

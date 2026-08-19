@@ -105,6 +105,20 @@ export default wrap(async (req, res) => {
         ref.mrp[art] = clean;
       }
     }
+    /* Which PVC machine an article runs on. Factory knowledge — settable here
+       rather than guessed, since an unassigned article silently defaults to
+       rotary and makes that machine look like a bottleneck it may not be. */
+    if(req.body.molding_machine && typeof req.body.molding_machine === "object"){
+      for(const [art, machine] of Object.entries(req.body.molding_machine)){
+        if(!ref.articles[art]) return fail(res, 400, `unknown article: ${art}`);
+        if(machine === null || machine === ""){ ref.articles[art].molding_machine = null; continue; }
+        if(!["ROTARY","VERTICAL"].includes(machine))
+          return fail(res, 400, `molding machine for ${art} must be ROTARY or VERTICAL`);
+        if(ref.articles[art].sole_type !== "PVC")
+          return fail(res, 400, `${art} is ${ref.articles[art].sole_type}, not PVC — it has only one molding machine`);
+        ref.articles[art].molding_machine = machine;
+      }
+    }
     if(sole_type && typeof sole_type === "object"){
       for(const [art, st] of Object.entries(sole_type)){
         if(!ref.articles[art]) return fail(res, 400, `unknown article: ${art}`);

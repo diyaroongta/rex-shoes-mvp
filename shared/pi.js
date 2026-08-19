@@ -11,7 +11,10 @@ export const ROLL_B  = ["6","7","8","9","10","11","12","13"];
 
 export function comboSizes(combo){
   if(!combo) return [];
-  const c = String(combo).toUpperCase().trim();
+  let c = String(combo).toUpperCase().trim();
+  // A trailing "S" marks the small/kids run of an otherwise ordinary range
+  // (7X10S == 7X10). Without stripping it the range explodes to nothing.
+  if(/[0-9]S$/.test(c)) c = c.slice(0,-1);
   if(c.endsWith("B")){
     const [a,b] = c.slice(0,-1).split("X");
     const i = ROLL_B.indexOf(a), j = ROLL_B.indexOf(b);

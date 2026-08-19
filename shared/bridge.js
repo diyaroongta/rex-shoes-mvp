@@ -175,8 +175,15 @@ export function singlePackQty(article, size){
   const section = (ref.packing_singles_by_article || {})[article];
   const chart = section && (ref.packing_singles || {})[section];
   if(!chart || !size) return null;
-  const pos = ROLL_KY.indexOf(String(size));
+  // Kids sizes are written with an "s" (8s); the roll itself holds bare
+  // numerals. Strip it and force the kids band, since a bare "8" could
+  // otherwise be the adult repeat further along the roll.
+  const raw = String(size).trim();
+  const isKids = /[0-9]s$/i.test(raw);
+  const bare = isKids ? raw.slice(0,-1) : raw;
+  let pos = ROLL_KY.indexOf(bare);
   if(pos < 0) return null;
+  if(isKids && pos > 7) return null;
   // kids run: positions 0-7 (6..13); adult run: 8-13 (1..5,5.5) then the
   // repeated adult roll printed again as 6..12 further along the sheet.
   if(chart.kids != null || chart.adult != null) return pos <= 7 ? chart.kids : chart.adult;

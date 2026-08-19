@@ -13,7 +13,7 @@ const DEFAULT_PI_TERMS = {
   gst_pct: 5, gst_label:"GST", payment_split_pct: 50, dispatch_timeline:"45 days",
 };
 
-const DEFAULT_TARGETS = { CUTTING:8, STITCHING:15, PRINTING:18, MOLDING:22, ASSEMBLY:22, PACKING:28, DISPATCH:30 };
+const DEFAULT_TARGETS = { CUTTING:8, PREPARATION:11, STITCHING:15, UPPER_QC:18, PRINTING:18, MOLDING:22, ASSEMBLY:22, PACKING:28, DISPATCH:30 };
 
 const DEFAULTS = () => {
   const capacities = {};

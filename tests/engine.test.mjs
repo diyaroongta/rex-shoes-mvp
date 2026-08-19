@@ -31,12 +31,17 @@ test("dates, SLA and one material rate", () => {
                    priority:2, party:"Test", lines:[{ combo:"6X8", qty:960 }] }]);
   const o = s.orders[0];
   assert.equal(o.qty, 960);
-  assert.equal(o.dispatch_date, "2026-07-09");
+  // 7 stages now: PREPARATION and UPPER_QC were added, and DISPATCH is a real
+  // stage with capacity rather than an instant marker — so a single order takes
+  // 3 days longer end to end than under the old 5-stage model.
+  assert.equal(o.dispatch_date, "2026-07-12");
   assert.equal(o.sla, "on_track");
   assert.deepEqual(o.stages.map(x => x.stage),
-    ["CUTTING","STITCHING","MOLDING","PACKING","DISPATCH"]);
+    ["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","PACKING","DISPATCH"]);
   assert.deepEqual(o.stages.map(x => x.start_date),
-    ["2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-09"]);
+    ["2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-11","2026-07-12"]);
+  // a PVC article with no machine assigned falls back to rotary
+  assert.equal(o.stages.find(x => x.stage === "MOLDING").work_center, "MOLDING_PVC_ROTARY");
   // 0.065037 per pair x 960 pairs = 62.44 MTR
   const m = s.netted.find(r => r.material_key === "REXION 1.5MM FRENZY (HEAVY) BLACK||MTR");
   assert.equal(m.required, 62.44);
@@ -44,28 +49,35 @@ test("dates, SLA and one material rate", () => {
   assert.deepEqual(s.schedule_problems, []);
 });
 
-console.log("\nC — the molding machine is ONE machine");
-test("every sole type queues sequentially on the one molding machine", () => {
+console.log("\nC — each molding machine is exclusive");
+test("sole types route to their own machine, and each machine runs one order at a time", () => {
   const s = run([
     { order_no:"JO1", order_date:"2026-07-26", article_code:"SMART BOY (L) BLACK", priority:2, party:"A", lines:[{combo:"6X8",  qty:3600}] },
     { order_no:"JO2", order_date:"2026-07-26", article_code:"SILKY BELLY BLACK",   priority:2, party:"B", lines:[{combo:"6X8",  qty:3000}] },
     { order_no:"JO3", order_date:"2026-07-26", article_code:"REX GOLA (V)",        priority:2, party:"C", lines:[{combo:"8X10", qty:4500}] },
     { order_no:"JO4", order_date:"2026-07-26", article_code:"ARMOUR (VELCRO)",     priority:2, party:"D", lines:[{combo:"8X10", qty:3600}] },
   ]);
-  const blocks = [];
+  // Molding is now several machines. PVC orders queue on the PVC machine,
+  // EVA orders on the EVA machine — and the two run in PARALLEL with each
+  // other, which is the whole point of splitting them.
+  const byCentre = {};
   for(const o of s.orders)
     for(const st of o.stages)
-      if(st.work_center === "MOLDING" && !st.instant) blocks.push([st.start, st.end, o.order_no]);
-  blocks.sort((a,b) => a[0] - b[0]);
-  // Since the client's catalogue confirmed Armour is EVA (not stuck-on), every
-  // article molds — so all four orders contend for the single molding machine.
-  assert.equal(blocks.length, 4, "all four articles mold");
-  for(let i = 1; i < blocks.length; i++)
-    assert.ok(blocks[i][0] > blocks[i-1][1],
-      `${blocks[i][2]} overlaps ${blocks[i-1][2]} — molding is one machine`);
-  // no article routes to sole sticking any more
-  const anyAssembly = s.orders.some(o => o.stages.some(x => x.work_center === "ASSEMBLY_STUCK-ON"));
-  assert.equal(anyAssembly, false, "sole sticking is unused now that Armour is EVA");
+      if(st.stage === "MOLDING")
+        (byCentre[st.work_center] = byCentre[st.work_center] || []).push([st.start, st.end, o.order_no]);
+
+  assert.ok(Object.keys(byCentre).length >= 2, "orders must reach more than one molding machine");
+  for(const [centre, blocks] of Object.entries(byCentre)){
+    blocks.sort((a,b) => a[0] - b[0]);
+    for(let i = 1; i < blocks.length; i++)
+      assert.ok(blocks[i][0] > blocks[i-1][1],
+        `${blocks[i][2]} overlaps ${blocks[i-1][2]} on ${centre} — each machine runs one order at a time`);
+  }
+  // every article passes through the two new stages
+  for(const o of s.orders){
+    assert.ok(o.stages.some(x => x.stage === "PREPARATION"), `${o.order_no} must be prepared`);
+    assert.ok(o.stages.some(x => x.stage === "UPPER_QC"), `${o.order_no} must pass upper QC`);
+  }
 });
 
 console.log("\nD — contention invariants (the ones that matter)");

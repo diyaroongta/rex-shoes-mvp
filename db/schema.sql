@@ -47,3 +47,36 @@ create table if not exists catalogue (
   price        numeric,
   updated_at   timestamptz not null default now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Dispatch / packing reports. One row per dispatch event against an order, so
+-- an order can be shipped in several parts. Pending = ordered − dispatched.
+create table if not exists dispatches (
+  id          serial primary key,
+  order_no    text        not null references orders(order_no) on delete cascade,
+  dispatched  jsonb       not null,          -- { combo: pairs } actually shipped
+  cartons     jsonb,                         -- { combo: cartons } as packed
+  kind        text        not null default 'partial'
+                check (kind in ('partial','full','shortage')),
+  note        text,
+  dispatched_on date      not null default current_date,
+  created_at  timestamptz not null default now()
+);
+create index if not exists dispatches_order_idx on dispatches (order_no);
+
+-- ---------------------------------------------------------------------------
+-- Parties (customers) and their commercial terms. Terms are set here and are
+-- NOT editable on an individual PI — that is the point: an invoice must not be
+-- able to quietly deviate from the agreed discount or payment schedule.
+create table if not exists parties (
+  name              text primary key,
+  city              text,
+  discount_pct      numeric not null default 40,
+  deductions        jsonb   not null default '[]'::jsonb,   -- [{label, pct}] in order
+  gst_pct           numeric not null default 5,
+  payment_split_pct numeric not null default 50,
+  dispatch_timeline text    not null default '45 days',
+  order_nature      text,
+  active            boolean not null default true,
+  updated_at        timestamptz not null default now()
+);

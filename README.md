@@ -403,6 +403,76 @@ the original PI/596 reconciliation tests are unaffected.
 Article photos come from the Catalogue tab — upload one per article there and it flows into
 every invoice for that article automatically.
 
+## Work centres and routing
+
+Seven stages, eleven work centres:
+
+`CUTTING → PREPARATION → STITCHING → UPPER_QC → MOLDING → PACKING → DISPATCH`
+
+**PREPARATION** (printing and preparing cutting) sits between cutting and stitching.
+**UPPER QC & preparation** sits between stitching and molding. **Packing and dispatch are
+separate stages** — dispatch has its own capacity rather than being an instant marker, which is
+why an order now takes three days longer end to end than under the old five-stage model.
+
+**Molding is several machines, not one.** PVC rotary, PVC vertical, PU, and EVA are distinct
+physical machines; each is exclusive (one order at a time) but they run *in parallel with each
+other*. Stuck-on articles go to sole sticking, which is a pooled line. Which PVC machine an
+article uses comes from its `molding_machine` field (`ROTARY` / `VERTICAL`), set in
+**Machine load → PVC molding**. Anything unassigned falls back to rotary, which inflates
+rotary's load and understates vertical's — the panel says how many are still unset.
+
+**Every capacity is a placeholder and every one is editable** in Machine load. The list is
+derived from reference data rather than hardcoded, so adding a work centre makes it appear
+there automatically, ordered by production sequence.
+
+**Per-order lead time.** Outside stitching adds transport days, in-house adds a preparation
+window, and printing adds its own — set per order in intake, configured in
+`INPUTS.lead_time_rules`. All three day counts are placeholders.
+
+## Ordering a specific size
+
+The factory writes orders both ways — a whole range ("6X8, 5 cartons") and a single size
+("size 8, 40 pairs"). **Add a specific size** appears in intake and in Orders &amp; Dispatch → Edit.
+
+A single size needs two things it doesn't carry by itself:
+
+- **Material.** The BOM prices per *range*, not per size, so a single size borrows a range's
+  rates. Where a size sits in more than one range — JILL's `11s` is in both `11X1` and `9X12` —
+  the picker asks which rather than choosing for you.
+- **Packing.** Pairs per carton comes from the chart's SINGLE PACKSIZES rows, falling back to
+  the range's own pack rate. If neither exists, the field is left for you to type; nothing is
+  guessed, because a wrong pack quantity changes the pair count, the material requirement and
+  the dispatch date together.
+
+A size outside every range can still be ordered — you pick which range's rates it should be
+costed at, and the screen says plainly that's what it's doing.
+
+Internally a specific size is stored as an ordinary line on its borrowed range carrying a
+`sizes` map, the same shape a PI-read line uses, so the planner, the invoice and the dispatch
+tracker all handle it with no special cases. `tests/sizes.test.mjs` covers this.
+
+Two bugs fixed alongside it: ranges ending in `S` (`7X10S`) exploded to *no sizes at all*,
+hiding the whole range; and pack quantity didn't recognise the `s` suffix on kids sizes, so
+`8s` resolved to nothing.
+
+## Dispatch and packing reports
+
+**Dispatch & packing** tab. A packing report records what actually shipped against an order, by
+size range, as **partial**, **full**, or **shortage**. Pending = ordered − dispatched, shown in
+pairs and (where a packing chart exists) in cartons.
+
+Dispatches are their own table and never edit the order, so what was ordered stays auditable
+against what shipped. The API refuses a dispatch for a size range that isn't on the order, or
+for more than remains outstanding — an over-dispatch would show as negative pending and quietly
+corrupt the shortage figure.
+
+## Parties and terms
+
+**Parties & terms** tab. Discount, the ordered deduction ladder, GST, payment split and dispatch
+timeline are held per customer. Invoices read them and show them read-only — a PI cannot quietly
+deviate from the agreed terms, which is the point of holding them here. Removing a party
+deactivates rather than deletes it, since existing orders reference it.
+
 ## Stock register
 
 **Stock register** tab, laid out to match the factory's own STOCK MASTER sheet: S.N · Category ·

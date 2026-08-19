@@ -8,6 +8,9 @@ import CatalogueTab from "./CatalogueTab.jsx";
 import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
 import StockTab from "./StockTab.jsx";
+import DispatchTab from "./DispatchTab.jsx";
+import PartiesTab from "./PartiesTab.jsx";
+import AddSize from "./AddSize.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes } from "../shared/pi.js";
 
@@ -73,9 +76,20 @@ export default function App(){
     return ()=>clearTimeout(t);
   },[caps]);
 
-  const wcs = useMemo(()=>{const w={};for(const[k,v]of Object.entries(INPUTS.workcenters))w[k]={...v,capacity_per_day:caps[k]};return w;},[caps]);
+  const wcs = useMemo(()=>{
+    const w={};
+    for(const[k,v]of Object.entries(INPUTS.workcenters)) w[k]={...v,capacity_per_day:caps[k]};
+    // carried alongside the centres so the engine can apply per-order lead time
+    Object.defineProperty(w,"_lead_time_rules",{value:INPUTS.lead_time_rules||null,enumerable:false});
+    return w;
+  },[caps,refTick]);
   const state = useMemo(()=> orders
-    ? compute(orders, INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin, targets?{targets}:{})
+    ? compute(
+        // stitching/printing live on the pi blob; lift them so the engine sees them
+        orders.map(o=>({ ...o,
+          stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
+          printing:(o.pi&&o.pi.printing)||o.printing||false })),
+        INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin, targets?{targets}:{})
     : null, [orders,wcs,refTick,targets]);
 
   async function askAI(){
@@ -147,7 +161,7 @@ export default function App(){
         </div>
 
         <div className="flex gap-2 mb-4 flex-wrap">
-          {[["intake","➕ PI generation"],["bulk","Bulk upload"],["orders","Orders & dispatch"],["schedule","Schedule"],["plan","Production plan"],["procurement","Procurement"],["stock","Stock register"],["machines","Machine load"],["catalogue","Catalogue"],["data","Data & BOM"],["copilot","AI copilot"]].map(([k,l])=>(
+          {[["intake","➕ PI generation"],["bulk","Bulk upload"],["orders","Orders & dispatch"],["schedule","Schedule"],["plan","Production plan"],["procurement","Procurement"],["dispatch","Dispatch & packing"],["stock","Stock register"],["machines","Machine load"],["parties","Parties & terms"],["catalogue","Catalogue"],["data","Data & BOM"],["copilot","AI copilot"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} className="text-sm font-semibold rounded-lg px-3.5 py-2 border transition-colors"
               style={{background:tab===k?"#4f46e5":"#fff",color:tab===k?"#fff":"#475569",borderColor:tab===k?"#4f46e5":"#e2e8f0"}}>{l}</button>
           ))}
@@ -164,8 +178,10 @@ export default function App(){
         {tab==="plan" && <PlanTab state={state} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
+        {tab==="dispatch" && <DispatchTab orders={state.orders} onChanged={refresh} />}
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="bulk" && <BulkOrderTab onImported={()=>{ refresh(); setTab("orders"); }} />}
+        {tab==="parties" && <PartiesTab />}
         {tab==="catalogue" && <CatalogueTab />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
@@ -209,6 +225,8 @@ function NewOrderFlow({onSaved}){
   const [upperColour,setUpperColour]=useState("");
   const [remarks,setRemarks]=useState("None");
   const [orderNature,setOrderNature]=useState("");
+  const [stitching,setStitching]=useState("inhouse");
+  const [printing,setPrinting]=useState(false);
   const [attachment,setAttachment]=useState(null);
   const [discountPct,setDiscountPct]=useState(40);
   const [piTerms,setPiTerms]=useState(null);
@@ -413,6 +431,7 @@ function NewOrderFlow({onSaved}){
         order_date:orderDate, article_code:c.article,
         priority:Number(priority)||2, party:party||"—",
         lines:c.lines.map(l=>({combo:l.combo, qty:l.qty, label:l.label||l.combo, sizes:l.sizes})),
+        stitching, printing,
         pi:{pi_no:piNo, discount_pct:Number(discountPct)||0, customer_city:customerCity,
             vl, sole_colour:soleColour, upper_colour:upperColour,
             remarks, order_nature:orderNature||undefined, attachment:attachment||undefined},
@@ -430,6 +449,7 @@ function NewOrderFlow({onSaved}){
       order_date:orderDate, article_code:c.article,
       priority:Number(priority)||2, party:party||"—",
       lines:c.lines.filter(l=>(Number(l.cartons)||0)>0).map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:(l.raw||l.combo)})),
+      stitching, printing,
       pi:{pi_no:piNo, price:prices[c.article],
           remarks, order_nature:orderNature||undefined, attachment:attachment||undefined},
     }));
@@ -478,7 +498,22 @@ function NewOrderFlow({onSaved}){
         <label className="text-xs text-slate-600">Order date
           <input type="date" value={orderDate} onChange={e=>setOrderDate(e.target.value)}
             className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono" /></label>
+        <label className="text-xs text-slate-600">Stitching
+          <select value={stitching} onChange={e=>setStitching(e.target.value)}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+            <option value="inhouse">In-house</option>
+            <option value="outside">Outside</option>
+          </select></label>
+        <label className="text-xs text-slate-600">Printing needed
+          <select value={printing?"yes":"no"} onChange={e=>setPrinting(e.target.value==="yes")}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+            <option value="no">No</option><option value="yes">Yes</option>
+          </select></label>
       </div>
+      <p className="text-xs text-slate-400 mt-2">
+        Outside stitching adds transport time; in-house adds a preparation window; printing adds
+        its own. Day counts are set in Machine load and are placeholders until the factory confirms them.
+      </p>
     </div>
 
     {/* step 2: photo */}
@@ -584,6 +619,25 @@ function NewOrderFlow({onSaved}){
                 <button onClick={()=>delLine(i,k)} className="text-rose-500 text-lg leading-none">−</button>
               </div>))}
             <button onClick={()=>addLine(i)} className="text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-md px-2.5 py-1.5 mt-1">+ Add combo</button>
+            <div className="mt-2">
+              <AddSize articleCode={c.article}
+                lines={c.lines.map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), sizes:l.sizes, label:l.raw||l.combo}))}
+                onChange={next=>setCards(cs=>cs.map((cc,j)=>{
+                  if(j!==i) return cc;
+                  // AddSize returns pair-based lines; carry them back as a
+                  // single-carton line so the existing carton editor still works.
+                  const merged=next.map(nl=>{
+                    const existing=cc.lines.find(x=>x.combo===nl.combo);
+                    const ppc=(existing&&existing.ppc)||((PACKING[cc.article]||{})[nl.combo])||1;
+                    return existing && !nl.sizes
+                      ? existing
+                      : {...(existing||{}), combo:nl.combo, sizes:nl.sizes,
+                         raw:nl.label||nl.combo, exact:true,
+                         ppc, cartons:+(nl.qty/ppc).toFixed(4)};
+                  });
+                  return {...cc, lines:merged};
+                }))} />
+            </div>
           </div>
         </div>))}
       <button onClick={addCard} className="text-sm font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg px-3 py-1.5">+ Add category</button>
@@ -854,14 +908,28 @@ function EditOrder({o,onSave,onCancel}){
     </div>
     <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Quantities (pairs)</div>
     <div className="flex gap-2 flex-wrap mb-2">
-      {lines.map((l,i)=>(
-        <label key={i} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+      {lines.map((l,i)=>{
+        // Cartons are the unit the factory actually counts in; pairs are what
+        // the planner needs. Show both, edit either, keep them in step.
+        const ppc=((INPUTS.packing||{})[o.article_code||o.article]||{})[l.combo];
+        const qty=Number(l.qty)||0;
+        return <label key={i} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
           <span className="mono font-semibold">{l.label||l.combo}</span>
-          <input type="number" min={0} value={l.qty} onChange={e=>setQty(i,e.target.value)}
-            className="block mt-1 w-24 text-sm border border-slate-300 rounded px-1.5 py-1 mono" /></label>))}
+          <div className="flex gap-1.5 mt-1 items-end">
+            <div><span className="text-slate-400" style={{fontSize:9}}>pairs</span>
+              <input type="number" min={0} value={l.qty} onChange={e=>setQty(i,e.target.value)}
+                className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-1 mono" /></div>
+            <div><span className="text-slate-400" style={{fontSize:9}}>cartons</span>
+              <input type="number" min={0} step="any" disabled={!ppc}
+                value={ppc ? +(qty/ppc).toFixed(2) : ""}
+                title={ppc ? `${ppc} pairs per carton` : "no packing chart for this size range"}
+                onChange={e=>{ const c=Number(e.target.value)||0; if(ppc) setQty(i, Math.round(c*ppc)); }}
+                className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-1 mono disabled:bg-slate-50" /></div>
+          </div>
+        </label>;})}
     </div>
-    <div className="flex gap-2 items-end flex-wrap mb-3">
-      <label className="text-xs text-slate-600">Add a size range
+    <div className="flex gap-2 items-end flex-wrap mb-2">
+      <label className="text-xs text-slate-600">Add a whole size range
         <select defaultValue="" onChange={e=>{
             const cb=e.target.value; e.target.value="";
             if(cb && !lines.some(l=>l.combo===cb)) setLines(ls=>[...ls,{combo:cb,qty:0,label:cb}]);
@@ -873,6 +941,9 @@ function EditOrder({o,onSave,onCancel}){
             .map(cb=><option key={cb} value={cb}>{cb}</option>)}
         </select></label>
       <span className="text-xs text-slate-400">Set a line to 0 to drop it.</span>
+    </div>
+    <div className="mb-3">
+      <AddSize articleCode={o.article_code||o.article} lines={lines} onChange={setLines} />
     </div>
 
     <label className="text-xs text-slate-600 block mb-2">Remarks
@@ -1068,13 +1139,22 @@ function ProcurementTab({state}){
 }
 
 function MachinesTab({state,caps,setCaps,targets,setTargets}){
-  const ORDER=["CUTTING","STITCHING","MOLDING","ASSEMBLY_STUCK-ON","PACKING"];
+  // Derived from reference data, not hardcoded — add a work centre and it
+  // appears here automatically. Ordered by production sequence so the strips
+  // read the way the factory flows, and rows never re-order while editing.
+  const STAGE_SEQ=["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","ASSEMBLY","PACKING","DISPATCH"];
+  const ORDER=Object.keys(INPUTS.workcenters).sort((a,b)=>{
+    const wa=INPUTS.workcenters[a], wb=INPUTS.workcenters[b];
+    const d=STAGE_SEQ.indexOf(wa.stage)-STAGE_SEQ.indexOf(wb.stage);
+    return d!==0?d:a.localeCompare(b);
+  });
   const maxDay=Math.max(...state.orders.map(o=>o.dispatch_day),1);
   const days=Array.from({length:maxDay+1},(_,i)=>i);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <p className="text-sm text-slate-500 mb-1">One strip per line, day by day: <b>how full that line is on each day</b>. Red = fully booked, amber = nearly full, blue = partly used, empty = free. The date on the right is when the line frees up.</p>
     <p className="text-xs text-slate-400 mb-4">Capacities are placeholders — type the client's real pairs/day and the whole plan recomputes. Rows never re-order.</p>
     <SlaTargets targets={targets} setTargets={setTargets} />
+    <MoldingAssignment />
     <div className="text-xs rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-900 px-3 py-2 mb-4">
       <b>Sole molding is one machine.</b> PVC, PU and EVA all queue for the same machine — it runs <b>one order at a time, start to finish</b>, so molding blocks never overlap. Sole sticking is a separate line and can take several orders at once.
     </div>
@@ -1115,6 +1195,55 @@ function MachinesTab({state,caps,setCaps,targets,setTargets}){
   </div>;
 }
 function Leg({c,t,border}){return <span className="mono text-xs flex items-center gap-1"><span style={{width:12,height:10,background:c,border:border?"1px solid #e2e8f0":"none",borderRadius:2,display:"inline-block"}}/>{t}</span>;}
+
+/* Which PVC machine each article runs on. Unassigned articles fall back to
+   rotary, which makes rotary look busier than it is — so this is worth setting
+   before trusting any molding utilisation figure. */
+function MoldingAssignment(){
+  const pvc=Object.entries(INPUTS.articles).filter(([,a])=>a.sole_type==="PVC");
+  const [draft,setDraft]=useState({});
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  if(!pvc.length) return null;
+  const unassigned=pvc.filter(([k,a])=>!(draft[k]??a.molding_machine)).length;
+
+  async function save(){
+    const patch={};
+    for(const [k,v] of Object.entries(draft)) patch[k]=v||null;
+    if(!Object.keys(patch).length) return;
+    setBusy(true);
+    try{ await api.patchReference({molding_machine:patch}); await reloadReference();
+         setMsg("Saved — the plan has been recalculated."); setDraft({}); }
+    catch(e){ setMsg(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  return <div className="mb-5 border border-slate-200 rounded-xl p-3.5">
+    <div className="text-sm font-semibold text-slate-700 mb-1">PVC molding — rotary or vertical</div>
+    <p className="text-xs text-slate-500 mb-3">
+      PVC articles run on one of two machines. Anything left unset falls back to <b>rotary</b>,
+      which inflates rotary&rsquo;s load and understates vertical&rsquo;s.
+      {unassigned>0 && <span className="text-amber-700"> {unassigned} of {pvc.length} still unset.</span>}
+    </p>
+    <div className="flex gap-2 flex-wrap">
+      {pvc.map(([k,a])=>{
+        const cur=draft[k]??a.molding_machine??"";
+        return <label key={k} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+          <div className="font-semibold">{k}</div>
+          <select value={cur} onChange={e=>setDraft(d=>({...d,[k]:e.target.value}))}
+            className="block mt-1 text-sm border rounded-lg px-2 py-1 bg-white"
+            style={{borderColor:cur?"#e2e8f0":"#f59e0b"}}>
+            <option value="">Not set — defaults to rotary</option>
+            <option value="ROTARY">PVC rotary</option>
+            <option value="VERTICAL">PVC vertical</option>
+          </select></label>;})}
+    </div>
+    {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
+    <button disabled={busy||!Object.keys(draft).length} onClick={save}
+      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      {busy?"Saving…":"Save assignments"}</button>
+  </div>;
+}
 
 /* How On track / At risk / Delayed is decided — stated plainly and editable,
    because these targets are the factory's delivery promise, not a constant. */
