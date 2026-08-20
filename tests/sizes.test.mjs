@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
 import { comboSizes } from "../shared/pi.js";
-import { singlePackQty, matchArticle } from "../shared/bridge.js";
+import { singlePackQty, pairsPerCarton, matchArticle } from "../shared/bridge.js";
 import { INPUTS } from "../shared/inputs.js";
 
 let passed = 0, failed = 0;
@@ -45,6 +45,15 @@ test("pack quantity resolves for both runs", () => {
   assert.equal(singlePackQty("JILL","8s"), 24, "kids size written with s");
   assert.equal(singlePackQty("JILL","3"), 18, "adult size written bare");
   assert.equal(singlePackQty("JILL","99"), null, "unknown size gives nothing, not a guess");
+});
+test("SPIKE follows the ARMOUR packing list", () => {
+  assert.deepEqual(INPUTS.packing.SPIKE, {
+    "7X10S":24, "11X1":24, "2X5":18, "6X8":18, "9X12":18,
+  });
+  assert.equal(singlePackQty("SPIKE","8s"), 24);
+  assert.equal(singlePackQty("SPIKE","3"), 18);
+  assert.equal(pairsPerCarton("SPIKE","7X10S"), pairsPerCarton("ARMOUR","7X10S"));
+  assert.equal(pairsPerCarton("SPIKE","6X8"), pairsPerCarton("ARMOUR","6X9"));
 });
 
 console.log("\nD — resolution reports what it cannot know");

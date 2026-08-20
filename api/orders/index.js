@@ -1,6 +1,7 @@
 import { q, db } from "../_lib/db.js";
 import { fail, wrap } from "../_lib/http.js";
 import { INPUTS as SEED } from "../../shared/inputs.js";
+import { syncPiMaster } from "../_lib/pis.js";
 
 /* Validate against the reference data actually in use, not the bundled seed.
    An article uploaded through Data & BOM lives in the database — validating
@@ -75,6 +76,7 @@ export default wrap(async (req, res) => {
         out.push(row(rows[0]));
       }
       await client.query("commit");
+      try{ await syncPiMaster(); }catch(_){ /* order save must not fail if PI backfill is unavailable */ }
       return res.status(201).json(out);
     }catch(e){ await client.query("rollback"); throw e; }
     finally{ client.release(); }
@@ -82,6 +84,7 @@ export default wrap(async (req, res) => {
 
   if(req.method === "DELETE"){
     if(req.query.all !== "1") return fail(res, 400, "refusing to delete everything without ?all=1");
+    try{ await syncPiMaster(); }catch(_){}
     await q("delete from orders");
     return res.status(200).json({ deleted: "all" });
   }

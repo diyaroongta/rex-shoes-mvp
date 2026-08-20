@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import * as XLSX from "xlsx";
-import { parseOrderSheet, ORDER_TEMPLATE_HEADERS } from "../shared/order-import.js";
+import { parseOrderSheet, wideTemplateHeaders, ORDER_WIDE_BASE_HEADERS } from "../shared/order-import.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
 
@@ -15,12 +15,35 @@ export default function BulkOrderTab({ onImported }){
   const [err,setErr]=useState("");
 
   function downloadTemplate(){
-    const ws = XLSX.utils.aoa_to_sheet([
-      ORDER_TEMPLATE_HEADERS,
-      ["Acme Traders","2026-08-10","JILL","11X1","5","","1","MTS","example row — delete me"],
-    ]);
+    const headers=wideTemplateHeaders(INPUTS);
+    const comboStart=ORDER_WIDE_BASE_HEADERS.length;
+    const rows=[headers];
+    for(const article of Object.keys(INPUTS.articles)){
+      const row=Array(headers.length).fill("");
+      row[2]=article; row[3]=2; row[5]="No"; row[7]="Black";
+      // Mark non-applicable size columns with a dash; valid columns stay blank
+      // for pair quantities. This keeps every article on exactly one row.
+      const valid=new Set(INPUTS.articles[article].combo_order||[]);
+      for(let i=comboStart;i<headers.length;i++){
+        const combo=headers[i].replace(/^Pairs\s+/i,"");
+        if(!valid.has(combo)) row[i]="—";
+      }
+      rows.push(row);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!freeze"]={xSplit:3,ySplit:1};
+    ws["!cols"]=headers.map((h,i)=>({wch:i===0?24:i===2?25:i>=comboStart?12:16}));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Orders");
+    const help=XLSX.utils.aoa_to_sheet([
+      ["Factory OS order template"],
+      ["Use one row per article. Enter ordered PAIRS under every applicable size-range column."],
+      ["Required before import: Party, Order Date, Article, and at least one size quantity."],
+      ["Required before issuing a PI: Order Nature, V/L, Sole Colour and Upper Colour. Print accepts Yes or No."],
+      ["Rows for articles you are not ordering can remain untouched."],
+    ]);
+    help["!cols"]=[{wch:110}];
+    XLSX.utils.book_append_sheet(wb, help, "Read me");
     XLSX.writeFile(wb, "factory-os-order-template.xlsx");
   }
 
@@ -53,9 +76,9 @@ export default function BulkOrderTab({ onImported }){
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
     <div className="text-sm font-semibold text-slate-700 mb-1">Add orders from a spreadsheet</div>
     <p className="text-xs text-slate-500 mb-3">
-      One row per size range. Rows sharing the same party, date and article become a single order
-      with several lines. Give either <b>Pairs</b> or <b>Cartons</b> — cartons are converted using
-      the packing chart, and pairs wins if both are filled in.
+      One row per article, with all of that article's size ranges across the row. Enter pairs in
+      the applicable size columns. The importer still accepts the previous one-size-range-per-row
+      template, so existing files continue to work.
     </p>
 
     <div className="flex gap-3 items-center flex-wrap mb-4">

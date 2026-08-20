@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import * as api from "./lib/client.js";
 
 const BLANK = { name:"", city:"", discount_pct:40, gst_pct:5, payment_split_pct:50,
-  dispatch_timeline:"45 days", order_nature:"",
+  order_nature:"",
   deductions:[{label:"F.O.R.",pct:2},{label:"Cash Discount",pct:3},{label:"GST Dis",pct:4.760}] };
 
 /* Party master. These terms are the agreement with the customer, so they are
@@ -52,8 +52,7 @@ export default function PartiesTab(){
       <div className="border border-indigo-200 bg-indigo-50/60 rounded-xl p-4 my-3">
         <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))"}}>
           {[["Party name","name","text"],["City","city","text"],["Discount %","discount_pct","number"],
-            ["GST %","gst_pct","number"],["Payment split %","payment_split_pct","number"],
-            ["Dispatch timeline","dispatch_timeline","text"]].map(([lab,k,type])=>(
+            ["GST %","gst_pct","number"],["Payment split %","payment_split_pct","number"]].map(([lab,k,type])=>(
             <label key={k} className="text-xs text-slate-600">{lab}
               <input type={type} value={edit[k]??""} onChange={e=>setEdit(s=>({...s,[k]:type==="number"?e.target.value:e.target.value}))}
                 className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>))}
@@ -99,7 +98,7 @@ export default function PartiesTab(){
         <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
           <th className="text-left py-2">Party</th><th className="text-left">City</th>
           <th className="text-right">Discount</th><th className="text-left pl-3">Deductions</th>
-          <th className="text-right">GST</th><th className="text-left pl-3">Timeline</th><th></th></tr></thead>
+          <th className="text-right">GST</th><th></th></tr></thead>
         <tbody>
           {parties.map(p=>(
             <tr key={p.name} className="border-t border-slate-100">
@@ -109,7 +108,6 @@ export default function PartiesTab(){
               <td className="pl-3 text-xs text-slate-500 mono">
                 {(p.deductions||[]).map(d=>`${d.label} ${d.pct}%`).join("  ·  ")||"—"}</td>
               <td className="text-right mono">{p.gst_pct}%</td>
-              <td className="pl-3 text-slate-600">{p.dispatch_timeline}</td>
               <td className="text-right">
                 <button onClick={()=>{setEdit({...BLANK,...p}); setMsg("");}}
                   className="text-xs font-semibold text-slate-600 hover:underline mr-2">Edit</button>

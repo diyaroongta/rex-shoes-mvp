@@ -24,6 +24,7 @@ export const patchOrder      = (no, patch) => j(`/api/orders/${encodeURIComponen
 export const setPriority     = (no, p)     => patchOrder(no, { priority:p });
 export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponent(no)}`, { method:"DELETE" });
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
+export const listPis         = ()          => j("/api/pis");
 
 /* ---- shared config (machine capacities) ---- */
 export const getSettings = ()      => j("/api/settings");

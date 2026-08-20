@@ -18,6 +18,19 @@ create table if not exists orders (
 
 create index if not exists orders_priority_date_idx on orders (priority, order_date, order_no);
 
+-- Issued PI master. Snapshot is deliberately independent of the live order
+-- queue so deleting/closing an order never erases its commercial record.
+create table if not exists proforma_invoices (
+  pi_no      text primary key,
+  pi_date    date,
+  party      text,
+  status     text        not null default 'produced',
+  revision   integer     not null default 0,
+  snapshot   jsonb       not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 -- Shared config: machine capacities. One row, id = 1.
 -- These are shared factory settings, not per-browser preferences.
 create table if not exists settings (

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { compute, fromDay, dayIndex } from "../shared/engine.js";
-import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbiguous, mapToCombo, singlePackQty, readPrompt } from "../shared/bridge.js";
+import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbiguous, mapToCombo, singlePackQty, pairsPerCarton, readPrompt } from "../shared/bridge.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
@@ -140,6 +140,7 @@ export default function App(){
   const nav = [
     ["Orders", [
       ["intake","PI generation"],
+      ["pis","PI database"],
       ["bulk","Bulk upload"],
       ["orders","Orders & dispatch", {n:lateCount, tone:"#BE123C"}],
       ["dispatch","Dispatch & packing"],
@@ -268,6 +269,7 @@ export default function App(){
           <div style={{padding:"18px 22px 60px"}}>
 
         {tab==="intake" && <NewOrderFlow onSaved={addOrders} />}
+        {tab==="pis" && <PiDatabaseTab />}
         {tab==="orders" && <>
           <OrdersTab state={state} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
           <div className="flex gap-2 mt-3">
@@ -293,8 +295,13 @@ export default function App(){
 }
 
 function downloadSheetCSV(orders){
-  const rows=[["order_no","order_date","party","article","ordered","rate_combo","pairs","priority","pi_no"]];
-  orders.forEach(o=>o.lines.forEach(l=>rows.push([o.order_no,o.order_date,o.party,o.article_code,(l.label||l.combo),l.combo,l.qty,o.priority,(o.pi&&o.pi.pi_no)||""])));
+  const combos=[...new Set(orders.flatMap(o=>(o.lines||[]).map(l=>l.combo)))];
+  const rows=[["order_no","order_date","party","article","priority","pi_no","order_nature","print","vl","sole_colour","upper_colour",...combos.map(c=>`pairs_${c}`)]];
+  orders.forEach(o=>{const by=Object.fromEntries((o.lines||[]).map(l=>[l.combo,l.qty]));rows.push([
+    o.order_no,o.order_date,o.party,o.article_code,o.priority,(o.pi&&o.pi.pi_no)||"",
+    (o.pi&&o.pi.order_nature)||"",(o.pi&&o.pi.printing)?"Yes":"No",(o.pi&&o.pi.vl)||"",
+    (o.pi&&o.pi.sole_colour)||"",(o.pi&&o.pi.upper_colour)||"",...combos.map(c=>by[c]||""),
+  ]);});
   const csv=rows.map(r=>r.map(c=>{const s=String(c);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(",")).join("\n");
   const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8;"}));
   const a=document.createElement("a");a.href=url;a.download="order_sheet.csv";document.body.appendChild(a);a.click();document.body.removeChild(a);
@@ -307,6 +314,8 @@ const PACKING = new Proxy({}, {
   get:(_,k)=> (INPUTS.packing && INPUTS.packing[k]) || SEED_PACKING[k],
   has:(_,k)=> !!((INPUTS.packing && INPUTS.packing[k]) || SEED_PACKING[k]),
 });
+const packQty = (article, combo) => pairsPerCarton(article, combo)
+  ?? ((SEED_PACKING[article]||{})[combo]) ?? null;
 
 function NewOrderFlow({onSaved}){
   const [img,setImg]=useState(null);
@@ -342,6 +351,16 @@ function NewOrderFlow({onSaved}){
   const [pasteText,setPasteText]=useState("");
   const fileRef=useRef(null);
   const ARTS=Object.keys(INPUTS.articles);
+  const withArticleDetails = (card, extra={}) => ({
+    ...card,
+    order_nature: orderNature,
+    stitching,
+    printing,
+    vl,
+    sole_colour: soleColour,
+    upper_colour: upperColour,
+    ...extra,
+  });
 
   function handleFile(file){
     if(!file)return; setErr("");
@@ -423,7 +442,12 @@ function NewOrderFlow({onSaved}){
         }
         const leftover=Object.keys(bySize).filter(k=>bySize[k]>0);
         if(leftover.length) notes.push(`${art}: sizes ${leftover.join(", ")} do not fall in any of its size ranges`);
-        if(lines.length) built.push({article:art, lines, fromPi:true});
+        if(lines.length) built.push(withArticleDetails({article:art, lines, fromPi:true}, {
+          vl:item.vl||vl, sole_colour:item.sole_colour||soleColour,
+          upper_colour:item.upper_colour||upperColour,
+          order_nature:item.order_nature||orderNature,
+          printing:item.printing==null?printing:!!item.printing,
+        }));
       }
       if(!built.length) throw new Error("No recognisable article lines were found in that PI.");
       setPiCards(built);
@@ -467,7 +491,7 @@ function NewOrderFlow({onSaved}){
     const out=(parsed.orders||[]).map(o=>{
       const art=matchArticle(o.category,o.color)||ARTS[0];
       const combos=INPUTS.articles[art].combo_order;
-      return { article:art, party:(o.party||"").trim(), matched:!!matchArticle(o.category,o.color),
+      return withArticleDetails({ article:art, party:(o.party||"").trim(), matched:!!matchArticle(o.category,o.color),
                ambiguous:matchAmbiguous(o.category,o.color), raw:(o.category||"")+" "+(o.color||""),
         lines:(o.lines||[]).map(l=>{
           const big=(l.group||"").toUpperCase()==="BIG";
@@ -478,25 +502,26 @@ function NewOrderFlow({onSaved}){
           // nearest combo, because that changes both the pack quantity and
           // what material gets ordered. Surface it and let the clerk resolve it.
           if(m.combo) return {combo:m.combo, exact:m.exact, raw:(l.sizes||[]).join("|")+(big?" (Big)":""),
-                  cartons:Number(l.cartons)||0, ppc:(PACKING[art]&&PACKING[art][m.combo])||24};
+                  cartons:Number(l.cartons)||0, ppc:packQty(art,m.combo)||24};
           return {combo:null, single:m.single, exact:false,
                   raw:(l.sizes||[]).join("|")+(big?" (Big)":""),
                   cartons:Number(l.cartons)||0, ppc: singlePackQty(art,m.single) || 24,
                   ppcKnown: singlePackQty(art,m.single)!=null};
-        })};
+        })});
     });
     setCards(out.length?out:null);
     if(!out.length) setErr("Nothing readable found — try a clearer photo or enter by hand.");
   }
 
   function blankCard(){ const art=ARTS[0]; const c=INPUTS.articles[art].combo_order[0];
-    return {article:art, matched:true, raw:"", lines:[{combo:c,exact:true,raw:"",cartons:0,ppc:(PACKING[art]&&PACKING[art][c])||24}]}; }
+    return withArticleDetails({article:art, matched:true, raw:"", lines:[{combo:c,exact:true,raw:"",cartons:0,ppc:packQty(art,c)||24}]}); }
   const startBlank=()=>{ setCards([blankCard()]); setErr(""); setSavedMsg(""); };
 
   const setCard=(i,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
+  const setPiCard=(i,patch)=>setPiCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setLine=(i,k,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.map((l,m)=>m===k?{...l,...patch}:l)}:c));
   const addLine=i=>setCards(cs=>cs.map((c,j)=>{ if(j!==i)return c; const cb=INPUTS.articles[c.article].combo_order[0];
-    return {...c,lines:[...c.lines,{combo:cb,exact:true,raw:"",cartons:0,ppc:(PACKING[c.article]&&PACKING[c.article][cb])||24}]}; }));
+    return {...c,lines:[...c.lines,{combo:cb,exact:true,raw:"",cartons:0,ppc:packQty(c.article,cb)||24}]}; }));
   const delLine=(i,k)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
   const addCard=()=>setCards(cs=>[...(cs||[]),blankCard()]);
   const delCard=i=>setCards(cs=>cs.filter((_,j)=>j!==i));
@@ -505,8 +530,37 @@ function NewOrderFlow({onSaved}){
       const combos=INPUTS.articles[art].combo_order;
       return {...c,article:art,matched:true,lines:c.lines.map(l=>{
         const combo=combos.includes(l.combo)?l.combo:combos[0];
-        return {...l,combo,ppc:(PACKING[art]&&PACKING[art][combo])||l.ppc}; })}; }));
+        return {...l,combo,ppc:packQty(art,combo)||24}; })}; }));
   }
+
+  const articleDetails = (c, change) => (
+    <div className="grid gap-2 px-3 py-3 border-b border-slate-200 bg-white"
+         style={{gridTemplateColumns:"repeat(auto-fit,minmax(125px,1fr))"}}>
+      <label className="text-xs text-slate-500">Order nature *
+        <input list="order-nature-options" value={c.order_nature||""}
+          onChange={e=>change({order_nature:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+      <label className="text-xs text-slate-500">V/L *
+        <input value={c.vl||""} onChange={e=>change({vl:e.target.value})} placeholder="Velcro / Lace"
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+      <label className="text-xs text-slate-500">Sole colour *
+        <input value={c.sole_colour||""} onChange={e=>change({sole_colour:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+      <label className="text-xs text-slate-500">Upper colour *
+        <input value={c.upper_colour||""} onChange={e=>change({upper_colour:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+      <label className="text-xs text-slate-500">Print
+        <select value={c.printing?"yes":"no"} onChange={e=>change({printing:e.target.value==="yes"})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          <option value="no">No</option><option value="yes">Yes</option>
+        </select></label>
+      <label className="text-xs text-slate-500">Stitching
+        <select value={c.stitching||"inhouse"} onChange={e=>change({stitching:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          <option value="inhouse">In-house</option><option value="outside">Outside</option>
+        </select></label>
+    </div>
+  );
 
   const totals=useMemo(()=>{
     if(!cards)return null;
@@ -521,6 +575,17 @@ function NewOrderFlow({onSaved}){
     return {per,cartons,pairs,amount};
   },[cards,prices]);
 
+  const piNumberFor = (card, source) => {
+    const parties=[];
+    for(const c of source||[]){
+      const who=((c.party||"").trim()||party.trim()||"—");
+      if(!parties.includes(who)) parties.push(who);
+    }
+    if(parties.length<=1) return piNo;
+    const who=((card.party||"").trim()||party.trim()||"—");
+    return `${piNo}-${parties.indexOf(who)+1}`;
+  };
+
   async function save(){
     if(!piCards && (!cards||!totals||totals.pairs<=0)){ setErr("Add at least one line with cartons before saving."); return; }
     // A single-size line with no combo has no material rate — saving it would
@@ -534,6 +599,14 @@ function NewOrderFlow({onSaved}){
         +". One sheet can list several customers, so each order needs its own.");
       return;
     }
+    const incomplete=[...(piCards||[]),...(cards||[])].filter(c=>
+      !String(c.order_nature||"").trim() || !String(c.vl||"").trim()
+      || !String(c.sole_colour||"").trim() || !String(c.upper_colour||"").trim());
+    if(incomplete.length){
+      setErr("Complete order nature, V/L, sole colour and upper colour for every article before issuing the PI: "
+        +incomplete.map(c=>c.article).join(", "));
+      return;
+    }
     const unresolved=(cards||[]).flatMap((c,ci)=>c.lines
       .map((l,li)=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
       .filter(Boolean));
@@ -545,10 +618,11 @@ function NewOrderFlow({onSaved}){
         order_date:orderDate, article_code:c.article,
         priority:Number(priority)||2, party:(c.party||"").trim() || party.trim() || "—",
         lines:c.lines.map(l=>({combo:l.combo, qty:l.qty, label:l.label||l.combo, sizes:l.sizes})),
-        stitching, printing,
-        pi:{pi_no:piNo, discount_pct:Number(discountPct)||0, customer_city:customerCity,
-            vl, sole_colour:soleColour, upper_colour:upperColour,
-            remarks, order_nature:orderNature||undefined, attachment:attachment||undefined},
+        stitching:c.stitching||"inhouse", printing:!!c.printing,
+        pi:{pi_no:piNumberFor(c,piCards), discount_pct:Number(discountPct)||0, customer_city:customerCity,
+            vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
+            remarks, order_nature:c.order_nature, printing:!!c.printing,
+            production_status:"produced", attachment:attachment||undefined},
       }));
       setSaving(true); setErr("");
       try{
@@ -563,9 +637,11 @@ function NewOrderFlow({onSaved}){
       order_date:orderDate, article_code:c.article,
       priority:Number(priority)||2, party:(c.party||"").trim() || party.trim() || "—",
       lines:c.lines.filter(l=>(Number(l.cartons)||0)>0).map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:(l.raw||l.combo)})),
-      stitching, printing,
-      pi:{pi_no:piNo, price:prices[c.article],
-          remarks, order_nature:orderNature||undefined, attachment:attachment||undefined},
+      stitching:c.stitching||"inhouse", printing:!!c.printing,
+      pi:{pi_no:piNumberFor(c,cards), price:prices[c.article],
+          vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
+          remarks, order_nature:c.order_nature, printing:!!c.printing,
+          production_status:"produced", attachment:attachment||undefined},
     }));
     setSaving(true); setErr("");
     try{
@@ -598,8 +674,8 @@ function NewOrderFlow({onSaved}){
     {/* step 0: who the order is for, and what kind. Set first so it frames
         everything downstream rather than being an afterthought on the PI. */}
     <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
-      <div className="serif text-lg font-semibold mb-1">1 · Party &amp; order nature</div>
-      <p className="text-slate-500 text-xs mb-3">Set the customer and the kind of order before entering lines.</p>
+      <div className="serif text-lg font-semibold mb-1">1 · Party &amp; article defaults</div>
+      <p className="text-slate-500 text-xs mb-3">These values prefill each article. You can set different details and Print Yes/No for every article below.</p>
       <div className="grid gap-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))"}}>
         <label className="text-xs text-slate-600">Party
           <input value={party} onChange={e=>setParty(e.target.value)} placeholder="Customer name"
@@ -630,8 +706,8 @@ function NewOrderFlow({onSaved}){
           </select></label>
       </div>
       <p className="text-xs text-slate-400 mt-2">
-        Outside stitching adds transport time; in-house adds a preparation window; printing adds
-        its own. Day counts are set in Machine load and are placeholders until the factory confirms them.
+        Outside stitching adds transport time and printing adds its own lead time. In-house preparation
+        is scheduled once at the Preparation work centre, with no duplicate buffer day.
       </p>
     </div>
 
@@ -698,6 +774,7 @@ function NewOrderFlow({onSaved}){
             <span className="mono text-xs ml-auto" style={{color:SOLE_COLOR[INPUTS.articles[c.article].sole_type]}}>{INPUTS.articles[c.article].sole_type}</span>
             <button onClick={()=>delCard(i)} className="text-rose-500 px-1.5 text-lg leading-none">×</button>
           </div>
+          {articleDetails(c, patch=>setCard(i,patch))}
           {(c.ambiguous || !c.matched || !PACKING[c.article]) && (
             <div className="px-3 py-2 text-xs border-b border-amber-200 bg-amber-50 text-amber-900 space-y-1">
               {!c.matched && <div><b>Not recognised.</b> The reader could not match “{(c.raw||"").trim()}” to a product — pick the right one above.</div>}
@@ -714,7 +791,7 @@ function NewOrderFlow({onSaved}){
                     className="text-sm font-semibold w-full bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-white rounded-md px-1.5 py-1 -ml-1.5 outline-none"/>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="mono text-slate-400" style={{fontSize:9}}>{l.raw?"rates from:":"combo:"}</span>
-                    <select value={l.combo || ""} onChange={e=>{const combo=e.target.value; setLine(i,k,{combo,single:undefined,exact:true,ppc:(PACKING[c.article]&&PACKING[c.article][combo])||l.ppc});}}
+                    <select value={l.combo || ""} onChange={e=>{const combo=e.target.value; setLine(i,k,{combo,single:undefined,exact:true,ppc:packQty(c.article,combo)||24});}}
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
                       {!l.combo && <option value="">— pick a combo —</option>}
                       {INPUTS.articles[c.article].combo_order.map(cb=><option key={cb} value={cb}>{cb}</option>)}</select>
@@ -747,7 +824,7 @@ function NewOrderFlow({onSaved}){
                   // single-carton line so the existing carton editor still works.
                   const merged=next.map(nl=>{
                     const existing=cc.lines.find(x=>x.combo===nl.combo);
-                    const ppc=(existing&&existing.ppc)||((PACKING[cc.article]||{})[nl.combo])||1;
+                    const ppc=(existing&&existing.ppc)||packQty(cc.article,nl.combo)||1;
                     return existing && !nl.sizes
                       ? existing
                       : {...(existing||{}), combo:nl.combo, sizes:nl.sizes,
@@ -775,10 +852,6 @@ function NewOrderFlow({onSaved}){
         </div>
       </div>
       <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
-        <label className="text-xs text-slate-500">Order nature
-          <input list="order-nature-options" value={orderNature} onChange={e=>setOrderNature(e.target.value)}
-            placeholder="MTS / Institutional / MTO"
-            className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
         <label className="text-xs text-slate-500">Attach screenshot
           <input type="file" accept="image/*" capture={undefined} onChange={async e=>{
               const f=e.target.files&&e.target.files[0]; e.target.value="";
@@ -790,9 +863,6 @@ function NewOrderFlow({onSaved}){
           {attachment && <span className="text-xs text-emerald-700">attached — will save with this order</span>}
         </label>
         {[["Customer city",customerCity,setCustomerCity,"text"],
-          ["V/L",vl,setVl,"text"],
-          ["Sole colour",soleColour,setSoleColour,"text"],
-          ["Upper colour",upperColour,setUpperColour,"text"],
           ["Discount %",discountPct,setDiscountPct,"number"],
           ["Special remarks",remarks,setRemarks,"text"]].map(([lab,val,set,type])=>(
           <label key={lab} className="text-xs text-slate-500">{lab}
@@ -810,8 +880,10 @@ function NewOrderFlow({onSaved}){
             them here avoids re-issuing the invoice.
           </p>
           {piCards.map((c,ci)=>(
-            <div key={ci} className="mb-3 last:mb-0">
-              <div className="text-xs font-semibold text-slate-700 mb-1">{c.article}</div>
+            <div key={ci} className="mb-3 last:mb-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
+              <div className="text-xs font-semibold text-slate-700 px-3 py-2 bg-slate-50">{c.article}</div>
+              {articleDetails(c, patch=>setPiCard(ci,patch))}
+              <div className="p-3">
               {c.lines.map((l,li)=>(
                 <div key={li} className="flex items-center gap-2 flex-wrap mb-1.5">
                   <span className="mono text-xs text-slate-500 w-16">{l.combo}</span>
@@ -828,6 +900,7 @@ function NewOrderFlow({onSaved}){
                   <span className="text-xs text-slate-400 ml-1">= {l.qty} pairs</span>
                 </div>
               ))}
+              </div>
             </div>
           ))}
         </div>
@@ -860,7 +933,9 @@ function NewOrderFlow({onSaved}){
             const items = g.cards.map(c => ({
               article_code: c.article,
               article_label: c.article,
-              vl, sole_colour: soleColour, upper_colour: upperColour,
+              vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
+              order_nature:c.order_nature, printing:!!c.printing,
+              source:c.order_nature,
               image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
               mrp: (INPUTS.mrp||{})[c.article] || {},
               lines: piCards
@@ -906,6 +981,7 @@ function NewOrderFlow({onSaved}){
    terms rather than the system's. */
 const VIEWS = {
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
+  pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   bulk:        {title:"Bulk upload",        sub:"Add many orders at once from a spreadsheet"},
   orders:      {title:"Orders & dispatch",  sub:"Every live order, its dispatch date and delivery risk"},
   dispatch:    {title:"Dispatch & packing", sub:"Record what shipped and what is still outstanding"},
@@ -930,6 +1006,75 @@ function Stat({label,value,tone}){
 
 function Pill({status}){
   return <span className="mono text-xs font-semibold px-2 py-0.5 rounded-full" style={{color:SLA_COLOR[status],background:status==="on_track"?"#ecfdf5":status==="at_risk"?"#fff7ed":"#fef2f2"}}>{SLA_LABEL[status]}</span>;
+}
+
+function PiDatabaseTab(){
+  const [pis,setPis]=useState(null);
+  const [selectedPi,setSelectedPi]=useState(null);
+  const [editingOrder,setEditingOrder]=useState(null);
+  const [settings,setSettings]=useState({});
+  const [err,setErr]=useState("");
+  const reloadPis=()=>api.listPis().then(setPis);
+  useEffect(()=>{ Promise.all([api.listPis(),api.getSettings().catch(()=>({}))])
+    .then(([rows,cfg])=>{setPis(rows);setSettings(cfg||{});})
+    .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[]);
+  if(!pis) return <div className="text-sm text-slate-500">Loading the PI master…</div>;
+  const chosen=pis.find(p=>p.pi_no===selectedPi);
+  const saved=(chosen&&chosen.snapshot&&chosen.snapshot.orders)||[];
+  const items=saved.map(o=>({
+    article_code:o.article_code, article_label:o.article_code,
+    vl:(o.pi||{}).vl||"", sole_colour:(o.pi||{}).sole_colour||"",
+    upper_colour:(o.pi||{}).upper_colour||"", order_nature:(o.pi||{}).order_nature||"",
+    printing:!!(o.pi||{}).printing, source:(o.pi||{}).order_nature||"As per catalogue",
+    image:(CATALOGUE[o.article_code]||{}).image||articlePhoto(o.article_code)||null,
+    mrp:(INPUTS.mrp||{})[o.article_code]||{}, lines:o.lines||[],
+  }));
+  const first=saved[0]||{};
+  const firstPi=first.pi||{};
+  return <div>
+    {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3">{err}</div>}
+    <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
+      <div className="text-sm font-semibold text-slate-700 mb-1">PI master database</div>
+      <p className="text-xs text-slate-500 mb-3">Issued PIs are snapshotted here independently of the live production queue. Revisions made through Edit are retained with their revision number.</p>
+      {!pis.length ? <div className="text-sm text-slate-400 py-6 text-center">No PIs have been issued yet.</div> :
+      <table className="w-full text-sm" style={{minWidth:720}}>
+        <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
+          <th className="text-left py-2">PI</th><th className="text-left">Date</th><th className="text-left">Party</th>
+          <th className="text-left">Articles</th><th className="text-right">Pairs</th><th className="text-center">Revision</th>
+          <th className="text-left">Status</th><th></th>
+        </tr></thead>
+        <tbody>{pis.map(p=>{const os=(p.snapshot&&p.snapshot.orders)||[];return <tr key={p.pi_no} className="border-t border-slate-100">
+          <td className="py-2 mono font-semibold">{p.pi_no}</td><td className="mono text-slate-600">{p.pi_date}</td>
+          <td>{p.party||"—"}</td><td className="text-xs text-slate-600">{[...new Set(os.map(o=>o.article_code))].join(", ")}</td>
+          <td className="text-right mono">{fmt(os.reduce((a,o)=>a+(o.lines||[]).reduce((b,l)=>b+(Number(l.qty)||0),0),0))}</td>
+          <td className="text-center mono">{p.revision||0}</td><td className="capitalize">{p.status}</td>
+          <td className="text-right"><button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button></td>
+        </tr>;})}</tbody>
+      </table>}
+    </div>
+    {chosen&&items.length>0&&<div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm mt-4">
+      <div className="flex items-center gap-2 mb-3"><div className="text-sm font-semibold">{chosen.pi_no} · revision {chosen.revision||0}</div>
+        <button onClick={()=>window.print()} className="ml-auto text-xs font-semibold border border-slate-300 rounded-lg px-3 py-1.5 bg-white">Print / save PDF</button></div>
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 mb-3">
+        <div className="text-xs font-semibold text-slate-700 mb-2">Orders on this PI — editable after issue</div>
+        <div className="flex gap-2 flex-wrap">{saved.map(o=><button key={o.order_no}
+          onClick={()=>setEditingOrder(editingOrder===o.order_no?null:o.order_no)}
+          className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-1.5 bg-white text-indigo-700">
+          {editingOrder===o.order_no?"Close editor":`Edit ${o.order_no} · ${o.article_code}`}
+        </button>)}</div>
+      </div>
+      {editingOrder&&<div className="mb-4">{saved.filter(o=>o.order_no===editingOrder).map(o=><EditOrder key={o.order_no} o={o}
+        onCancel={()=>setEditingOrder(null)}
+        onSave={async patch=>{
+          setErr("");
+          try{ await api.patchOrder(o.order_no,patch); await reloadPis(); setEditingOrder(null); }
+          catch(e){ setErr(e.message||String(e)); throw e; }
+        }}/>)}</div>}
+      <PiDocument piNo={chosen.pi_no} order={{order_no:chosen.pi_no,party:first.party,customer_city:firstPi.customer_city,
+          order_date:first.order_date,pi_date:first.order_date,remarks:firstPi.remarks,items}}
+        article={{}} terms={{...(settings.pi_terms||{}),discount_pct:Number(firstPi.discount_pct??(settings.pi_terms||{}).discount_pct??40)}} config={settings.pi_config}/>
+    </div>}
+  </div>;
 }
 
 function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
@@ -963,7 +1108,7 @@ function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
           <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>
             <button onClick={()=>onSelect(selected===o.order_no?null:o.order_no)} className="text-xs font-semibold text-indigo-700 hover:underline">{selected===o.order_no?"Hide":"Detail"}</button>
             {onEdit && <button onClick={()=>{setEditing(editing===o.order_no?null:o.order_no); setConfirmDel(null);}}
-              className="text-xs font-semibold text-slate-600 hover:underline ml-2">{editing===o.order_no?"Cancel":"Edit"}</button>}
+              className="text-xs font-semibold text-slate-600 hover:underline ml-2">{editing===o.order_no?"Cancel":"Edit saved order"}</button>}
             {onRemove && <button onClick={()=>{setConfirmDel(o.order_no); setEditing(null);}} title="Remove order"
               className="text-rose-500 ml-2 text-sm leading-none">×</button>}
           </td>
@@ -992,10 +1137,14 @@ function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
               <div className="flex gap-1.5 flex-wrap">{o.lines.map((l,i)=>(
                 <span key={i} className="mono text-xs bg-white border border-slate-200 rounded-lg px-2 py-1">{l.label||l.combo}: {fmt(l.qty)}</span>))}</div>
             </div>
-            {(o.pi && (o.pi.remarks || o.pi.order_nature || o.pi.attachment)) && (
+            {(o.pi && (o.pi.remarks || o.pi.order_nature || o.pi.attachment || o.pi.upper_colour)) && (
               <div>
                 <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Notes</div>
                 {o.pi.order_nature && <div className="text-xs text-slate-600 mb-1">Nature: <b>{o.pi.order_nature}</b></div>}
+                <div className="text-xs text-slate-600 mb-1">Print: <b>{o.pi.printing?"Yes":"No"}</b></div>
+                {(o.pi.vl||o.pi.sole_colour||o.pi.upper_colour) && <div className="text-xs text-slate-600 mb-1">
+                  {[o.pi.vl&&`V/L ${o.pi.vl}`,o.pi.sole_colour&&`Sole ${o.pi.sole_colour}`,o.pi.upper_colour&&`Upper ${o.pi.upper_colour}`].filter(Boolean).join(" · ")}
+                </div>}
                 {o.pi.remarks && <div className="text-xs text-slate-600 mb-1 max-w-xs">{o.pi.remarks}</div>}
                 {o.pi.attachment && <img src={o.pi.attachment} alt="" className="max-h-20 rounded border border-slate-200" />}
               </div>
@@ -1041,12 +1190,18 @@ function shrinkImage(file, maxDim=900, quality=0.75){
 }
 
 function EditOrder({o,onSave,onCancel}){
+  const [article,setArticle]=useState(o.article_code||o.article);
   const [party,setParty]=useState(o.party||"");
   const [date,setDate]=useState(o.order_date);
   const [prio,setPrio]=useState(o.priority);
   const [lines,setLines]=useState(o.lines.map(l=>({...l})));
   const [remarks,setRemarks]=useState((o.pi&&o.pi.remarks)||"");
   const [nature,setNature]=useState((o.pi&&o.pi.order_nature)||"");
+  const [vlEdit,setVlEdit]=useState((o.pi&&o.pi.vl)||"");
+  const [soleEdit,setSoleEdit]=useState((o.pi&&o.pi.sole_colour)||"");
+  const [upperEdit,setUpperEdit]=useState((o.pi&&o.pi.upper_colour)||"");
+  const [printingEdit,setPrintingEdit]=useState(!!((o.pi&&o.pi.printing)||o.printing));
+  const [stitchingEdit,setStitchingEdit]=useState((o.pi&&o.pi.stitching)||o.stitching||"inhouse");
   const [attachment,setAttachment]=useState((o.pi&&o.pi.attachment)||null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
@@ -1061,18 +1216,39 @@ function EditOrder({o,onSave,onCancel}){
     catch(e){ setErr("Could not attach that image: "+(e.message||e)); }
   }
 
-  async function save(){
-    const clean=lines.filter(l=>(Number(l.qty)||0)>0).map(l=>({combo:l.combo,qty:Number(l.qty),label:l.label||l.combo}));
+  function changeArticle(next){
+    const combos=(INPUTS.articles[next]||{}).combo_order||[];
+    setArticle(next);
+    setLines(ls=>ls.map((l,i)=>{
+      const combo=combos.includes(l.combo)?l.combo:(combos[i]||combos[0]);
+      return {...l,combo,label:combo,sizes:undefined};
+    }).filter(l=>l.combo));
+  }
+
+  async function save(produce=false){
+    const clean=lines.filter(l=>(Number(l.qty)||0)>0).map(l=>({combo:l.combo,qty:Number(l.qty),label:l.label||l.combo,sizes:l.sizes}));
     if(!clean.length){ setErr("Keep at least one line with a quantity above zero."); return; }
+    if(produce&&(!nature.trim()||!vlEdit.trim()||!soleEdit.trim()||!upperEdit.trim())){
+      setErr("Order nature, V/L, sole colour and upper colour are required before producing the revised PI."); return;
+    }
     setBusy(true); setErr("");
-    try{ await onSave({party,order_date:date,priority:Number(prio)||2,lines:clean,
-      pi:{remarks, order_nature:nature||undefined, attachment:attachment||undefined}}); }
+    try{ await onSave({article_code:article,party,order_date:date,priority:Number(prio)||2,lines:clean,
+      pi:{remarks, order_nature:nature, vl:vlEdit, sole_colour:soleEdit, upper_colour:upperEdit,
+          printing:printingEdit, stitching:stitchingEdit,
+          production_status:produce?"produced":((o.pi&&o.pi.production_status)||"edited"),
+          revision:Number((o.pi&&o.pi.revision)||0)+1, revised_at:new Date().toISOString(),
+          attachment:attachment||undefined}}); }
     catch(e){ setErr(String(e.message||e)); setBusy(false); }
   }
 
   return <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 px-3 py-3">
-    <div className="text-xs uppercase tracking-wide text-indigo-900 font-semibold mb-2">Editing {o.order_no} · {o.article}</div>
+    <div className="text-xs uppercase tracking-wide text-indigo-900 font-semibold mb-2">Editing {o.order_no} · {article}</div>
     <div className="flex gap-3 flex-wrap mb-3">
+      <label className="text-xs text-slate-600">Article
+        <select value={article} onChange={e=>changeArticle(e.target.value)}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white max-w-64">
+          {Object.keys(INPUTS.articles).map(a=><option key={a} value={a}>{a}</option>)}
+        </select></label>
       <label className="text-xs text-slate-600">Party
         <input value={party} onChange={e=>setParty(e.target.value)}
           className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-52" /></label>
@@ -1089,13 +1265,32 @@ function EditOrder({o,onSave,onCancel}){
         <datalist id="order-nature-options">
           <option value="MTS" /><option value="Institutional" /><option value="MTO" />
         </datalist></label>
+      <label className="text-xs text-slate-600">V/L
+        <input value={vlEdit} onChange={e=>setVlEdit(e.target.value)}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-28" /></label>
+      <label className="text-xs text-slate-600">Sole colour
+        <input value={soleEdit} onChange={e=>setSoleEdit(e.target.value)}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-32" /></label>
+      <label className="text-xs text-slate-600">Upper colour
+        <input value={upperEdit} onChange={e=>setUpperEdit(e.target.value)}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-32" /></label>
+      <label className="text-xs text-slate-600">Print
+        <select value={printingEdit?"yes":"no"} onChange={e=>setPrintingEdit(e.target.value==="yes")}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          <option value="no">No</option><option value="yes">Yes</option>
+        </select></label>
+      <label className="text-xs text-slate-600">Stitching
+        <select value={stitchingEdit} onChange={e=>setStitchingEdit(e.target.value)}
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          <option value="inhouse">In-house</option><option value="outside">Outside</option>
+        </select></label>
     </div>
     <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Quantities (pairs)</div>
     <div className="flex gap-2 flex-wrap mb-2">
       {lines.map((l,i)=>{
         // Cartons are the unit the factory actually counts in; pairs are what
         // the planner needs. Show both, edit either, keep them in step.
-        const ppc=((INPUTS.packing||{})[o.article_code||o.article]||{})[l.combo];
+        const ppc=packQty(article,l.combo);
         const qty=Number(l.qty)||0;
         return <label key={i} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
           <span className="mono font-semibold">{l.label||l.combo}</span>
@@ -1120,14 +1315,14 @@ function EditOrder({o,onSave,onCancel}){
           }}
           className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
           <option value="">Pick a size range…</option>
-          {((INPUTS.articles[o.article_code||o.article]||{}).combo_order||[])
+          {((INPUTS.articles[article]||{}).combo_order||[])
             .filter(cb=>!lines.some(l=>l.combo===cb))
             .map(cb=><option key={cb} value={cb}>{cb}</option>)}
         </select></label>
       <span className="text-xs text-slate-400">Set a line to 0 to drop it.</span>
     </div>
     <div className="mb-3">
-      <AddSize articleCode={o.article_code||o.article} lines={lines} onChange={setLines} />
+      <AddSize articleCode={article} lines={lines} onChange={setLines} />
     </div>
 
     <label className="text-xs text-slate-600 block mb-2">Remarks
@@ -1138,12 +1333,13 @@ function EditOrder({o,onSave,onCancel}){
         className="block mt-1 text-xs" />
       {attachment && <img src={attachment} alt="" className="mt-1 max-h-24 rounded border border-slate-200" />}
     </label>
-    <div className="text-xs text-slate-500 mb-2">Total <b className="mono">{fmt(total)}</b> pairs.
-      The article and its size combos cannot be changed here — remove the order and re-enter it instead.</div>
+    <div className="text-xs text-slate-500 mb-2">Total <b className="mono">{fmt(total)}</b> pairs. Changing the article remaps each line to that article's packing list immediately.</div>
     {err && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5 mb-2">{err}</div>}
     <div className="flex gap-2">
-      <button disabled={busy} onClick={save}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">{busy?"Saving…":"Save changes"}</button>
+      <button disabled={busy} onClick={()=>save(false)}
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-indigo-300 bg-white text-indigo-800 disabled:opacity-50">{busy?"Saving…":"Save edits"}</button>
+      <button disabled={busy} onClick={()=>save(true)}
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">{busy?"Saving…":"Save & produce"}</button>
       <button onClick={onCancel} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Cancel</button>
     </div>
   </div>;
@@ -1217,6 +1413,36 @@ function PlanTab({state}){
   </div>;
 }
 
+function PlanningLogic({orders}){
+  const queue=[...orders].sort((a,b)=>a.priority-b.priority||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)||String(a.order_no).localeCompare(String(b.order_no)));
+  return <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden">
+    <div className="px-3 py-2 bg-slate-50 border-b border-slate-200">
+      <div className="text-sm font-semibold text-slate-700">Production-planning logic for every order</div>
+      <div className="text-xs text-slate-500">The dates below show the exact inputs, capacity calculation and machine wait used for each order.</div>
+    </div>
+    {queue.map((o,rank)=><details key={o.order_no} className="border-b border-slate-100 last:border-0">
+      <summary className="cursor-pointer px-3 py-2 text-xs">
+        <b className="mono">{o.order_no}</b> · queue #{rank+1} · P{o.priority} · {o.article} · {fmt(o.qty)} pairs · dispatch {niceDate(o.dispatch_date)}
+      </summary>
+      <div className="px-3 pb-3 text-xs text-slate-600">
+        <div className="mb-2">Release: order date <b className="mono">{o.order_date}</b>
+          {o.release_delay_days>0?<> + {o.release_delay_days} day{o.release_delay_days===1?"":"s"} for {o.printing?"printing / external handling":"external handling"}</>:" + no pre-production buffer"}
+          {" = "}<b className="mono">{o.release_date}</b>. Queue order is priority, then order date, then order number.</div>
+        <div className="overflow-x-auto"><table className="w-full" style={{minWidth:720}}>
+          <thead><tr className="text-slate-400 uppercase tracking-wide"><th className="text-left py-1">Stage / centre</th><th className="text-left">Ready</th><th className="text-left">Capacity logic</th><th className="text-left">Machine wait</th><th className="text-left">Scheduled</th></tr></thead>
+          <tbody>{o.stages.filter(s=>!s.instant).map(s=><tr key={s.stage} className="border-t border-slate-100">
+            <td className="py-1.5"><b>{s.stage}</b><div className="text-slate-400">{(INPUTS.workcenters[s.work_center]||{}).name||s.work_center}</div></td>
+            <td className="mono">{niceDate(s.ready_date)}</td>
+            <td className="mono">ceil({fmt(o.qty)} ÷ {fmt(s.capacity_per_day)}) = {Math.ceil(o.qty/s.capacity_per_day)} base day{Math.ceil(o.qty/s.capacity_per_day)===1?"":"s"}</td>
+            <td>{s.queue_wait_days?`${s.queue_wait_days} day${s.queue_wait_days===1?"":"s"}`:"None"}</td>
+            <td className="mono">{niceDate(s.start_date)} → {niceDate(s.end_date)} ({s.duration_days}d)</td>
+          </tr>)}</tbody>
+        </table></div>
+      </div>
+    </details>)}
+  </div>;
+}
+
 function ScheduleTab({state}){
   const STAGE_COLOR = {CUTTING:"#2563eb",STITCHING:"#7c3aed",PRINTING:"#0891b2",MOLDING:"#059669",ASSEMBLY:"#0d9488",PACKING:"#d97706"};
   const PRI_STYLE = {1:{bg:"#fee2e2",fg:"#b91c1c"},2:{bg:"#f1f5f9",fg:"#475569"},3:{bg:"#f8fafc",fg:"#94a3b8"}};
@@ -1235,7 +1461,7 @@ function ScheduleTab({state}){
       <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>
       <div className="text-xs text-slate-500 mt-1 leading-relaxed">
         1. Orders queue <b>first-in, first-out</b>: earliest order date first (tie: order number). Every order starts as P2 - priority is a manual override only (P1 jumps the queue, P3 yields).<br/>
-        2. Each order flows Cutting then Stitching then Molding/Assembly then Packing; a stage starts only after the previous one finishes, beginning the next day.<br/>
+        2. Each order follows its article route. A stage starts on the next planning day after the previous stage finishes; in-house Preparation appears once in that route and is not added again as a buffer.<br/>
         3. Each machine line has a daily capacity in pairs. An order takes whatever is free each day - rows higher in the queue get first claim, which is why lower rows show hatched waiting.<br/>
         4. An order never starts before its own order date (faint grey zone).<br/>
         5. Dispatch = the day packing finishes. Same inputs always give the same plan.
@@ -1293,6 +1519,7 @@ function ScheduleTab({state}){
       })}
     </div>
     </div>
+    <PlanningLogic orders={rows}/>
     <div className="flex gap-3 mt-3 flex-wrap items-center">
       {Object.entries(STAGE_COLOR).filter(([k])=>k!=="PRINTING").map(([k,c])=>(
         <span key={k} className="mono text-xs flex items-center gap-1"><span style={{width:10,height:10,background:c,borderRadius:2,display:"inline-block"}}/>{STAGE_ABBR[k]||k}</span>))}

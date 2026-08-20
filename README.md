@@ -62,7 +62,7 @@ Two notes:
 psql "$DATABASE_URL" -f db/schema.sql      # or: npm run db:setup
 ```
 
-Safe to re-run. Creates two tables and the order-number sequence.
+Safe to re-run. Creates the operational tables, the persistent PI master, and the order-number sequence.
 
 ### 4. Environment variables
 

@@ -2910,8 +2910,11 @@ export const INPUTS = {
       "2X5": 18
     },
     "ARMOUR": {
+      "7X10S": 24,
       "11X1": 24,
-      "2X5": 18
+      "2X5": 18,
+      "6X9": 18,
+      "9X12": 18
     },
     "PERCY": {
       "11X1": 24,
@@ -2922,8 +2925,11 @@ export const INPUTS = {
       "2X5": 18
     },
     "SPIKE": {
+      "7X10S": 24,
       "11X1": 24,
-      "2X5": 18
+      "2X5": 18,
+      "6X8": 18,
+      "9X12": 18
     }
   },
   "mrp": {
@@ -2972,7 +2978,7 @@ export const INPUTS = {
     "ARMOUR (LACE)": "ARMOUR"
   },
   "lead_time_rules": {
-    "stitching_inhouse_prep_days": 1,
+    "stitching_inhouse_prep_days": 0,
     "stitching_outside_transport_days": 2,
     "printing_days": 1,
     "_note": "PLACEHOLDER day counts \u2014 confirm with the factory before trusting any date."

@@ -199,3 +199,25 @@ export function singlePackQty(article, size){
   if(pos <= 12) return chart["1-5"] ?? chart["5.5-12"] ?? null;
   return chart["5.5"] ?? chart["6-12"] ?? chart["5.5-12"] ?? null;
 }
+
+/* Combination-pack lookup. SPIKE uses ARMOUR's packing list by position: its
+   fourth BOM range is named 6X8 where ARMOUR calls the equivalent band 6X9.
+   Keeping the relationship here means a clerk changing ARMOUR's packing list
+   immediately changes SPIKE too, rather than leaving a copied value stale. */
+export function pairsPerCarton(article, combo){
+  const ref = reference();
+  if(article === "SPIKE"){
+    const spike = ((ref.articles||{}).SPIKE||{}).combo_order || ["7X10S","11X1","2X5","6X8","9X12"];
+    const armour = ((ref.articles||{}).ARMOUR||{}).combo_order || ["7X10S","11X1","2X5","6X9","9X12"];
+    const i = spike.indexOf(combo);
+    if(i >= 0){
+      const inherited = ((ref.packing||{}).ARMOUR||{})[armour[i]];
+      if(inherited != null) return Number(inherited);
+      // Older database seeds only carried ARMOUR's two middle ranges. Keep
+      // SPIKE correct during migration even before reference data is re-saved.
+      return [24,24,18,18,18][i] ?? null;
+    }
+  }
+  const direct = ((ref.packing||{})[article]||{})[combo];
+  return direct == null ? null : Number(direct);
+}

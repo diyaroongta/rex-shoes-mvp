@@ -75,7 +75,9 @@ export function extraLeadDays(order, rules){
   let d = 0;
   const st = (order && order.stitching) || "inhouse";
   if(st === "outside") d += Number(rules.stitching_outside_transport_days) || 0;
-  else                 d += Number(rules.stitching_inhouse_prep_days) || 0;
+  // In-house preparation is already an explicit PREPARATION work-centre in
+  // every route. Adding another day here created a duplicate one-day buffer
+  // before Cutting in the UI schedule.
   if(order && order.printing) d += Number(rules.printing_days) || 0;
   return d;
 }
@@ -183,14 +185,21 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     let prevEnd=null;
     const stages=sr.stages.map(st=>{
       const s=slBy[st.stage]||{};
-      const wait=(prevEnd!==null&&st.start!==null)?Math.max(0,st.start-prevEnd):0;
+      const ready=prevEnd===null?sr.release_day:prevEnd+1;
+      const wait=st.start!==null?Math.max(0,st.start-ready):0;
       prevEnd=st.end;
       return {...st,start_date:fromDay(st.start,origin),end_date:fromDay(st.end,origin),
-              queue_wait_days:wait,slip_days:s.slip_days,status:s.status||"on_track"};
+              ready_date:fromDay(ready,origin), queue_wait_days:wait,
+              capacity_per_day:(wcs[st.work_center]||{}).capacity_per_day,
+              duration_days:st.end-st.start+1,
+              slip_days:s.slip_days,status:s.status||"on_track"};
     });
     const unknown=o.lines.filter(l=>!art.combos[l.combo]).map(l=>l.combo);
-    return {order_no:o.order_no,party:o.party,article:o.article_code,sole_type:art.sole_type,
+    return {order_no:o.order_no,party:o.party,article:o.article_code,article_code:o.article_code,
+      sole_type:art.sole_type, pi:o.pi||{}, stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",
+      printing:!!(o.printing||((o.pi||{}).printing)),
       qty:sr.qty,priority:o.priority,order_date:o.order_date,lines:o.lines,unknown_combos:unknown,
+      release_date:fromDay(sr.release_day,origin), release_delay_days:sr.release_day-Math.max(0,dayIndex(o.order_date,origin)),
       dispatch_date:fromDay(sr.dispatch_day,origin),dispatch_day:sr.dispatch_day,
       lead_days:sr.dispatch_day-sr.release_day,sla:sl.overall,stages};
   }).sort((a,b)=>a.dispatch_day-b.dispatch_day);

@@ -3,7 +3,7 @@
    If these pass, the planner is behaving. If test D fails, the scheduler is
    wrong no matter how plausible the dates look. */
 import assert from "node:assert/strict";
-import { compute } from "../shared/engine.js";
+import { compute, extraLeadDays } from "../shared/engine.js";
 import { INPUTS } from "../shared/inputs.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
@@ -23,6 +23,12 @@ test("empty plan is stable", () => {
   assert.equal(s.procurement.length, 0);
   assert.equal(s.totals.last_dispatch, null);
   assert.deepEqual(s.schedule_problems, []);
+});
+test("in-house preparation is not counted twice as a release buffer", () => {
+  const rules={stitching_inhouse_prep_days:1,stitching_outside_transport_days:2,printing_days:1};
+  assert.equal(extraLeadDays({stitching:"inhouse",printing:false},rules),0);
+  assert.equal(extraLeadDays({stitching:"outside",printing:false},rules),2);
+  assert.equal(extraLeadDays({stitching:"inhouse",printing:true},rules),1);
 });
 
 console.log("\nB — single order, hand-checkable");

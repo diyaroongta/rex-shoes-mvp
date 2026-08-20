@@ -20,6 +20,21 @@ export const ORDER_TEMPLATE_HEADERS = [
   "Party","Order Date","Article","Size Range","Cartons","Pairs","Priority","Order Nature","Remarks",
 ];
 
+export const ORDER_WIDE_BASE_HEADERS = [
+  "Party","Order Date","Article","Priority","Order Nature","Print","V/L","Sole Colour","Upper Colour","Remarks",
+];
+
+/* The current template is deliberately wide: one article occupies one row and
+   every size range is a quantity column. The legacy long template remains
+   readable so old files do not break. */
+export function wideTemplateHeaders(reference){
+  const articles=(reference&&reference.articles)||{};
+  const combos=[];
+  for(const a of Object.values(articles))
+    for(const c of (a.combo_order||Object.keys(a.combos||{}))) if(!combos.includes(c)) combos.push(c);
+  return [...ORDER_WIDE_BASE_HEADERS,...combos.map(c=>`Pairs ${c}`)];
+}
+
 const norm = h => String(h||"").toLowerCase().replace(/[^a-z]/g,"");
 const HEADER_ALIASES = {
   party:"party", customer:"party", customername:"party",
@@ -30,8 +45,14 @@ const HEADER_ALIASES = {
   pairs:"pairs", qty:"pairs", quantity:"pairs",
   priority:"priority", prio:"priority",
   ordernature:"order_nature", nature:"order_nature",
+  print:"printing", printing:"printing", printrequired:"printing",
+  vl:"vl", velcrolace:"vl",
+  solecolour:"sole_colour", solecolor:"sole_colour",
+  uppercolour:"upper_colour", uppercolor:"upper_colour",
   remarks:"remarks", remark:"remarks", notes:"remarks",
 };
+
+const yes = v => /^(yes|y|true|1)$/i.test(String(v||"").trim());
 
 /* Excel serial dates come through as numbers; convert without a date library. */
 function toIsoDate(v){
@@ -66,7 +87,14 @@ export function parseOrderSheet(rows, reference, packing = {}){
   }
   const map = {};
   (rows[headerRow]||[]).forEach((c,i) => { const k = HEADER_ALIASES[norm(c)]; if(k) map[k] = i; });
-  for(const req of ["party","order_date","article","combo"]){
+  const allCombos=[...new Set(Object.values(articles).flatMap(a=>a.combo_order||Object.keys(a.combos||{})))];
+  const comboCols=[];
+  (rows[headerRow]||[]).forEach((c,i)=>{
+    const token=String(c||"").toUpperCase().trim().replace(/^PAIRS?\s*[:\-]?\s*/,"").replace(/\s+/g,"");
+    if(allCombos.includes(token)) comboCols.push({combo:token,index:i});
+  });
+  const wide=comboCols.length>0 && map.combo==null;
+  for(const req of ["party","order_date","article",...(wide?[]:["combo"])]){
     if(map[req] == null) out.errors.push({ row:headerRow+1, error:`Missing required column: ${req.replace("_"," ")}` });
   }
   if(out.errors.length) return out;
@@ -82,20 +110,48 @@ export function parseOrderSheet(rows, reference, packing = {}){
 
     const party   = String(get(r,"party")   || "").trim();
     const article = String(get(r,"article") || "").trim().toUpperCase();
-    const combo   = String(get(r,"combo")   || "").trim().toUpperCase().replace(/\s+/g,"");
+    const combo   = wide ? "" : String(get(r,"combo")||"").trim().toUpperCase().replace(/\s+/g,"");
     const date    = toIsoDate(get(r,"order_date"));
+
+    // The downloadable wide template has one pre-labelled row per article.
+    // An untouched row is a placeholder, not a malformed order.
+    if(wide && article && !party && !get(r,"order_date")
+       && !comboCols.some(c=>Number(r[c.index])>0)){ out.rowCount--; continue; }
 
     if(!party)   { out.errors.push({ row:rowNo, error:"Party is blank" }); continue; }
     if(!date)    { out.errors.push({ row:rowNo, error:`Could not read the order date "${get(r,"order_date")}"` }); continue; }
     if(!articles[article]) { out.errors.push({ row:rowNo, error:`Unknown article "${article}"` }); continue; }
 
     const combos = articles[article].combo_order || Object.keys(articles[article].combos || {});
-    if(!combos.includes(combo)){
+    if(!wide && !combos.includes(combo)){
       out.errors.push({ row:rowNo, error:`"${combo}" is not a size range of ${article} (has: ${combos.join(", ")})` });
       continue;
     }
 
-    // Pairs wins when both are given — it needs no packing assumption.
+    if(wide){
+      const lines=[];
+      for(const c of comboCols){
+        if(!combos.includes(c.combo)) continue;
+        const qty=Number(r[c.index]);
+        if(Number.isFinite(qty)&&qty>0) lines.push({combo:c.combo,qty,label:c.combo});
+      }
+      if(!lines.length){ out.errors.push({row:rowNo,error:`Enter pairs in at least one size column for ${article}`}); continue; }
+      const requiredMeta=[["Order Nature","order_nature"],["V/L","vl"],["Sole Colour","sole_colour"],["Upper Colour","upper_colour"]];
+      const missingMeta=requiredMeta.filter(([,k])=>!String(get(r,k)||"").trim()).map(([label])=>label);
+      if(missingMeta.length){ out.errors.push({row:rowNo,error:`Complete ${missingMeta.join(", ")} for ${article}`}); continue; }
+      out.orders.push({order_date:date,article_code:article,party,
+        priority:Math.max(1,Math.round(Number(get(r,"priority"))||2)), lines,
+        printing:yes(get(r,"printing")),
+        pi:{order_nature:String(get(r,"order_nature")||"").trim()||undefined,
+          vl:String(get(r,"vl")||"").trim()||undefined,
+          sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,
+          upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
+          printing:yes(get(r,"printing")),
+          remarks:String(get(r,"remarks")||"").trim()||undefined}});
+      continue;
+    }
+
+    // Legacy long format: pairs wins when both are given.
     let pairs = Number(get(r,"pairs"));
     if(!isFinite(pairs) || pairs <= 0){
       const cartons = Number(get(r,"cartons"));
@@ -117,8 +173,13 @@ export function parseOrderSheet(rows, reference, packing = {}){
       lines: [],
       pi: {
         order_nature: String(get(r,"order_nature")||"").trim() || undefined,
+        vl:           String(get(r,"vl")||"").trim()           || undefined,
+        sole_colour:  String(get(r,"sole_colour")||"").trim()  || undefined,
+        upper_colour: String(get(r,"upper_colour")||"").trim() || undefined,
+        printing:     yes(get(r,"printing")),
         remarks:      String(get(r,"remarks")||"").trim()      || undefined,
       },
+      printing: yes(get(r,"printing")),
     });
     const b = buckets.get(key);
     const existing = b.lines.find(l => l.combo === combo);
@@ -126,6 +187,6 @@ export function parseOrderSheet(rows, reference, packing = {}){
     else b.lines.push({ combo, qty: pairs, label: combo });
   }
 
-  out.orders = [...buckets.values()].filter(o => o.lines.length);
+  if(!wide) out.orders = [...buckets.values()].filter(o => o.lines.length);
   return out;
 }

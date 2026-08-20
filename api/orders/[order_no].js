@@ -1,6 +1,7 @@
 import { q } from "../_lib/db.js";
 import { fail, wrap } from "../_lib/http.js";
 import { INPUTS as SEED } from "../../shared/inputs.js";
+import { syncPiMaster } from "../_lib/pis.js";
 
 /* Same reason as the create endpoint: edit an order for an article that was
    uploaded through Data & BOM and seed-based validation would reject it. */
@@ -40,7 +41,8 @@ function validatePatch(body, current, INPUTS){
       if(!art.combos[l.combo]) return { err:`unknown combo "${l.combo}" for ${out.article_code || current.article_code}` };
       if(!(Number(l.qty) > 0)) return { err:`line ${l.combo}: qty must be > 0` };
     }
-    out.lines = body.lines.map(l => ({ combo:l.combo, qty:Number(l.qty), label:l.label || l.combo }));
+    out.lines = body.lines.map(l => ({ combo:l.combo, qty:Number(l.qty), label:l.label || l.combo,
+      ...(l.sizes && typeof l.sizes === "object" ? { sizes:l.sizes } : {}) }));
   }
   // pi is a free-form blob (pi_no, price, remarks, attachment, order_nature...).
   // MERGE rather than replace, so editing just the remarks doesn't wipe pi_no.
@@ -75,6 +77,7 @@ export default wrap(async (req, res) => {
        returning order_no, order_date, article_code, priority, party, lines, pi`,
       [...vals, order_no]);
     const r = out[0];
+    try{ await syncPiMaster(); }catch(_){}
     return res.status(200).json({
       ...r,
       order_date: r.order_date instanceof Date ? r.order_date.toISOString().slice(0,10) : String(r.order_date),
@@ -82,6 +85,7 @@ export default wrap(async (req, res) => {
   }
 
   if(req.method === "DELETE"){
+    try{ await syncPiMaster(); }catch(_){}
     const { rowCount } = await q("delete from orders where order_no = $1", [order_no]);
     if(!rowCount) return fail(res, 404, `no such order: ${order_no}`);
     return res.status(200).json({ deleted: order_no });

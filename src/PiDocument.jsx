@@ -52,7 +52,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
   const label  = order.article_label || order.article_code;
 
   // The money column sits under Amount; labels are right-aligned before it.
-  const SPAN_LEFT = 6;    // Article..Article Image
+  const SPAN_LEFT = 7;    // Article..Article Image
   return (
     <div id="pi-area" style={{ fontFamily:"Arial, Helvetica, sans-serif", color:"#000", background:"#fff" }}>
 
@@ -85,7 +85,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
       <table style={{ width:"100%", borderCollapse:"collapse", marginTop:"-1px" }}>
         <thead>
           <tr>
-            {["Article","V/L","Sole","Upper Colour","As per Catalogue/MTO","Article Image",
+            {["Article","V/L","Sole","Upper Colour","Order Nature","Print","Article Image",
               "Size","Qty","MRP","Discount","Rate","Amount"].map(h=>(
               <th key={h} style={H}>{h}</th>
             ))}
@@ -98,7 +98,8 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
               <td style={N}>{g.vl}</td>
               <td style={N}>{g.sole_colour}</td>
               <td style={N}>{g.upper_colour}</td>
-              <td style={N}>{g.source}</td>
+              <td style={N}>{g.order_nature || g.source}</td>
+              <td style={N}>{g.printing ? "Yes" : "No"}</td>
               {li === 0 && (
                 <td style={{ ...N, width:"90px" }} rowSpan={g.lines.length}>
                   {g.image
@@ -119,7 +120,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
           )))}
 
           <tr>
-            <td style={{ ...C, fontWeight:700 }} colSpan={6}>
+            <td style={{ ...C, fontWeight:700 }} colSpan={SPAN_LEFT}>
               Special Remarks: {order.remarks || "None"}
             </td>
             <td style={C}></td><td style={C}></td><td style={C}></td>
