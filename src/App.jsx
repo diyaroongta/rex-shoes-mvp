@@ -577,7 +577,11 @@ function NewOrderFlow({onSaved}){
   }
 
   function printPI(){
-    const node=document.getElementById("pi-area"); if(!node)return;
+    // Every PiDocument carries the same id, so getElementById would print only
+    // the first — a multi-party sheet must print every invoice, each on its
+    // own page.
+    const nodes=[...document.querySelectorAll("#pi-area")];
+    if(!nodes.length) return;
     const w=window.open("","_blank","width=820,height=1000");
     if(!w){ setErr("Popup blocked — allow popups to print the PI."); return; }
     w.document.open();
@@ -585,7 +589,8 @@ function NewOrderFlow({onSaved}){
       <style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
       *{box-sizing:border-box}body{margin:0;padding:26px;font-family:Inter,system-ui,sans-serif;color:#1e2230}
       table{width:100%;border-collapse:collapse}input{border:none;font:inherit}@page{margin:14mm}</style></head>
-      <body>${node.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script></body></html>`);
+      <body>${nodes.map((n,i)=>
+        `<div style="${i?"page-break-before:always;":""}">${n.outerHTML}</div>`).join("")}<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script></body></html>`);
     w.document.close();
   }
 
@@ -763,7 +768,10 @@ function NewOrderFlow({onSaved}){
         <div className="serif text-lg font-semibold">4 · Proforma Invoice</div>
         <div className="flex gap-2">
           <button onClick={printPI} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Print / Save PDF</button>
-          <button onClick={save} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700">Save & send to production →</button>
+          <button onClick={save} disabled={saving}
+            className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50">
+            {saving ? "Saving…" : `Save & send ${(piCards||cards||[]).length} order${(piCards||cards||[]).length===1?"":"s"} to production →`}
+          </button>
         </div>
       </div>
       <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
@@ -826,47 +834,71 @@ function NewOrderFlow({onSaved}){
       )}
 
       {(() => {
-        // One PI, one customer. If the sheet held several, say so plainly
-        // rather than quietly invoicing them all to the first name.
-        const parties=[...new Set([...(piCards||[]),...(cards||[])]
-          .map(c=>((c.party||"").trim()||party.trim())).filter(Boolean))];
-        return parties.length>1 ? (
-          <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
-            <b>{parties.length} customers on this sheet</b> — {parties.join(", ")}. Each is saved as its own
-            order, but this invoice is for <b>{parties[0]}</b> only. Save, then raise the others from
-            Orders &amp; dispatch.
-          </div>
-        ) : null;
-      })()}
+        /* One sheet routinely carries several customers, and a PI is issued to
+           ONE customer — so a multi-party sheet produces one invoice each,
+           not a single invoice with the others quietly dropped. */
+        const src = piCards || cards || [];
+        const groups = [];
+        for(const c of src){
+          const who = ((c.party||"").trim() || party.trim() || "—");
+          let g = groups.find(x => x.party === who);
+          if(!g){ g = { party: who, cards: [] }; groups.push(g); }
+          g.cards.push(c);
+        }
 
-      <PiDocument
-        piNo={piNo}
-        order={{
-          order_no: piNo,
-          // A PI is issued to one customer. Where a sheet held several, the
-          // invoice follows the first card's party — the banner above says so.
-          party: (((piCards||cards)[0]||{}).party || "").trim() || party,
-          customer_city: customerCity,
-          order_date: orderDate, pi_date: orderDate,
-          remarks: remarks,
-          // One item per article: its own MRP table and its own catalogue photo,
-          // so a multi-article PI prices and pictures each correctly.
-          items: (piCards||cards).map(c=>({
-            article_code: c.article,
-            article_label: c.article,
-            vl, sole_colour: soleColour, upper_colour: upperColour,
-            image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
-            mrp: (INPUTS.mrp||{})[c.article] || {},
-            lines: piCards
-              ? c.lines
-              : c.lines.filter(l=>(Number(l.cartons)||0)>0)
-                  .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo })),
-          })).filter(it=>it.lines.length),
-        }}
-        article={{}}
-        terms={{ ...(piTerms||{}), discount_pct: Number(discountPct)||0 }}
-        config={piConfig}
-      />
+        return <>
+          {groups.length > 1 && (
+            <div className="text-xs rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-900 px-3 py-2 mb-3">
+              <b>{groups.length} customers on this sheet</b> — {groups.map(g=>g.party).join(", ")}.
+              One invoice each, numbered {piNo}-1 to {piNo}-{groups.length}. Saving creates every
+              order in one go.
+            </div>
+          )}
+
+          {groups.map((g, gi) => {
+            const num = groups.length > 1 ? `${piNo}-${gi+1}` : piNo;
+            const items = g.cards.map(c => ({
+              article_code: c.article,
+              article_label: c.article,
+              vl, sole_colour: soleColour, upper_colour: upperColour,
+              image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
+              mrp: (INPUTS.mrp||{})[c.article] || {},
+              lines: piCards
+                ? c.lines
+                : c.lines.filter(l=>(Number(l.cartons)||0)>0)
+                    .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo })),
+            })).filter(it => it.lines.length);
+            if(!items.length) return null;
+
+            return (
+              <div key={g.party+gi} id={`pi-${gi}`}
+                   style={{ marginBottom: groups.length>1 ? 26 : 0,
+                            paddingTop: gi ? 20 : 0,
+                            borderTop: gi ? "2px dashed #CBD5E1" : "none" }}>
+                {groups.length > 1 && (
+                  <div className="sign" style={{fontSize:11,color:"#6B7C90",marginBottom:8,fontWeight:600}}>
+                    Invoice {gi+1} of {groups.length} · {g.party}
+                  </div>
+                )}
+                <PiDocument
+                  piNo={num}
+                  order={{
+                    order_no: num,
+                    party: g.party,
+                    customer_city: customerCity,
+                    order_date: orderDate, pi_date: orderDate,
+                    remarks: remarks,
+                    items,
+                  }}
+                  article={{}}
+                  terms={{ ...(piTerms||{}), discount_pct: Number(discountPct)||0 }}
+                  config={piConfig}
+                />
+              </div>
+            );
+          })}
+        </>;
+      })()}
     </div>}
   </div>;
 }

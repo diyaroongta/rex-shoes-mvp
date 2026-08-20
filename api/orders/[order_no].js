@@ -1,10 +1,20 @@
 import { q } from "../_lib/db.js";
 import { fail, wrap } from "../_lib/http.js";
-import { INPUTS } from "../../shared/inputs.js";
+import { INPUTS as SEED } from "../../shared/inputs.js";
+
+/* Same reason as the create endpoint: edit an order for an article that was
+   uploaded through Data & BOM and seed-based validation would reject it. */
+async function reference(){
+  try{
+    const { rows } = await q("select value from reference_data where id = 1");
+    if(rows.length && rows[0].value && rows[0].value.articles) return rows[0].value;
+  }catch(e){ /* fall through */ }
+  return SEED;
+}
 
 /* Same guard as create: an unknown combo would consume machine capacity while
    ordering zero material, so it must never reach the table by any route. */
-function validatePatch(body, current){
+function validatePatch(body, current, INPUTS){
   const out = {};
   if("priority" in body){
     const p = Number(body.priority);
@@ -50,7 +60,7 @@ export default wrap(async (req, res) => {
          from orders where order_no = $1`, [order_no]);
     if(!rows.length) return fail(res, 404, `no such order: ${order_no}`);
 
-    const { patch, err } = validatePatch(req.body || {}, rows[0]);
+    const { patch, err } = validatePatch(req.body || {}, rows[0], await reference());
     if(err) return fail(res, 400, err);
 
     // Changing the article invalidates the old lines — require both together.

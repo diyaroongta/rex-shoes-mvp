@@ -1,6 +1,18 @@
 import { q, db } from "../_lib/db.js";
 import { fail, wrap } from "../_lib/http.js";
-import { INPUTS } from "../../shared/inputs.js";
+import { INPUTS as SEED } from "../../shared/inputs.js";
+
+/* Validate against the reference data actually in use, not the bundled seed.
+   An article uploaded through Data & BOM lives in the database — validating
+   against the seed rejected orders for it as "unknown article_code", which is
+   why a saved PI could vanish instead of reaching the order sheet. */
+async function reference(){
+  try{
+    const { rows } = await q("select value from reference_data where id = 1");
+    if(rows.length && rows[0].value && rows[0].value.articles) return rows[0].value;
+  }catch(e){ /* fall through to the seed */ }
+  return SEED;
+}
 
 const row = r => ({
   order_no: r.order_no,
@@ -14,7 +26,7 @@ const row = r => ({
 
 /* Reject anything the planner can't price. An unknown combo would consume
    machine capacity but order zero material — a silent under-buy. */
-function validate(o){
+function validate(o, INPUTS){
   if(!o || typeof o !== "object") return "order must be an object";
   const art = INPUTS.articles[o.article_code];
   if(!art) return `unknown article_code: ${o.article_code}`;
@@ -41,8 +53,9 @@ export default wrap(async (req, res) => {
   if(req.method === "POST"){
     const drafts = (req.body && req.body.orders) || [];
     if(!Array.isArray(drafts) || !drafts.length) return fail(res, 400, "body must be { orders: [...] }");
+    const ref = await reference();
     for(const d of drafts){
-      const bad = validate(d);
+      const bad = validate(d, ref);
       if(bad) return fail(res, 400, bad);
     }
     const client = await db().connect();
