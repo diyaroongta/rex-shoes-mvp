@@ -1,3 +1,5 @@
+import { matchArticle, articleTypeCombos, comboSizesForArticle, pairsPerCarton } from "./bridge.js";
+
 /* Bulk order import from a spreadsheet. Pure — no xlsx dependency, no I/O.
    Takes rows already read out of a sheet (array of arrays) and returns order
    drafts plus per-row errors.
@@ -38,16 +40,22 @@ export function wideTemplateHeaders(reference){
 const norm = h => String(h||"").toLowerCase().replace(/[^a-z]/g,"");
 const HEADER_ALIASES = {
   party:"party", customer:"party", customername:"party",
+  pino:"pi_no",
   orderdate:"order_date", date:"order_date",
-  article:"article", articlecode:"article", product:"article",
+  article:"article", articlecode:"article", articlename:"article", product:"article",
+  city:"city", customercity:"city",
+  colour:"upper_colour", color:"upper_colour",
   sizerange:"combo", combo:"combo", size:"combo",
   cartons:"cartons", ctn:"cartons", carton:"cartons",
   pairs:"pairs", qty:"pairs", quantity:"pairs",
   priority:"priority", prio:"priority",
   ordernature:"order_nature", nature:"order_nature",
   print:"printing", printing:"printing", printrequired:"printing",
-  vl:"vl", velcrolace:"vl",
+  vl:"vl", velcrolace:"vl", lacevelcro:"vl",
   solecolour:"sole_colour", solecolor:"sole_colour",
+  sole:"sole_type",
+  currentstatus:"current_status", currentstatuso:"current_status", status:"current_status",
+  estimateddispatchdate:"estimated_dispatch_date", estdispatchdate:"estimated_dispatch_date",
   uppercolour:"upper_colour", uppercolor:"upper_colour",
   remarks:"remarks", remark:"remarks", notes:"remarks",
 };
@@ -75,9 +83,68 @@ function toIsoDate(v){
   return isNaN(parsed) ? null : parsed.toISOString().slice(0,10);
 }
 
-export function parseOrderSheet(rows, reference, packing = {}){
+function orderBookSizeColumns(headers){
+  const candidates=[];
+  for(let i=0;i<headers.length;i++){
+    const raw=String(headers[i]??"").trim().toLowerCase();
+    if(/^\d+(?:\.5)?s$/.test(raw)) candidates.push({index:i,raw,kids:true,size:raw.replace(/s$/i,"")});
+    else if(/^\d+(?:\.5)?$/.test(raw)) candidates.push({index:i,raw,kids:null,size:raw});
+  }
+  const firstAdultOne=candidates.findIndex(c=>c.kids==null&&c.size==="1");
+  const hasNumericKids=firstAdultOne>0 && candidates.slice(0,firstAdultOne).some(c=>c.size==="6");
+  return candidates.map((c,n)=>({...c,kids:c.kids==null?(hasNumericKids&&n<firstAdultOne):c.kids,
+    key:(c.kids==null?(hasNumericKids&&n<firstAdultOne):c.kids)?c.size+"s":c.size}));
+}
+
+function parseOrderBook(rows,headerRow,map,reference,opts){
+  const articles=(reference&&reference.articles)||{};
+  const headers=rows[headerRow]||[];
+  const sizeCols=orderBookSizeColumns(headers);
+  const out={orders:[],errors:[],warnings:[],rowCount:0};
+  const get=(r,k)=>map[k]==null?null:r[map[k]];
+  const nature=/mto/i.test(opts.sheetName||"")?"MTO":/institution/i.test(opts.sheetName||"")?"Institutional":"";
+  for(let i=headerRow+1;i<rows.length;i++){
+    const r=rows[i]||[]; const row=i+1;
+    if(!r.some(v=>v!=null&&String(v).trim()!=="")) continue;
+    const rawArticle=String(get(r,"article")||"").trim();
+    if(!rawArticle || /^total$/i.test(rawArticle)) continue;
+    out.rowCount++;
+    const direct=Object.keys(articles).find(a=>a.toUpperCase()===rawArticle.toUpperCase());
+    const article=direct||matchArticle(rawArticle,"");
+    if(!article||!articles[article]){out.warnings.push({row,error:`${opts.sheetName?opts.sheetName+": ":""}Unknown article "${rawArticle}" — row skipped`});continue;}
+    const party=String(get(r,"party")||"").trim();
+    const date=toIsoDate(get(r,"order_date"));
+    if(!party||!date){out.warnings.push({row,error:`${opts.sheetName?opts.sheetName+": ":""}${!party?"Customer is blank":"Order date is blank or unreadable"} — row skipped`});continue;}
+    const vl=String(get(r,"vl")||"").trim();
+    const combos=articleTypeCombos(article,vl);
+    const lines=[];
+    const unsupported=[];
+    for(const sc of sizeCols){
+      const qty=Number(r[sc.index]);
+      if(!Number.isFinite(qty)||qty<=0) continue;
+      const combo=combos.find(c=>comboSizesForArticle(article,c,vl).includes(sc.key));
+      if(!combo){unsupported.push(sc.key);continue;}
+      let line=lines.find(l=>l.combo===combo);
+      if(!line){line={combo,qty:0,label:combo,sizes:{},size_order:comboSizesForArticle(article,combo,vl),ppc:pairsPerCarton(article,combo)};lines.push(line);}
+      line.sizes[sc.key]=(line.sizes[sc.key]||0)+qty; line.qty+=qty;
+    }
+    if(unsupported.length) out.warnings.push({row,error:`${article}: sizes ${unsupported.join(", ")} do not match its ${vl||"selected"} packing ranges and were skipped`});
+    if(!lines.length){out.warnings.push({row,error:`${article}: no positive supported size quantities — row skipped`});continue;}
+    out.orders.push({
+      order_date:date,article_code:article,party,priority:Math.max(1,Math.round(Number(get(r,"priority"))||2)),lines,
+      printing:yes(get(r,"printing")),
+      pi:{pi_no:String(get(r,"pi_no")||"").trim()||undefined,customer_city:String(get(r,"city")||"").trim()||undefined,
+        order_nature:nature||undefined,vl:vl||undefined,sole_type:String(get(r,"sole_type")||"").trim()||undefined,
+        sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
+        current_status:String(get(r,"current_status")||"").trim()||undefined,printing:yes(get(r,"printing"))}
+    });
+  }
+  return out;
+}
+
+export function parseOrderSheet(rows, reference, packing = {}, opts={}){
   const articles = (reference && reference.articles) || {};
-  const out = { orders: [], errors: [], rowCount: 0 };
+  const out = { orders: [], errors: [], warnings: [], rowCount: 0 };
   if(!rows || !rows.length){ out.errors.push({ row:0, error:"The sheet is empty." }); return out; }
 
   const headerRow = rows.findIndex(r => (r||[]).some(c => HEADER_ALIASES[norm(c)] === "article"));
@@ -94,6 +161,8 @@ export function parseOrderSheet(rows, reference, packing = {}){
     if(allCombos.includes(token)) comboCols.push({combo:token,index:i});
   });
   const wide=comboCols.length>0 && map.combo==null;
+  const orderBook=!wide && map.combo==null && orderBookSizeColumns(rows[headerRow]||[]).length>0;
+  if(orderBook) return parseOrderBook(rows,headerRow,map,reference,opts);
   for(const req of ["party","order_date","article",...(wide?[]:["combo"])]){
     if(map[req] == null) out.errors.push({ row:headerRow+1, error:`Missing required column: ${req.replace("_"," ")}` });
   }

@@ -18,11 +18,11 @@ import { comboSizes } from "./pi.js";
 /* Every size this article can be ordered in, and which range(s) cover it.
    A size can legitimately sit in more than one range (11s is in both 11X1 and
    9X12 for JILL), so callers must be able to choose. */
-export function sizeCatalog(article){
+export function sizeCatalog(article, sizeResolver=comboSizes){
   const out = new Map();
   const combos = (article && (article.combo_order || Object.keys(article.combos || {}))) || [];
   for(const combo of combos){
-    for(const size of comboSizes(combo)){
+    for(const size of sizeResolver(combo)){
       if(!out.has(size)) out.set(size, []);
       out.get(size).push(combo);
     }
@@ -34,12 +34,12 @@ export function sizeCatalog(article){
    packing        : { article: { combo: pairsPerCarton } }
    singlePackQty  : (article, size) => pairs per carton, or null
    preferredCombo : caller's choice when a size sits in several ranges */
-export function resolveSize(articleCode, article, size, packing = {}, singlePackQty = () => null, preferredCombo = null){
+export function resolveSize(articleCode, article, size, packing = {}, singlePackQty = () => null, preferredCombo = null, sizeResolver=comboSizes){
   const s = String(size || "").trim();
   const issues = [];
   if(!s) return { size:s, ok:false, issues:["No size given."] };
 
-  const catalog = sizeCatalog(article);
+  const catalog = sizeCatalog(article,sizeResolver);
   const hit = catalog.find(c => c.size.toLowerCase() === s.toLowerCase());
 
   let combo = null, ambiguous = false;

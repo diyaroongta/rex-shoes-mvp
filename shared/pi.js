@@ -61,7 +61,9 @@ export function buildLines(order, mrp = {}, terms = DEFAULT_TERMS){
   const out = [], missing = [];
 
   for(const line of (order.lines || [])){
-    const sizes = comboSizes(line.combo);
+    const sizes = Array.isArray(line.size_order) && line.size_order.length
+      ? line.size_order.map(String)
+      : comboSizes(line.combo);
     if(!sizes.length){ missing.push({ combo: line.combo, why: "unknown size range" }); continue; }
 
     const m = mrp[line.combo];

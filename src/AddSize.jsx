@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
-import { singlePackQty } from "../shared/bridge.js";
+import { singlePackQty, articleTypeCombos, comboSizesForArticle } from "../shared/bridge.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 
 /* Add one specific size to an order, instead of a whole size range.
@@ -10,7 +10,7 @@ import { REF as INPUTS } from "./lib/refdata.js";
    there is no pack quantity on file, this says so and asks — it never guesses,
    because a wrong pack quantity changes the pair count, the material and the
    dispatch date together. */
-export default function AddSize({ articleCode, lines, onChange }){
+export default function AddSize({ articleCode, articleType, lines, onChange }){
   const article = INPUTS.articles[articleCode];
   const [size,setSize]=useState("");
   const [combo,setCombo]=useState("");
@@ -18,10 +18,12 @@ export default function AddSize({ articleCode, lines, onChange }){
   const [amount,setAmount]=useState("");
   const [manualPpc,setManualPpc]=useState("");
 
-  const catalog = useMemo(()=> article ? sizeCatalog(article) : [], [article, articleCode]);
+  const scopedArticle=useMemo(()=>article?{...article,combo_order:articleTypeCombos(articleCode,articleType)}:null,[article,articleCode,articleType]);
+  const sizeResolver=c=>comboSizesForArticle(articleCode,c,articleType);
+  const catalog = useMemo(()=> scopedArticle ? sizeCatalog(scopedArticle,sizeResolver) : [], [scopedArticle, articleCode, articleType]);
   const res = useMemo(()=> (article && size)
-    ? resolveSize(articleCode, article, size, INPUTS.packing || {}, singlePackQty, combo || null)
-    : null, [article, articleCode, size, combo]);
+    ? resolveSize(articleCode, scopedArticle, size, INPUTS.packing || {}, singlePackQty, combo || null,sizeResolver)
+    : null, [article, scopedArticle, articleCode, articleType, size, combo]);
 
   if(!article) return null;
 

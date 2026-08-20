@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { compute, fromDay, dayIndex } from "../shared/engine.js";
-import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbiguous, mapToCombo, singlePackQty, pairsPerCarton, readPrompt } from "../shared/bridge.js";
+import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, matchAmbiguous, mapToCombo, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle } from "../shared/bridge.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
@@ -11,6 +11,7 @@ import StockTab from "./StockTab.jsx";
 import DispatchTab from "./DispatchTab.jsx";
 import PartiesTab from "./PartiesTab.jsx";
 import AddSize from "./AddSize.jsx";
+import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes } from "../shared/pi.js";
 
@@ -157,6 +158,7 @@ export default function App(){
     ["Setup", [
       ["parties","Parties & terms"],
       ["catalogue","Catalogue"],
+      ["rules","Packing & BOM rules"],
       ["data","Data & BOM"],
     ]],
   ];
@@ -268,7 +270,9 @@ export default function App(){
 
           <div style={{padding:"18px 22px 60px"}}>
 
-        {tab==="intake" && <NewOrderFlow onSaved={addOrders} />}
+        {/* Keep PI intake mounted while navigating. Its draft belongs to the
+            clerk until Save or Close PI, not to the currently visible tab. */}
+        <div style={{display:tab==="intake"?"block":"none"}}><NewOrderFlow onSaved={addOrders} /></div>
         {tab==="pis" && <PiDatabaseTab />}
         {tab==="orders" && <>
           <OrdersTab state={state} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
@@ -285,6 +289,7 @@ export default function App(){
         {tab==="bulk" && <BulkOrderTab onImported={()=>{ refresh(); setTab("orders"); }} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="catalogue" && <CatalogueTab />}
+        {tab==="rules" && <ArticleRulesTab />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
           </div>
@@ -330,6 +335,8 @@ function NewOrderFlow({onSaved}){
   const [saving,setSaving]=useState(false);
   const [readingPi,setReadingPi]=useState(false);
   const [piCards,setPiCards]=useState(null);
+  const [piPreviewCards,setPiPreviewCards]=useState(null);
+  const [piPreviewSignature,setPiPreviewSignature]=useState("");
   const [customerCity,setCustomerCity]=useState("");
   const [vl,setVl]=useState("");
   const [soleColour,setSoleColour]=useState("Black");
@@ -352,15 +359,27 @@ function NewOrderFlow({onSaved}){
   const fileRef=useRef(null);
   const ARTS=Object.keys(INPUTS.articles);
   const withArticleDetails = (card, extra={}) => ({
-    ...card,
+    party,
+    customer_city:customerCity,
+    order_date:orderDate,
+    priority:Number(priority)||2,
     order_nature: orderNature,
     stitching,
     printing,
     vl,
     sole_colour: soleColour,
     upper_colour: upperColour,
+    ...card,
     ...extra,
   });
+  const sourceCards=piCards||cards||[];
+  const sourceSignature=JSON.stringify(sourceCards.map(c=>({
+    article:c.article,party:c.party,customer_city:c.customer_city,order_date:c.order_date,
+    priority:c.priority,order_nature:c.order_nature,stitching:c.stitching,
+    printing:c.printing,vl:c.vl,sole_colour:c.sole_colour,upper_colour:c.upper_colour,
+    lines:(c.lines||[]).map(l=>({combo:l.combo,cartons:l.cartons,ppc:l.ppc,qty:l.qty,sizes:l.sizes}))
+  })));
+  const previewStale=!!piPreviewCards && piPreviewSignature!==sourceSignature;
 
   function handleFile(file){
     if(!file)return; setErr("");
@@ -429,11 +448,12 @@ function NewOrderFlow({onSaved}){
         if(item.upper_colour) setUpperColour(item.upper_colour);
 
         // group the per-size rows back onto the article's own size ranges
-        const combos=INPUTS.articles[art].combo_order||Object.keys(INPUTS.articles[art].combos||{});
+        const itemType=item.vl||vl;
+        const combos=articleTypeCombos(art,itemType);
         const bySize={}; for(const r of (item.rows||[])) if(r&&r.size!=null) bySize[String(r.size)]=Number(r.qty)||0;
         const lines=[];
         for(const combo of combos){
-          const sizes=comboSizes(combo);
+          const sizes=comboSizesForArticle(art,combo,itemType);
           const hit=sizes.filter(sz=>bySize[sz]!=null);
           if(!hit.length) continue;
           const sizeMap={}; let qty=0;
@@ -443,6 +463,8 @@ function NewOrderFlow({onSaved}){
         const leftover=Object.keys(bySize).filter(k=>bySize[k]>0);
         if(leftover.length) notes.push(`${art}: sizes ${leftover.join(", ")} do not fall in any of its size ranges`);
         if(lines.length) built.push(withArticleDetails({article:art, lines, fromPi:true}, {
+          party:d.customer||party, customer_city:d.customer_city||customerCity,
+          order_date:d.pi_date||orderDate, priority:Number(d.priority)||Number(priority)||2,
           vl:item.vl||vl, sole_colour:item.sole_colour||soleColour,
           upper_colour:item.upper_colour||upperColour,
           order_nature:item.order_nature||orderNature,
@@ -450,7 +472,7 @@ function NewOrderFlow({onSaved}){
         }));
       }
       if(!built.length) throw new Error("No recognisable article lines were found in that PI.");
-      setPiCards(built);
+      setPiCards(built); setCards(null); setPiPreviewCards(null); setPiPreviewSignature("");
       setSavedMsg(`Read ${built.length} article(s), ${built.reduce((a,c)=>a+c.lines.length,0)} size ranges from the PI.`
         + (notes.length ? "  Check: "+notes.join("; ") : ""));
     }catch(e){ setErr("Could not read that PI: "+(e.message||e)); }
@@ -491,7 +513,9 @@ function NewOrderFlow({onSaved}){
     const out=(parsed.orders||[]).map(o=>{
       const art=matchArticle(o.category,o.color)||ARTS[0];
       const combos=INPUTS.articles[art].combo_order;
-      return withArticleDetails({ article:art, party:(o.party||"").trim(), matched:!!matchArticle(o.category,o.color),
+      return withArticleDetails({ article:art, party:(o.party||"").trim(), customer_city:o.customer_city||customerCity,
+               order_date:parsed.date||orderDate, priority:Number(o.priority)||Number(priority)||2,
+               matched:!!matchArticle(o.category,o.color),
                ambiguous:matchAmbiguous(o.category,o.color), raw:(o.category||"")+" "+(o.color||""),
         lines:(o.lines||[]).map(l=>{
           const big=(l.group||"").toUpperCase()==="BIG";
@@ -509,40 +533,83 @@ function NewOrderFlow({onSaved}){
                   ppcKnown: singlePackQty(art,m.single)!=null};
         })});
     });
-    setCards(out.length?out:null);
+    setCards(out.length?out:null); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature("");
     if(!out.length) setErr("Nothing readable found — try a clearer photo or enter by hand.");
   }
 
-  function blankCard(){ const art=ARTS[0]; const c=INPUTS.articles[art].combo_order[0];
-    return withArticleDetails({article:art, matched:true, raw:"", lines:[{combo:c,exact:true,raw:"",cartons:0,ppc:packQty(art,c)||24}]}); }
-  const startBlank=()=>{ setCards([blankCard()]); setErr(""); setSavedMsg(""); };
+  function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art,type)[0];
+    return withArticleDetails({article:art, vl:type==="ALL"?"":type, matched:true, raw:"", lines:[{combo:c,exact:true,raw:"",cartons:0,ppc:packQty(art,c)||24}]}); }
+  const startBlank=()=>{ setCards([blankCard()]); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setErr(""); setSavedMsg(""); };
 
   const setCard=(i,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setPiCard=(i,patch)=>setPiCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setLine=(i,k,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.map((l,m)=>m===k?{...l,...patch}:l)}:c));
-  const addLine=i=>setCards(cs=>cs.map((c,j)=>{ if(j!==i)return c; const cb=INPUTS.articles[c.article].combo_order[0];
+  const addLine=i=>setCards(cs=>cs.map((c,j)=>{ if(j!==i)return c; const cb=articleTypeCombos(c.article,c.vl)[0];
     return {...c,lines:[...c.lines,{combo:cb,exact:true,raw:"",cartons:0,ppc:packQty(c.article,cb)||24}]}; }));
   const delLine=(i,k)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
   const addCard=()=>setCards(cs=>[...(cs||[]),blankCard()]);
   const delCard=i=>setCards(cs=>cs.filter((_,j)=>j!==i));
+  function remapForArticle(card,art,type){
+    const availableTypes=articleTypes(art);
+    const nextType=availableTypes.includes(String(type||"").toUpperCase())
+      ? String(type).toUpperCase() : (availableTypes[0]==="ALL"?(type||""):availableTypes[0]);
+    const oldCombos=articleTypeCombos(card.article,card.vl);
+    const combos=articleTypeCombos(art,nextType);
+    const lines=(card.lines||[]).map((l,k)=>{
+      const foundPos=oldCombos.indexOf(l.combo);
+      const oldPos=foundPos>=0?foundPos:k;
+      const combo=combos[Math.min(oldPos,combos.length-1)]||combos[0];
+      const ppc=packQty(art,combo)||24;
+      if(card.fromPi){
+        const qty=Number(l.qty)||Object.values(l.sizes||{}).reduce((a,b)=>a+(Number(b)||0),0);
+        const sizes=comboSizesForArticle(art,combo,nextType);
+        const base=Math.floor(qty/Math.max(1,sizes.length)), rem=qty-base*sizes.length;
+        return {...l,combo,ppc,qty,sizes:Object.fromEntries(sizes.map((s,n)=>[s,base+(n<rem?1:0)])),size_order:sizes};
+      }
+      return {...l,combo,ppc,size_order:comboSizesForArticle(art,combo,nextType)};
+    });
+    return {...card,article:art,vl:nextType,matched:true,lines};
+  }
   function onArticleChange(i,art){
-    setCards(cs=>cs.map((c,j)=>{ if(j!==i)return c;
-      const combos=INPUTS.articles[art].combo_order;
-      return {...c,article:art,matched:true,lines:c.lines.map(l=>{
-        const combo=combos.includes(l.combo)?l.combo:combos[0];
-        return {...l,combo,ppc:packQty(art,combo)||24}; })}; }));
+    setCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art,c.vl):c));
+  }
+  function onPiArticleChange(i,art){
+    setPiCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art,c.vl):c));
+  }
+  function onTypeChange(i,type,isPi=false){
+    const setter=isPi?setPiCards:setCards;
+    setter(cs=>cs.map((c,j)=>j===i?remapForArticle(c,c.article,type):c));
   }
 
-  const articleDetails = (c, change) => (
+  const articleDetails = (c, change, changeType) => (
     <div className="grid gap-2 px-3 py-3 border-b border-slate-200 bg-white"
          style={{gridTemplateColumns:"repeat(auto-fit,minmax(125px,1fr))"}}>
+      <label className="text-xs text-slate-500">Customer *
+        <input value={c.party||""} onChange={e=>change({party:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+      <label className="text-xs text-slate-500">City
+        <input value={c.customer_city||""} onChange={e=>change({customer_city:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+      <label className="text-xs text-slate-500">Order date *
+        <input type="date" value={c.order_date||""} onChange={e=>change({order_date:e.target.value})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono" /></label>
+      <label className="text-xs text-slate-500">Priority
+        <select value={c.priority||2} onChange={e=>change({priority:Number(e.target.value)})}
+          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          <option value={1}>1 — urgent</option><option value={2}>2 — normal</option><option value={3}>3 — low</option>
+        </select></label>
       <label className="text-xs text-slate-500">Order nature *
         <input list="order-nature-options" value={c.order_nature||""}
           onChange={e=>change({order_nature:e.target.value})}
           className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
       <label className="text-xs text-slate-500">V/L *
-        <input value={c.vl||""} onChange={e=>change({vl:e.target.value})} placeholder="Velcro / Lace"
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        {articleTypes(c.article).includes("ALL")
+          ? <input value={c.vl||""} onChange={e=>changeType?changeType(e.target.value):change({vl:e.target.value})} placeholder="Velcro / Lace"
+              className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" />
+          : <select value={(c.vl||articleTypes(c.article)[0]).toUpperCase()} onChange={e=>changeType?changeType(e.target.value):change({vl:e.target.value})}
+              className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+              {articleTypes(c.article).map(t=><option key={t}>{t}</option>)}
+            </select>}</label>
       <label className="text-xs text-slate-500">Sole colour *
         <input value={c.sole_colour||""} onChange={e=>change({sole_colour:e.target.value})}
           className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
@@ -587,67 +654,47 @@ function NewOrderFlow({onSaved}){
   };
 
   async function save(){
-    if(!piCards && (!cards||!totals||totals.pairs<=0)){ setErr("Add at least one line with cartons before saving."); return; }
-    // A single-size line with no combo has no material rate — saving it would
-    // silently under-order for that size. Block the save and name which lines
-    // still need a combo picked, rather than guessing one.
-    // An order filed under the wrong customer is worse than one that stops to
-    // ask, so a missing party blocks the save rather than quietly defaulting.
-    const noParty=[...(piCards||[]),...(cards||[])].filter(c=>!((c.party||"").trim()||party.trim()));
+    const source=piPreviewCards||[];
+    if(!source.length){ setErr("Generate the PI from Match & Check before saving."); return; }
+    if(previewStale){ setErr("Match & Check changed. Regenerate the PI with the latest edits before saving."); return; }
+    const noParty=source.filter(c=>!String(c.party||"").trim());
     if(noParty.length){
       setErr("Enter the customer for: "+noParty.map(c=>c.article).join(", ")
         +". One sheet can list several customers, so each order needs its own.");
       return;
     }
-    const incomplete=[...(piCards||[]),...(cards||[])].filter(c=>
+    const incomplete=source.filter(c=>
       !String(c.order_nature||"").trim() || !String(c.vl||"").trim()
-      || !String(c.sole_colour||"").trim() || !String(c.upper_colour||"").trim());
+      || !String(c.sole_colour||"").trim() || !String(c.upper_colour||"").trim()
+      || !String(c.order_date||"").trim());
     if(incomplete.length){
       setErr("Complete order nature, V/L, sole colour and upper colour for every article before issuing the PI: "
         +incomplete.map(c=>c.article).join(", "));
       return;
     }
-    const unresolved=(cards||[]).flatMap((c,ci)=>c.lines
+    const unresolved=source.flatMap(c=>c.lines
       .map((l,li)=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
       .filter(Boolean));
     if(unresolved.length){ setErr("Pick a combo for: "+unresolved.join(", ")+" before saving — or set its cartons to 0 to leave it out."); return; }
-    // No order_no here — the server assigns it from a sequence, so two clerks
-    // saving at the same moment can never collide.
-    if(piCards){
-      const piDrafts=piCards.map(c=>({
-        order_date:orderDate, article_code:c.article,
-        priority:Number(priority)||2, party:(c.party||"").trim() || party.trim() || "—",
-        lines:c.lines.map(l=>({combo:l.combo, qty:l.qty, label:l.label||l.combo, sizes:l.sizes})),
-        stitching:c.stitching||"inhouse", printing:!!c.printing,
-        pi:{pi_no:piNumberFor(c,piCards), discount_pct:Number(discountPct)||0, customer_city:customerCity,
-            vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
-            remarks, order_nature:c.order_nature, printing:!!c.printing,
-            production_status:"produced", attachment:attachment||undefined},
-      }));
-      setSaving(true); setErr("");
-      try{
-        const created=await onSaved(piDrafts);
-        setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
-        setPiCards(null); setCards(null); setImg(null); setAttachment(null);
-      }catch(e){ setErr("Could not save: "+(e.message||e)); }
-      finally{ setSaving(false); }
-      return;
-    }
-    const drafts=cards.filter((c,i)=>totals.per[i].pairs>0).map((c,i)=>({
-      order_date:orderDate, article_code:c.article,
-      priority:Number(priority)||2, party:(c.party||"").trim() || party.trim() || "—",
-      lines:c.lines.filter(l=>(Number(l.cartons)||0)>0).map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:(l.raw||l.combo)})),
+    const drafts=source.map(c=>({
+      order_date:c.order_date, article_code:c.article,
+      priority:Number(c.priority)||2, party:String(c.party||"").trim(),
+      lines:(c.lines||[]).filter(l=>c.fromPi?(Number(l.qty)||0)>0:(Number(l.cartons)||0)>0).map(l=>c.fromPi
+        ? {combo:l.combo,qty:Number(l.qty)||0,label:l.label||l.combo,sizes:l.sizes,size_order:l.size_order||comboSizesForArticle(c.article,l.combo,c.vl)}
+        : {combo:l.combo,qty:(Number(l.cartons)||0)*(Number(l.ppc)||0),label:l.raw||l.combo,size_order:comboSizesForArticle(c.article,l.combo,c.vl)}),
       stitching:c.stitching||"inhouse", printing:!!c.printing,
-      pi:{pi_no:piNumberFor(c,cards), price:prices[c.article],
+      pi:{pi_no:piNumberFor(c,source), price:prices[c.article], discount_pct:Number(discountPct)||0,
+          customer_city:c.customer_city||"",
           vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
           remarks, order_nature:c.order_nature, printing:!!c.printing,
           production_status:"produced", attachment:attachment||undefined},
-    }));
+    })).filter(d=>d.lines.length);
+    if(!drafts.length){ setErr("Add a quantity to at least one checked line before saving."); return; }
     setSaving(true); setErr("");
     try{
       const created=await onSaved(drafts);
       setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
-      setCards(null); setImg(null); setAttachment(null);
+      setCards(null); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setImg(null); setAttachment(null);
     }catch(e){ setErr("Could not save: "+(e.message||e)); }
     finally{ setSaving(false); }
   }
@@ -671,49 +718,19 @@ function NewOrderFlow({onSaved}){
   }
 
   return <div>
-    {/* step 0: who the order is for, and what kind. Set first so it frames
-        everything downstream rather than being an afterthought on the PI. */}
+    <datalist id="order-nature-options">
+      <option value="MTS" /><option value="Institutional" /><option value="MTO" />
+    </datalist>
+    {/* step 1: photo */}
     <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
-      <div className="serif text-lg font-semibold mb-1">1 · Party &amp; article defaults</div>
-      <p className="text-slate-500 text-xs mb-3">These values prefill each article. You can set different details and Print Yes/No for every article below.</p>
-      <div className="grid gap-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))"}}>
-        <label className="text-xs text-slate-600">Party
-          <input value={party} onChange={e=>setParty(e.target.value)} placeholder="Customer name"
-            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-        <label className="text-xs text-slate-600">City
-          <input value={customerCity} onChange={e=>setCustomerCity(e.target.value)}
-            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-        <label className="text-xs text-slate-600">Order nature
-          <input list="order-nature-options" value={orderNature} onChange={e=>setOrderNature(e.target.value)}
-            placeholder="MTS / Institutional / MTO, or type your own"
-            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" />
-          <datalist id="order-nature-options">
-            <option value="MTS" /><option value="Institutional" /><option value="MTO" />
-          </datalist></label>
-        <label className="text-xs text-slate-600">Order date
-          <input type="date" value={orderDate} onChange={e=>setOrderDate(e.target.value)}
-            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono" /></label>
-        <label className="text-xs text-slate-600">Stitching
-          <select value={stitching} onChange={e=>setStitching(e.target.value)}
-            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
-            <option value="inhouse">In-house</option>
-            <option value="outside">Outside</option>
-          </select></label>
-        <label className="text-xs text-slate-600">Printing needed
-          <select value={printing?"yes":"no"} onChange={e=>setPrinting(e.target.value==="yes")}
-            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
-            <option value="no">No</option><option value="yes">Yes</option>
-          </select></label>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="serif text-lg font-semibold">1 · Order photo or PI</div>
+        {(cards||piCards||piPreviewCards||img) && <button onClick={()=>{
+          if(!window.confirm("Close this PI and discard the current draft?")) return;
+          setCards(null);setPiCards(null);setPiPreviewCards(null);setPiPreviewSignature("");setImg(null);setAttachment(null);setRawRead("");setSavedMsg("");setErr("");
+          setPiNo("PI-"+new Date().getFullYear()+"-"+String(Math.floor(Math.random()*900)+100));
+        }} className="text-xs font-semibold text-rose-700 border border-rose-200 rounded-lg px-3 py-1.5 bg-white">Close PI</button>}
       </div>
-      <p className="text-xs text-slate-400 mt-2">
-        Outside stitching adds transport time and printing adds its own lead time. In-house preparation
-        is scheduled once at the Preparation work centre, with no duplicate buffer day.
-      </p>
-    </div>
-
-    {/* step 2: photo */}
-    <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
-      <div className="serif text-lg font-semibold mb-1">2 · Order photo</div>
       {img
         ? <div className="rounded-xl overflow-hidden border border-slate-200">
             <img src={img} alt="order" className="w-full object-contain bg-slate-800" style={{maxHeight:260}}/>
@@ -755,15 +772,8 @@ function NewOrderFlow({onSaved}){
 
     {/* step 2: match & check */}
     {cards && <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
-      <div className="serif text-lg font-semibold mb-1">3 · Match & check</div>
+      <div className="serif text-lg font-semibold mb-1">2 · Match &amp; check</div>
       <p className="text-slate-500 text-xs mb-3">Each category is matched to a real factory article; each size entry to a real combo pack. Yellow = mapped approximately — please confirm. Pairs = cartons × pairs/carton (from your packing chart, editable).</p>
-      <div className="flex gap-3 flex-wrap mb-3">
-        <label className="text-xs text-slate-500">Party<br/><input value={party} onChange={e=>setParty(e.target.value)} placeholder="Customer name" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-0.5"/></label>
-        <label className="text-xs text-slate-500">Order date<br/><input type="date" value={orderDate} onChange={e=>setOrderDate(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-0.5"/></label>
-        <label className="text-xs text-slate-500">Priority<br/>
-          <select value={priority} onChange={e=>setPriority(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-0.5 bg-white">
-            <option value={1}>1 — urgent</option><option value={2}>2 — normal</option><option value={3}>3 — low</option></select></label>
-      </div>
       {cards.map((c,i)=>(
         <div key={i} className="border border-slate-200 rounded-xl mb-3 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2.5 bg-slate-50 border-b border-slate-200 flex-wrap">
@@ -774,7 +784,7 @@ function NewOrderFlow({onSaved}){
             <span className="mono text-xs ml-auto" style={{color:SOLE_COLOR[INPUTS.articles[c.article].sole_type]}}>{INPUTS.articles[c.article].sole_type}</span>
             <button onClick={()=>delCard(i)} className="text-rose-500 px-1.5 text-lg leading-none">×</button>
           </div>
-          {articleDetails(c, patch=>setCard(i,patch))}
+          {articleDetails(c, patch=>setCard(i,patch), type=>onTypeChange(i,type))}
           {(c.ambiguous || !c.matched || !PACKING[c.article]) && (
             <div className="px-3 py-2 text-xs border-b border-amber-200 bg-amber-50 text-amber-900 space-y-1">
               {!c.matched && <div><b>Not recognised.</b> The reader could not match “{(c.raw||"").trim()}” to a product — pick the right one above.</div>}
@@ -794,7 +804,7 @@ function NewOrderFlow({onSaved}){
                     <select value={l.combo || ""} onChange={e=>{const combo=e.target.value; setLine(i,k,{combo,single:undefined,exact:true,ppc:packQty(c.article,combo)||24});}}
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
                       {!l.combo && <option value="">— pick a combo —</option>}
-                      {INPUTS.articles[c.article].combo_order.map(cb=><option key={cb} value={cb}>{cb}</option>)}</select>
+                      {articleTypeCombos(c.article,c.vl).map(cb=><option key={cb} value={cb}>{cb}</option>)}</select>
                     {!l.exact && l.combo && <span className="text-amber-700 font-semibold" style={{fontSize:10}}>confirm</span>}
                   </div>
                   {!l.combo && l.single && (
@@ -816,7 +826,7 @@ function NewOrderFlow({onSaved}){
               </div>))}
             <button onClick={()=>addLine(i)} className="text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-md px-2.5 py-1.5 mt-1">+ Add combo</button>
             <div className="mt-2">
-              <AddSize articleCode={c.article}
+              <AddSize articleCode={c.article} articleType={c.vl}
                 lines={c.lines.map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), sizes:l.sizes, label:l.raw||l.combo}))}
                 onChange={next=>setCards(cs=>cs.map((cc,j)=>{
                   if(j!==i) return cc;
@@ -834,23 +844,42 @@ function NewOrderFlow({onSaved}){
                   return {...cc, lines:merged};
                 }))} />
             </div>
+            <details className="mt-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
+              <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article} · {c.vl||"All"}</summary>
+              <div className="mt-2"><ArticleRules article={c.article} type={c.vl} compact /></div>
+            </details>
           </div>
         </div>))}
       <button onClick={addCard} className="text-sm font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg px-3 py-1.5">+ Add category</button>
     </div>}
 
-    {/* step 3: PI + save */}
-    {((cards && totals) || piCards) && <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+    {/* step 3: explicitly snapshot checked edits into the PI */}
+    {!!sourceCards.length && <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
       <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
-        <div className="serif text-lg font-semibold">4 · Proforma Invoice</div>
+        <div>
+          <div className="serif text-lg font-semibold">3 · Generate Proforma Invoice</div>
+          <div className="text-xs text-slate-500">The PI is created from the current Match &amp; Check values only when you press Generate.</div>
+        </div>
         <div className="flex gap-2">
-          <button onClick={printPI} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Print / Save PDF</button>
-          <button onClick={save} disabled={saving}
+          <button onClick={()=>{setPiPreviewCards(structuredClone(sourceCards));setPiPreviewSignature(sourceSignature);setErr("");}}
+            className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700">
+            {piPreviewCards?(previewStale?"Regenerate PI with latest edits":"Generate PI again"):"Generate PI from these edits"}
+          </button>
+          {piPreviewCards && <button onClick={()=>{setPiNo("PI-"+new Date().getFullYear()+"-"+String(Math.floor(Math.random()*900)+100));setPiPreviewCards(structuredClone(sourceCards));setPiPreviewSignature(sourceSignature);}}
+            className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white">New PI number</button>}
+          <button onClick={printPI} disabled={!piPreviewCards||previewStale} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 disabled:opacity-40">Print / Save PDF</button>
+          <button onClick={save} disabled={saving||!piPreviewCards||previewStale}
             className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50">
-            {saving ? "Saving…" : `Save & send ${(piCards||cards||[]).length} order${(piCards||cards||[]).length===1?"":"s"} to production →`}
+            {saving ? "Saving…" : `Save & send ${piPreviewCards?.length||0} order${piPreviewCards?.length===1?"":"s"} to production →`}
           </button>
         </div>
       </div>
+      {previewStale && <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
+        Match &amp; Check has changed since this PI was generated. Press <b>Regenerate PI with latest edits</b> before printing or saving.
+      </div>}
+      {!piPreviewCards && <div className="text-xs rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-900 px-3 py-2 mb-3">
+        Finish checking the item rows, then generate the PI. No invoice or production order has been created yet.
+      </div>}
       <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
         <label className="text-xs text-slate-500">Attach screenshot
           <input type="file" accept="image/*" capture={undefined} onChange={async e=>{
@@ -862,8 +891,7 @@ function NewOrderFlow({onSaved}){
             className="block mt-0.5 w-full text-xs" />
           {attachment && <span className="text-xs text-emerald-700">attached — will save with this order</span>}
         </label>
-        {[["Customer city",customerCity,setCustomerCity,"text"],
-          ["Discount %",discountPct,setDiscountPct,"number"],
+        {[["Discount %",discountPct,setDiscountPct,"number"],
           ["Special remarks",remarks,setRemarks,"text"]].map(([lab,val,set,type])=>(
           <label key={lab} className="text-xs text-slate-500">{lab}
             <input type={type} value={val} onChange={e=>set(type==="number"?e.target.value:e.target.value)}
@@ -881,8 +909,12 @@ function NewOrderFlow({onSaved}){
           </p>
           {piCards.map((c,ci)=>(
             <div key={ci} className="mb-3 last:mb-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
-              <div className="text-xs font-semibold text-slate-700 px-3 py-2 bg-slate-50">{c.article}</div>
-              {articleDetails(c, patch=>setPiCard(ci,patch))}
+              <div className="px-3 py-2 bg-slate-50">
+                <select value={c.article} onChange={e=>onPiArticleChange(ci,e.target.value)} className="text-xs font-semibold border border-slate-200 rounded px-2 py-1 bg-white">
+                  {ARTS.map(a=><option key={a}>{a}</option>)}
+                </select>
+              </div>
+              {articleDetails(c, patch=>setPiCard(ci,patch), type=>onTypeChange(ci,type,true))}
               <div className="p-3">
               {c.lines.map((l,li)=>(
                 <div key={li} className="flex items-center gap-2 flex-wrap mb-1.5">
@@ -901,6 +933,10 @@ function NewOrderFlow({onSaved}){
                 </div>
               ))}
               </div>
+              <details className="mx-3 mb-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
+                <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article} · {c.vl||"All"}</summary>
+                <div className="mt-2"><ArticleRules article={c.article} type={c.vl} compact /></div>
+              </details>
             </div>
           ))}
         </div>
@@ -910,7 +946,7 @@ function NewOrderFlow({onSaved}){
         /* One sheet routinely carries several customers, and a PI is issued to
            ONE customer — so a multi-party sheet produces one invoice each,
            not a single invoice with the others quietly dropped. */
-        const src = piCards || cards || [];
+        const src = piPreviewCards || [];
         const groups = [];
         for(const c of src){
           const who = ((c.party||"").trim() || party.trim() || "—");
@@ -938,10 +974,11 @@ function NewOrderFlow({onSaved}){
               source:c.order_nature,
               image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
               mrp: (INPUTS.mrp||{})[c.article] || {},
-              lines: piCards
-                ? c.lines
+              lines: c.fromPi
+                ? c.lines.map(l=>({...l,size_order:l.size_order||comboSizesForArticle(c.article,l.combo,c.vl)}))
                 : c.lines.filter(l=>(Number(l.cartons)||0)>0)
-                    .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo })),
+                    .map(l=>({ combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:l.raw||l.combo,
+                      size_order:comboSizesForArticle(c.article,l.combo,c.vl) })),
             })).filter(it => it.lines.length);
             if(!items.length) return null;
 
@@ -960,8 +997,8 @@ function NewOrderFlow({onSaved}){
                   order={{
                     order_no: num,
                     party: g.party,
-                    customer_city: customerCity,
-                    order_date: orderDate, pi_date: orderDate,
+                    customer_city: g.cards[0]?.customer_city||"",
+                    order_date: g.cards[0]?.order_date||orderDate, pi_date: g.cards[0]?.order_date||orderDate,
                     remarks: remarks,
                     items,
                   }}
@@ -992,6 +1029,7 @@ const VIEWS = {
   stock:       {title:"Stock register",     sub:"Opening, received, issued and what is left"},
   parties:     {title:"Parties & terms",    sub:"Customers and their agreed commercial terms"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
+  rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };
@@ -1322,7 +1360,7 @@ function EditOrder({o,onSave,onCancel}){
       <span className="text-xs text-slate-400">Set a line to 0 to drop it.</span>
     </div>
     <div className="mb-3">
-      <AddSize articleCode={article} lines={lines} onChange={setLines} />
+      <AddSize articleCode={article} articleType={vlEdit} lines={lines} onChange={setLines} />
     </div>
 
     <label className="text-xs text-slate-600 block mb-2">Remarks

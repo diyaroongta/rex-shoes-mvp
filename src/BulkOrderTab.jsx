@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import * as XLSX from "xlsx";
-import { parseOrderSheet, wideTemplateHeaders, ORDER_WIDE_BASE_HEADERS } from "../shared/order-import.js";
+import { parseOrderSheet } from "../shared/order-import.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
 
@@ -15,32 +15,24 @@ export default function BulkOrderTab({ onImported }){
   const [err,setErr]=useState("");
 
   function downloadTemplate(){
-    const headers=wideTemplateHeaders(INPUTS);
-    const comboStart=ORDER_WIDE_BASE_HEADERS.length;
-    const rows=[headers];
-    for(const article of Object.keys(INPUTS.articles)){
-      const row=Array(headers.length).fill("");
-      row[2]=article; row[3]=2; row[5]="No"; row[7]="Black";
-      // Mark non-applicable size columns with a dash; valid columns stay blank
-      // for pair quantities. This keeps every article on exactly one row.
-      const valid=new Set(INPUTS.articles[article].combo_order||[]);
-      for(let i=comboStart;i<headers.length;i++){
-        const combo=headers[i].replace(/^Pairs\s+/i,"");
-        if(!valid.has(combo)) row[i]="—";
-      }
-      rows.push(row);
-    }
+    const headers=["PI NO","ORDER DATE","CUSTOMER NAME","CITY","ARTICLE NAME","COLOUR","SOLE COLOUR","LACE /VELCRO","SOLE","CURRENT STATUS 2.0","PRINT",
+      "5s","6s","7s","8s","9s","10s","11s","12s","13s","1","2","3","4","5","6","7","8","9","10","11","12","TOTAL"];
+    const example=["","2026-08-20","Example customer","Delhi","SPIKE","Black","Black","VELCRO","EVA","PRODUCTION NOT STARTED","No",
+      0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,null];
+    const rows=[headers,example,Array(headers.length).fill("")];
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!freeze"]={xSplit:3,ySplit:1};
-    ws["!cols"]=headers.map((h,i)=>({wch:i===0?24:i===2?25:i>=comboStart?12:16}));
+    ws["AG2"]={t:"n",f:"SUM(L2:AF2)"};
+    ws["!freeze"]={xSplit:5,ySplit:1};
+    ws["!autofilter"]={ref:`A1:AG3`};
+    ws["!cols"]=headers.map((h,i)=>({wch:i===2?24:i===4?22:i<11?16:8}));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Orders");
     const help=XLSX.utils.aoa_to_sheet([
       ["Factory OS order template"],
-      ["Use one row per article. Enter ordered PAIRS under every applicable size-range column."],
-      ["Required before import: Party, Order Date, Article, and at least one size quantity."],
-      ["Required before issuing a PI: Order Nature, V/L, Sole Colour and Upper Colour. Print accepts Yes or No."],
-      ["Rows for articles you are not ordering can remain untouched."],
+      ["Use one row per article. Enter PAIRS under each individual size, just like the supplied Order Book."],
+      ["Required to import a row: ORDER DATE, CUSTOMER NAME, ARTICLE NAME, and at least one supported size quantity."],
+      ["5s–13s are kids sizes. The later 1–12 columns are adult sizes. LACE / VELCRO selects the correct ranges and packing list."],
+      ["The importer also reads the existing INSTITUTIONAL ORDER BOOK and MTO ORDER BOOK sheet layouts, including .xlsm files."],
     ]);
     help["!cols"]=[{wch:110}];
     XLSX.utils.book_append_sheet(wb, help, "Read me");
@@ -53,9 +45,17 @@ export default function BulkOrderTab({ onImported }){
     try{
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type:"array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:null });
-      setResult(parseOrderSheet(rows, INPUTS, INPUTS.packing || {}));
+      const combined={orders:[],errors:[],warnings:[],rowCount:0};
+      for(const sheetName of wb.SheetNames){
+        const ws=wb.Sheets[sheetName];
+        const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+        const parsed=parseOrderSheet(rows,INPUTS,INPUTS.packing||{},{sheetName});
+        combined.orders.push(...parsed.orders);
+        combined.errors.push(...parsed.errors.map(e=>({...e,error:`${sheetName}: ${e.error}`})));
+        combined.warnings.push(...(parsed.warnings||[]));
+        combined.rowCount+=parsed.rowCount;
+      }
+      setResult(combined);
     }catch(e){ setErr("Could not read that file: "+(e.message||e)); }
   }
 
@@ -76,9 +76,8 @@ export default function BulkOrderTab({ onImported }){
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
     <div className="text-sm font-semibold text-slate-700 mb-1">Add orders from a spreadsheet</div>
     <p className="text-xs text-slate-500 mb-3">
-      One row per article, with all of that article's size ranges across the row. Enter pairs in
-      the applicable size columns. The importer still accepts the previous one-size-range-per-row
-      template, so existing files continue to work.
+      One row per article, with all individual sizes across that row. This importer reads the supplied
+      Institutional and MTO Order Book layouts, the new template, and the previous Factory OS templates.
     </p>
 
     <div className="flex gap-3 items-center flex-wrap mb-4">
@@ -87,7 +86,7 @@ export default function BulkOrderTab({ onImported }){
         Download blank template
       </button>
       <label className="text-xs text-slate-600">
-        <input type="file" accept=".xlsx,.xls,.csv"
+        <input type="file" accept=".xlsx,.xlsm,.xls,.csv"
           onChange={e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=""; pick(f); }}
           className="text-sm" />
       </label>
@@ -109,6 +108,15 @@ export default function BulkOrderTab({ onImported }){
             </div>
             <div className="max-h-40 overflow-y-auto text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">
               {result.errors.map((e,i)=><div key={i}>Row {e.row}: {e.error}</div>)}
+            </div>
+          </div>
+        )}
+
+        {!!result.warnings?.length && (
+          <div className="mb-3">
+            <div className="text-xs font-semibold text-amber-800 mb-1">{result.warnings.length} warning{result.warnings.length>1?"s":""} (recognised rows can still be imported):</div>
+            <div className="max-h-40 overflow-y-auto text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+              {result.warnings.map((e,i)=><div key={i}>Row {e.row}: {e.error}</div>)}
             </div>
           </div>
         )}

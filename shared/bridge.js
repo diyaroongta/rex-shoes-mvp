@@ -2,6 +2,7 @@
    matching, and the prompt used to read a handwritten slip.
    READ_PROMPT lives here so the SERVER owns it — the browser never sends a prompt. */
 import { INPUTS } from "./inputs.js";
+import { comboSizes } from "./pi.js";
 
 /* The bundled inputs.js is only the SEED. Once reference data is uploaded it
    lives in the database, and both the browser and the server call
@@ -219,5 +220,48 @@ export function pairsPerCarton(article, combo){
     }
   }
   const direct = ((ref.packing||{})[article]||{})[combo];
-  return direct == null ? null : Number(direct);
+  if(direct != null) return Number(direct);
+  if(SPLIT_ARTICLE_TYPES.has(article)){
+    const combos=(((ref.articles||{})[article]||{}).combo_order)||[];
+    const i=combos.indexOf(combo);
+    return [24,24,18,18,18][i]??null;
+  }
+  return null;
+}
+
+/* JILL/ARMOUR/PERCY/SPADE/SPIKE are single catalogue articles with two order
+   types. Their first three ranges are the Velcro/kids roll; their last two
+   ranges are the Lace/adult roll. Keeping this rule in one shared helper stops
+   the intake screen, bulk importer and rules display from interpreting the
+   same article differently. Legacy articles whose code already says (LACE) or
+   (VELCRO) continue to expose their complete own range list. */
+export const SPLIT_ARTICLE_TYPES = new Set(["JILL","ARMOUR","PERCY","SPADE","SPIKE"]);
+
+export function articleTypes(article){
+  if(SPLIT_ARTICLE_TYPES.has(article)) return ["VELCRO","LACE"];
+  const text=String(article||"").toUpperCase();
+  if(/\(L(?:ACE)?\)/.test(text)) return ["LACE"];
+  if(/\(V(?:ELCRO)?\)/.test(text)) return ["VELCRO"];
+  return ["ALL"];
+}
+
+export function articleTypeCombos(article, type){
+  const ref=reference();
+  const all=(((ref.articles||{})[article]||{}).combo_order)
+    || Object.keys((((ref.articles||{})[article]||{}).combos)||{});
+  if(!SPLIT_ARTICLE_TYPES.has(article)) return [...all];
+  const t=String(type||"").trim().toUpperCase();
+  if(t.startsWith("L")) return all.slice(3);
+  if(t.startsWith("V")) return all.slice(0,3);
+  return [...all];
+}
+
+export function comboSizesForArticle(article, combo, type){
+  const isLace=SPLIT_ARTICLE_TYPES.has(article)
+    && String(type||"").trim().toUpperCase().startsWith("L");
+  if(!isLace) return comboSizes(combo);
+  const [a,b]=String(combo||"").toUpperCase().replace(/[SB]$/," ").trim().split("X");
+  const adult=["6","7","8","9","10","11","12","13"];
+  const i=adult.indexOf(a), j=adult.indexOf(b);
+  return i<0||j<0 ? comboSizes(combo) : adult.slice(i,Math.max(i,j)+1);
 }
