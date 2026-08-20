@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
 import { comboSizes } from "../shared/pi.js";
-import { singlePackQty } from "../shared/bridge.js";
+import { singlePackQty, matchArticle } from "../shared/bridge.js";
 import { INPUTS } from "../shared/inputs.js";
 
 let passed = 0, failed = 0;
@@ -18,6 +18,16 @@ test("a range ending in S is the small run, not an empty range", () => {
   // 7X10S used to explode to nothing, hiding the whole range.
   assert.deepEqual(comboSizes("7X10S"), ["7s","8s","9s","10s"]);
   assert.deepEqual(comboSizes("7X10S"), comboSizes("7X10"));
+});
+
+console.log("\nA2 — a plain name must not match a longer article name");
+test("Gala matches Gola, not Gola Plus", () => {
+  // Both contain "gola", but PLUS carries a word the sheet never wrote.
+  // Getting this wrong invoices a different product at a different price.
+  assert.equal(matchArticle("Gala","Blk"), "REX GOLA (V)");
+  assert.equal(matchArticle("Gala (L)","Blk"), "REX GOLA (L)");
+  assert.equal(matchArticle("Gala Plus","Blk"), "REX GOLA PLUS", "only an explicit Plus reaches PLUS");
+  assert.equal(matchArticle("Gala Plus (V)","Blk"), "REX GOLA PLUS");
 });
 
 console.log("\nB — size catalog");

@@ -67,10 +67,18 @@ function rank(category,color){
   const baseHits=idx.filter(x=>x.base.join(" ")===text);
   if(baseHits.length===1) return {pool:baseHits,text,words,exact:true};   // unique family, e.g. "jill"
 
-  const scored=idx.map(x=>({x,score:x.base.filter(t=>words.includes(t)).length})).filter(y=>y.score>0);
+  const scored=idx.map(x=>({x,
+    score:x.base.filter(t=>words.includes(t)).length,
+    extra:x.base.filter(t=>!words.includes(t)).length,   // tokens the text never mentioned
+  })).filter(y=>y.score>0);
   if(!scored.length) return {pool:[],text,words};
   const best=Math.max(...scored.map(y=>y.score));
-  let pool=scored.filter(y=>y.score===best).map(y=>y.x);
+  let tied=scored.filter(y=>y.score===best);
+  // "Gola" must not match REX GOLA PLUS: both contain "gola", but PLUS carries
+  // an extra word the sheet never wrote. Fewest unmentioned words wins, so a
+  // plain name matches the plain article and only "Gola Plus" reaches PLUS.
+  const fewestExtra=Math.min(...tied.map(y=>y.extra));
+  let pool=tied.filter(y=>y.extra===fewestExtra).map(y=>y.x);
   const wantColour=COLOURS.find(c=>words.includes(c))||null;
   let wantVariant=null; for(const w of words) if(VARIANTS[w]) wantVariant=VARIANTS[w];
   if(wantVariant){ const v=pool.filter(x=>x.variant===wantVariant); if(v.length) pool=v; }
