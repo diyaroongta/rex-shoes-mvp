@@ -362,7 +362,11 @@ function NewOrderFlow({onSaved}){
     if(a>-1&&b>-1) text=text.slice(a,b+1);
     setRawRead(text);
     const parsed=JSON.parse(text);
-    if(parsed.party && !party) setParty(parsed.party);
+    // A sheet routinely lists several customers. Each order carries its own
+    // party; the header field is only a fallback for a genuinely single-party
+    // sheet, so it is never used to overwrite a party the reader actually read.
+    const readParties=[...new Set((parsed.orders||[]).map(o=>(o.party||"").trim()).filter(Boolean))];
+    if(readParties.length===1 && !party) setParty(readParties[0]);
     if(parsed.date){
       const today=new Date(); const rd=new Date(parsed.date);
       const diff=(rd-today)/86400000;
@@ -463,7 +467,7 @@ function NewOrderFlow({onSaved}){
     const out=(parsed.orders||[]).map(o=>{
       const art=matchArticle(o.category,o.color)||ARTS[0];
       const combos=INPUTS.articles[art].combo_order;
-      return { article:art, matched:!!matchArticle(o.category,o.color),
+      return { article:art, party:(o.party||"").trim(), matched:!!matchArticle(o.category,o.color),
                ambiguous:matchAmbiguous(o.category,o.color), raw:(o.category||"")+" "+(o.color||""),
         lines:(o.lines||[]).map(l=>{
           const big=(l.group||"").toUpperCase()==="BIG";
@@ -522,6 +526,14 @@ function NewOrderFlow({onSaved}){
     // A single-size line with no combo has no material rate — saving it would
     // silently under-order for that size. Block the save and name which lines
     // still need a combo picked, rather than guessing one.
+    // An order filed under the wrong customer is worse than one that stops to
+    // ask, so a missing party blocks the save rather than quietly defaulting.
+    const noParty=[...(piCards||[]),...(cards||[])].filter(c=>!((c.party||"").trim()||party.trim()));
+    if(noParty.length){
+      setErr("Enter the customer for: "+noParty.map(c=>c.article).join(", ")
+        +". One sheet can list several customers, so each order needs its own.");
+      return;
+    }
     const unresolved=(cards||[]).flatMap((c,ci)=>c.lines
       .map((l,li)=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
       .filter(Boolean));
@@ -531,7 +543,7 @@ function NewOrderFlow({onSaved}){
     if(piCards){
       const piDrafts=piCards.map(c=>({
         order_date:orderDate, article_code:c.article,
-        priority:Number(priority)||2, party:party||"—",
+        priority:Number(priority)||2, party:(c.party||"").trim() || party.trim() || "—",
         lines:c.lines.map(l=>({combo:l.combo, qty:l.qty, label:l.label||l.combo, sizes:l.sizes})),
         stitching, printing,
         pi:{pi_no:piNo, discount_pct:Number(discountPct)||0, customer_city:customerCity,
@@ -549,7 +561,7 @@ function NewOrderFlow({onSaved}){
     }
     const drafts=cards.filter((c,i)=>totals.per[i].pairs>0).map((c,i)=>({
       order_date:orderDate, article_code:c.article,
-      priority:Number(priority)||2, party:party||"—",
+      priority:Number(priority)||2, party:(c.party||"").trim() || party.trim() || "—",
       lines:c.lines.filter(l=>(Number(l.cartons)||0)>0).map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), label:(l.raw||l.combo)})),
       stitching, printing,
       pi:{pi_no:piNo, price:prices[c.article],
@@ -813,11 +825,28 @@ function NewOrderFlow({onSaved}){
         </div>
       )}
 
+      {(() => {
+        // One PI, one customer. If the sheet held several, say so plainly
+        // rather than quietly invoicing them all to the first name.
+        const parties=[...new Set([...(piCards||[]),...(cards||[])]
+          .map(c=>((c.party||"").trim()||party.trim())).filter(Boolean))];
+        return parties.length>1 ? (
+          <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
+            <b>{parties.length} customers on this sheet</b> — {parties.join(", ")}. Each is saved as its own
+            order, but this invoice is for <b>{parties[0]}</b> only. Save, then raise the others from
+            Orders &amp; dispatch.
+          </div>
+        ) : null;
+      })()}
+
       <PiDocument
         piNo={piNo}
         order={{
           order_no: piNo,
-          party, customer_city: customerCity,
+          // A PI is issued to one customer. Where a sheet held several, the
+          // invoice follows the first card's party — the banner above says so.
+          party: (((piCards||cards)[0]||{}).party || "").trim() || party,
+          customer_city: customerCity,
           order_date: orderDate, pi_date: orderDate,
           remarks: remarks,
           // One item per article: its own MRP table and its own catalogue photo,

@@ -384,8 +384,16 @@ serves REX GOLA (V), (L) and PLUS.
 Every PI uses the Catalogue tab's uploaded photo when there is one and falls back to the seeded
 catalogue photo otherwise, so invoices picture the right shoe with no manual step.
 
-12 of the 14 loaded articles have a photo. **PERCY and SPADE do not** — they have BOMs but no
-catalogue entry. 15 catalogue articles (Toddler, Courage, Jem, Thunder, Ryder, Glide, Grace,
+11 of the 14 loaded articles have a photo; **PERCY, SPADE and REX GOLA PLUS** print
+"no photo on file" instead. Gola Plus is deliberately unmapped: the catalogue PDF has a single
+"Gola" entry, and Gola Plus is a different product with its own sole and a higher MRP band
+(679–869 against Gola's 499–784), so borrowing the Gola photo put the wrong shoe on its
+invoices. A missing photo is recoverable; a wrong one going to a customer is not.
+
+Four photos are still shared across articles, which is correct only if they really are the same
+shoe: **Armour** covers ARMOUR, (VELCRO) and (LACE); **Gola** covers (V) and (L); **Smart Boy**
+and **Silky Belly** each cover their black and white variants — so half of those show the wrong
+colour. Worth confirming. 15 catalogue articles (Toddler, Courage, Jem, Thunder, Ryder, Glide, Grace,
 Bolt, Nova, Swan, Trek, Symbol, Apex, Aero, Tennis shoe) have photos and MRP bands but no BOM,
 so they cannot be scheduled or costed yet.
 
@@ -452,6 +460,23 @@ there automatically, ordered by production sequence.
 **Per-order lead time.** Outside stitching adds transport days, in-house adds a preparation
 window, and printing adds its own — set per order in intake, configured in
 `INPUTS.lead_time_rules`. All three day counts are placeholders.
+
+## Several customers on one sheet
+
+A single handwritten page routinely carries four or five different customers, each with their
+own order underneath. **Party is read per order, not per sheet.** The reader is told explicitly
+never to carry one name across the whole page when other names appear, and to return an empty
+party rather than borrowing a neighbour's — an order filed under the wrong customer is worse
+than one that stops to ask.
+
+Each card in the review screen has its own **Customer for this order** field, outlined amber
+while empty. **Saving is blocked** until every order has one, naming which articles are missing
+it. The header party field is only a fallback for a genuinely single-party sheet and never
+overwrites a name the reader actually read.
+
+A PI is issued to one customer. When a batch spans several, the invoice panel says so, names
+them, and invoices only the first — the rest still save as their own orders and can be invoiced
+from Orders &amp; dispatch.
 
 ## Ordering a specific size
 

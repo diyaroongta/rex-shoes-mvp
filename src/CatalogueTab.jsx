@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { REF as INPUTS } from "./lib/refdata.js";
+import { articlePhoto } from "../shared/catalogue-seed.js";
 import * as api from "./lib/client.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
@@ -62,9 +63,9 @@ export default function CatalogueTab(){
         const combos=a.combo_order||Object.keys(a.combos||{});
         return <div key={code} className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="h-40 bg-slate-100 flex items-center justify-center relative">
-            {e.image
-              ? <img src={e.image} alt={code} className="w-full h-full object-cover" />
-              : <span className="text-xs text-slate-400">No photo</span>}
+            {(e.image || articlePhoto(code))
+              ? <img src={e.image || articlePhoto(code)} alt={code} className="w-full h-full object-cover" />
+              : <span className="text-xs text-slate-400">No photo — add one and it appears on this article&rsquo;s invoices</span>}
             <label className="absolute bottom-2 right-2 text-xs font-semibold bg-white/95 border border-slate-300 rounded-lg px-2 py-1 cursor-pointer">
               {busy===code ? "Uploading…" : e.image ? "Replace" : "Add photo"}
               <input type="file" accept="image/*" className="hidden"

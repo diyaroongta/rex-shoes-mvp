@@ -104,7 +104,9 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
                   {g.image
                     ? <img src={g.image} alt={g.article_label}
                         style={{ maxWidth:"84px", maxHeight:"84px", objectFit:"contain" }} />
-                    : ""}
+                    : <span style={{ fontSize:"8px", color:"#94A3B8", lineHeight:1.3, display:"block" }}>
+                        no photo<br/>on file
+                      </span>}
                 </td>
               )}
               <td style={N}>{l.size}</td>

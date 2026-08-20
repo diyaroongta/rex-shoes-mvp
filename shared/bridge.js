@@ -150,7 +150,7 @@ const productList = () => [...new Set(articleIndex().map(a=>a.base.join(" ")))]
   .map(n=>n.replace(/\b\w/g,c=>c.toUpperCase())).join(", ");
 
 export const readPrompt = () => { const PRODUCT_LIST = productList(); return `You are reading a HANDWRITTEN shoe factory order.
-The top line is often the CUSTOMER/PARTY name (e.g. 'Jindal Mahroli') - capture it as "party".
+PARTIES - a single sheet very often lists SEVERAL DIFFERENT CUSTOMERS, each with their own order beneath them. A party name is usually a business or a person plus a town (e.g. 'Bansal Bannala', 'Dhanani Shoe Guhati', 'Star Flw Manglore', 'Paras Indore'), often numbered 1) 2) 3). Put each order's own customer on that order as "party". NEVER carry one party across the whole sheet when other names appear - an order filed under the wrong customer is worse than one with no customer at all. If the sheet genuinely has only one party at the top, repeat it on every order. If an order has no identifiable party, return "party":"" for it rather than guessing or borrowing a neighbour's.
 KNOWN PRODUCTS - the \"category\" you return must be one of these: ${PRODUCT_LIST}. Category headers on the sheet are often shortened or misspelled ('Gala' = Gola, 'Silky Bly' = Silky Belly) - map what you see onto the closest known product. Where a product comes in Black and White, put which in \"color\"; otherwise leave color empty.
 HOW ENTRIES ARE WRITTEN - read this part carefully, it is the single most common source of error:
 - STACKED (one number written directly ABOVE another, like a fraction, often with a bar between them): the TOP number is the SIZE and the BOTTOM number is that size's NUMBER OF CARTONS. Each stack is a SEPARATE line item. Two stacks written next to each other, e.g. 8-over-2 then 9-over-3, are TWO lines - size 8 with 2 cartons, and size 9 with 3 cartons. NEVER merge two stacks into a single size-pair, and never take one stack's bottom number as the carton count for both.
@@ -159,12 +159,12 @@ Sizes are from 6 7 8 9 10 11 12 13 1 2 3 4 5 5.5. Entries may be grouped under '
 CHECKSUM - use it, do not skip it: a category often writes its carton total at the end (e.g. '= 8 CTN'). Never return that total as a line item, but DO add up the cartons across the lines you are about to return and check they equal it. If they do not match, you have misread - go back and re-read the entries as separate stacks before answering.
 Any date is Indian DD/MM/YY format (11/6/26 = 11 June 2026); if no date, return "".
 
-WORKED EXAMPLE - a sheet that reads: "Jindal Mahroli" / "Gala (V) BLK  Big   8-over-2   9-over-3" / "Small   8-over-1   4-over-2        = 8 CTN"
-{"date":"","party":"Jindal Mahroli","orders":[{"category":"Gola","color":"Black","lines":[{"sizes":["8"],"cartons":2,"group":"BIG"},{"sizes":["9"],"cartons":3,"group":"BIG"},{"sizes":["8"],"cartons":1,"group":"SMALL"},{"sizes":["4"],"cartons":2,"group":"SMALL"}]}]}
-Four separate lines, and 2+3+1+2 = 8, which matches the stated total - so the read is correct.
+WORKED EXAMPLE - a sheet that reads: "1) Jindal Mahroli" / "Gala (V) BLK  Big  8-over-2  9-over-3" / "Small  8-over-1  4-over-2  = 8 CTN" / "2) Paras Indore" / "Armour (L) BLK  1-over-1  2-over-1  3-over-1  = 3 CTN"
+{"date":"","orders":[{"party":"Jindal Mahroli","category":"Gola","color":"Black","lines":[{"sizes":["8"],"cartons":2,"group":"BIG"},{"sizes":["9"],"cartons":3,"group":"BIG"},{"sizes":["8"],"cartons":1,"group":"SMALL"},{"sizes":["4"],"cartons":2,"group":"SMALL"}]},{"party":"Paras Indore","category":"Armour","color":"Black","lines":[{"sizes":["1"],"cartons":1,"group":null},{"sizes":["2"],"cartons":1,"group":null},{"sizes":["3"],"cartons":1,"group":null}]}]}}
+Two customers, each with their own order. Jindal's four lines total 2+3+1+2 = 8 and Paras's three total 3 - both match their stated totals, so the read is correct.
 
 Return ONLY valid JSON, no prose, no code fences:
-{"date":"YYYY-MM-DD or empty","party":"","orders":[{"category":"Smart Boy","color":"Black","lines":[{"sizes":["6","8"],"cartons":2,"group":null}]}]}`; };
+{"date":"YYYY-MM-DD or empty","orders":[{"party":"customer for THIS order, or empty","category":"Smart Boy","color":"Black","lines":[{"sizes":["6","8"],"cartons":2,"group":null}]}]}`; };
 
 /* Pairs-per-carton for a SINGLE size on its own (the chart's "SINGLE
    PACKSIZES" rows), as opposed to a named range combo. Falls back to null
