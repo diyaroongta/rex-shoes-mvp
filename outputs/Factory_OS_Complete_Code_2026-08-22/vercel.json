@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/read-order-photo.js": { "maxDuration": 60 },
+    "api/copilot.js":          { "maxDuration": 30 }
+  }
+}
