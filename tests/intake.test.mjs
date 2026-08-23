@@ -63,6 +63,38 @@ assert.ok(pi.lines.some(l=>l.size==="13s") && pi.lines.some(l=>l.size==="11"),
 const ambiguous=buildPhotoCards({orders:[{category:"Spike",lines:[{sizes:["11"],cartons:1}]}]},INPUTS);
 assert.ok(ambiguous.issues.some(issue=>issue.includes("V/L was not readable")));
 
+/* THE TWO FAMILIES BEHAVE OPPOSITELY, and the intake has to get both right.
+
+   SPIKE/ARMOUR/JILL: one article, two rolls        -> ONE card
+   REX GOLA (V)/(L) : two articles, two BOMs        -> TWO cards
+
+   "Gala (L)" must therefore reach REX GOLA (L), not the (V) article with a
+   lace label stuck on it — those are different bills of material. */
+const belgaum=buildPhotoCards({orders:[{party:"",category:"Gala",color:"",lines:[
+  {sizes:["11"],cartons:3,type:"VELCRO"},
+  {sizes:["11","13"],cartons:1,type:"VELCRO"},
+  {sizes:["1","3"],cartons:1,type:"VELCRO"},
+  {sizes:["5"],cartons:1,type:"LACE"},
+  {sizes:["4","5"],cartons:1,type:"LACE"},
+]}]},INPUTS);
+assert.deepEqual(belgaum.cards.map(c=>c.article).sort(),["REX GOLA (L)","REX GOLA (V)"],
+  "a legacy (V)/(L) pair is two articles with two BOMs, not one article with a label");
+assert.deepEqual(belgaum.issues,[],
+  "a single-type article can never have an unreadable V/L — its code already states it");
+
+// The legacy ranges keep the ORDINARY roll. Relabelling them to the adult roll
+// (which is only right for split articles) matched nothing and priced at zero.
+const gv=belgaum.cards.find(c=>c.article==="REX GOLA (V)");
+assert.deepEqual(gv.lines.find(l=>l.combo==="11X13").size_order,["11s","12s","13s"],
+  "REX GOLA is a Lace/Velcro CLOSURE, not a kids/adult roll — 11X13 stays 11s..13s");
+assert.deepEqual(gv.lines.find(l=>l.combo==="1X3").size_order,["1","2","3"]);
+
+// A bare 8 on REX GOLA fits 8X10 (as 8s) and 8X10B (as 8). Both are real, so
+// the tie is reported and the clerk picks — it is never broken silently.
+const tie=buildPhotoCards({orders:[{category:"Gala",lines:[{sizes:["8","10"],cartons:2,type:"VELCRO"}]}]},INPUTS);
+assert.ok(tie.issues.some(i=>i.includes("fits both 8X10 and 8X10B")),
+  "an genuinely ambiguous roll must be reported, never guessed");
+
 const unknown=buildPhotoCards({orders:[{
   party:"KP Gurgaon",category:"GLAMOUR",color:"WHI / U COL",lines:[
     {sizes:["13"],cartons:1,type:"VELCRO"},
@@ -72,5 +104,18 @@ assert.equal(unknown.cards.length,0,"an unknown handwritten article must not fal
 assert.ok(unknown.issues.some(issue=>issue.includes("GLAMOUR: no configured article match")));
 assert.ok(readPrompt().includes("NEVER force an unknown product onto the closest catalogue name"),
   "the AI reader must preserve an unknown heading so intake can block it safely");
+
+/* A customer is frequently just a town — Belgaum, Indore. The reader must read
+   the heading as written rather than deciding a name is "only a place", and it
+   is given the real customer list so rough handwriting resolves to a customer
+   that exists instead of a plausible invention. */
+assert.ok(readPrompt().includes("A PARTY IS OFTEN JUST A TOWN"),
+  "a town name is a customer here, not a delivery destination");
+const withParties=readPrompt([{name:"Belgaum"},{name:"Paras Indore"}]);
+assert.ok(withParties.includes("KNOWN CUSTOMERS")&&withParties.includes("Belgaum, Paras Indore"));
+assert.ok(!readPrompt([]).includes("KNOWN CUSTOMERS"),
+  "with no party master the reader simply returns what it reads");
+assert.ok(withParties.includes("Never bend a name that does not fit onto the nearest one"),
+  "a new customer must survive the known-customer list rather than being snapped to it");
 
 console.log("  pass  photo stacks retain exact sizes, type and packing rate; unknown articles are blocked\n");

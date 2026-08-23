@@ -158,8 +158,22 @@ export function mapToCombo(sizes, articleCombos, big){
 const productList = () => [...new Set(articleIndex().map(a=>a.base.join(" ")))]
   .map(n=>n.replace(/\b\w/g,c=>c.toUpperCase())).join(", ");
 
-export const readPrompt = () => { const PRODUCT_LIST = productList(); return `You are reading a HANDWRITTEN shoe factory order.
+/* The reader is told the real article list so it never has to guess a product.
+   It gets the real CUSTOMER list for the same reason: a handwritten name is far
+   easier to read correctly when you already know the twenty it could be, and a
+   name invented out of bad handwriting files the order — and the invoice — to
+   the wrong customer. */
+export const readPrompt = (knownParties = []) => {
+  const PRODUCT_LIST = productList();
+  const names = [...new Set((knownParties || [])
+    .map(p => String((p && p.name) || p || "").trim()).filter(Boolean))];
+  const PARTY_LIST = names.length
+    ? `KNOWN CUSTOMERS - the factory's current customer list is: ${names.join(", ")}. If a heading is clearly one of these, return it EXACTLY as spelled here, even when the handwriting is rough. If it is clearly someone else, return what is written. Never bend a name that does not fit onto the nearest one in this list.\n`
+    : "";
+  return `You are reading a HANDWRITTEN shoe factory order.
+${PARTY_LIST}
 PARTIES - a single sheet very often lists SEVERAL DIFFERENT CUSTOMERS, each with their own order beneath them. A party name is usually a business or a person plus a town (e.g. 'Bansal Bannala', 'Dhanani Shoe Guhati', 'Star Flw Manglore', 'Paras Indore'), often numbered 1) 2) 3). Put each order's own customer on that order as "party". NEVER carry one party across the whole sheet when other names appear - an order filed under the wrong customer is worse than one with no customer at all. If the sheet genuinely has only one party at the top, repeat it on every order. If an order has no identifiable party, return "party":"" for it rather than guessing or borrowing a neighbour's.
+A PARTY IS OFTEN JUST A TOWN. 'Belgaum order' means the customer is Belgaum; 'Indore' on its own is the customer Indore. Read the heading as written - do not decide a name is "only a place" and drop it. NEVER invent a name that is not on the page, and never carry a name over from another sheet. Returning "" is better than returning a plausible-looking name you did not actually read, because a wrong customer sends the goods and the invoice to the wrong person.
 KNOWN PRODUCTS - use one of these only when the writing genuinely identifies that product: ${PRODUCT_LIST}. Common minor spellings may be normalised ('Gala' = Gola, 'Silky Bly' = Silky Belly). UNRECOGNISED PRODUCT - if the sheet clearly names a different product that is not in the list (for example GLAMOUR), return that name exactly as written in \"category\" so the app can stop and ask the user to add or select it. NEVER force an unknown product onto the closest catalogue name. Where a product comes in Black and White, put which in \"color\"; otherwise leave color empty.
 HOW ENTRIES ARE WRITTEN - read this part carefully, it is the single most common source of error:
 - STACKED (one number written directly ABOVE another, like a fraction, often with a bar between them): the TOP number is the SIZE and the BOTTOM number is that size's NUMBER OF CARTONS. Each stack is a SEPARATE line item. Two stacks written next to each other, e.g. 8-over-2 then 9-over-3, are TWO lines - size 8 with 2 cartons, and size 9 with 3 cartons. NEVER merge two stacks into a single size-pair, and never take one stack's bottom number as the carton count for both.
@@ -302,12 +316,15 @@ export function articleTypeCombos(article, type){
 }
 
 export function comboSizesForArticle(article, combo, type){
-  // For a split article the RANGE decides, whatever `type` claims — that
-  // mismatch is what used to relabel 6..9 as 6s..9s and price a line at zero.
-  const resolved=SPLIT_ARTICLE_TYPES.has(article)
-    ? comboType(article, combo)
-    : String(type||"").trim().toUpperCase();
-  if(!resolved.startsWith("L")) return comboSizes(combo);
+  /* The adult-roll relabelling belongs ONLY to the split articles, where Lace
+     genuinely means the adult roll. On a legacy code like REX GOLA (L) the
+     (V)/(L) is the CLOSURE — it names a different article with its own BOM, and
+     that article's ranges still use the ordinary roll plus its own B ranges.
+     Relabelling those turns 8s into 8, matches nothing, and strands every pair.
+
+     Within a split article the RANGE decides, whatever `type` claims. */
+  if(!SPLIT_ARTICLE_TYPES.has(article)) return comboSizes(combo);
+  if(!comboType(article, combo).startsWith("L")) return comboSizes(combo);
   const [a,b]=String(combo||"").toUpperCase().replace(/[SB]$/," ").trim().split("X");
   const adult=["6","7","8","9","10","11","12","13"];
   const i=adult.indexOf(a), j=adult.indexOf(b);

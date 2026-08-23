@@ -19,11 +19,21 @@ export default wrap(async (req, res) => {
     if(rows.length) setReference(rows[0].value);
   }catch(e){ /* fall back to the bundled seed */ }
 
+  /* And the real customer list. A handwritten name is far easier to read when
+     you already know the twenty it could be — without it the reader has been
+     inventing plausible names, which files the order and the invoice against
+     the wrong customer. */
+  let parties = [];
+  try{
+    const { rows } = await q("select name from parties where active order by name");
+    parties = rows;
+  }catch(e){ /* no party master yet — the reader just returns what it reads */ }
+
   const text = await callModel({
     max_tokens: 3000,
     messages: [{ role:"user", content: [
       { type:"image", source:{ type:"base64", media_type:"image/jpeg", data: b64 } },
-      { type:"text", text: readPrompt() },
+      { type:"text", text: readPrompt(parties) },
     ]}],
   });
   return res.status(200).json({ text });

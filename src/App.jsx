@@ -468,7 +468,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     // party; the header field is only a fallback for a genuinely single-party
     // sheet, so it is never used to overwrite a party the reader actually read.
     const readParties=[...new Set((parsed.orders||[]).map(o=>(o.party||"").trim()).filter(Boolean))];
-    if(readParties.length===1 && !party) setParty(readParties[0]);
+    // A NEW sheet gets a new customer. Keeping the previous read's name because
+    // this one has none silently files one factory's order under another
+    // factory's account — the same "party belongs to the order, not the sheet"
+    // rule, applied across reads instead of within one.
+    setParty(readParties.length===1 ? readParties[0] : "");
+    setCustomerCity("");
     setMultiParty(readParties.length>1);
     if(parsed.date){
       const today=new Date(); const rd=new Date(parsed.date);
@@ -498,7 +503,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       const d=JSON.parse(text);
       setRawRead(JSON.stringify(d,null,1));
 
-      if(d.customer) setParty(d.customer);
+      // Same rule as a photo read: this PI's customer, or none — never the
+      // customer left over from the last thing that was read.
+      setParty(String(d.customer||"").trim());
+      setMultiParty(false);
       if(d.customer_city) setCustomerCity(d.customer_city);
       if(d.pi_date && /^\d{4}-\d{2}-\d{2}$/.test(d.pi_date)) setOrderDate(d.pi_date);
       if(d.order_no) setPiNo(d.order_no);
@@ -890,7 +898,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         <div className="text-xs text-slate-500 mt-2 leading-relaxed">
           1 · Open a normal Claude chat, attach the order photo, and send it the instruction below. 2 · Copy Claude's JSON reply. 3 · Paste it here and press Use.
         </div>
-        <textarea readOnly value={readPrompt()} rows={4} onFocus={e=>e.target.select()}
+        <textarea readOnly value={readPrompt(parties)} rows={4} onFocus={e=>e.target.select()}
           className="w-full mt-2 border border-slate-200 rounded-lg px-2 py-1.5 mono bg-slate-50" style={{fontSize:10}}/>
         <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} rows={4}
           placeholder='Paste the JSON reply here…'
