@@ -232,7 +232,7 @@ export default function App(){
 
       <div style={{display:"flex",minHeight:"100vh"}}>
 
-        <aside className="hidden md:flex"
+        <aside data-noprint className="hidden md:flex"
                style={{background:"#0F2233",width:212,flexShrink:0,flexDirection:"column",
                        position:"sticky",top:0,height:"100vh"}}>
           <div style={{padding:"18px 16px 14px"}}>
@@ -263,7 +263,7 @@ export default function App(){
           </div>
         </aside>
 
-        <div className="md:hidden" style={{position:"sticky",top:0,zIndex:20,background:"#0F2233",padding:"10px 12px"}}>
+        <div data-noprint className="md:hidden" style={{position:"sticky",top:0,zIndex:20,background:"#0F2233",padding:"10px 12px"}}>
           <div className="sign" style={{color:"#fff",fontSize:16,fontWeight:700,marginBottom:8}}>Factory OS</div>
           <select value={tab} onChange={e=>setTab(e.target.value)}
             style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #24425E",
@@ -278,7 +278,7 @@ export default function App(){
         </div>
 
         <main style={{flex:1,minWidth:0}}>
-          <header style={{background:"#fff",borderBottom:"1px solid #E4E9F0",padding:"13px 22px",
+          <header data-noprint style={{background:"#fff",borderBottom:"1px solid #E4E9F0",padding:"13px 22px",
                           display:"flex",alignItems:"center",gap:16,flexWrap:"wrap",
                           position:"sticky",top:0,zIndex:10}}>
             <div>
@@ -318,7 +318,7 @@ export default function App(){
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
         {tab==="schedule" && <ScheduleTab state={state} />}
-        {tab==="plan" && <PlanTab state={state} />}
+        {tab==="plan" && <PlanTab state={state} caps={caps} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} onChanged={async()=>{await refresh();await refreshDispatches();}} />}
@@ -1042,9 +1042,6 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       {previewStale && <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
         Match &amp; Check has changed since this PI was generated. Press <b>Regenerate PI with latest edits</b> before printing or saving.
       </div>}
-      {!piPreviewCards && <div className="text-xs rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-900 px-3 py-2 mb-3">
-        Finish checking the item rows, then generate the PI. No invoice or production order has been created yet.
-      </div>}
       <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
         <label className="text-xs text-slate-500">Attach screenshot
           <input type="file" accept="image/*" capture={undefined} onChange={async e=>{
@@ -1284,7 +1281,7 @@ function PiDatabaseTab({orders=[],onScheduled}){
     {chosen&&items.length>0&&<div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm mt-4">
       <div className="flex items-center gap-2 mb-3"><div className="text-sm font-semibold">{chosen.pi_no} · revision {chosen.revision||0}</div>
         <button onClick={()=>window.print()} className="ml-auto text-xs font-semibold border border-slate-300 rounded-lg px-3 py-1.5 bg-white">Print / save PDF</button></div>
-      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 mb-3">
+      <div data-noprint className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 mb-3">
         <div className="text-xs font-semibold text-slate-700 mb-2">Orders on this PI — editable after issue</div>
         <div className="flex gap-2 flex-wrap">{saved.map(o=>liveOrderNos.has(o.order_no)?<button key={o.order_no}
           onClick={()=>setEditingOrder(editingOrder===o.order_no?null:o.order_no)}
@@ -1294,19 +1291,21 @@ function PiDatabaseTab({orders=[],onScheduled}){
           {o.order_no} · add to schedule before editing
         </span>)}</div>
       </div>
-      {editingOrder&&<div className="mb-4">{saved.filter(o=>o.order_no===editingOrder).map(o=><EditOrder key={o.order_no} o={o}
+      {editingOrder&&<div data-noprint className="mb-4">{saved.filter(o=>o.order_no===editingOrder).map(o=><EditOrder key={o.order_no} o={o}
         onCancel={()=>setEditingOrder(null)}
         onSave={async patch=>{
           setErr("");
           try{ await api.patchOrder(o.order_no,patch); await reloadPis(); setEditingOrder(null); }
           catch(e){ setErr(e.message||String(e)); throw e; }
         }}/>)}</div>}
+      <div data-print-area>
       <PiDocument piNo={chosen.pi_no} order={{order_no:chosen.pi_no,party:first.party,customer_city:firstPi.customer_city,
           order_date:first.order_date,pi_date:first.order_date,remarks:firstPi.remarks,items}}
         article={{}}
         terms={{...(settings.pi_terms||{}), ...(firstPi.terms||{}),
                 discount_pct:Number((firstPi.terms||{}).discount_pct??firstPi.discount_pct??(settings.pi_terms||{}).discount_pct??40)}}
         config={settings.pi_config}/>
+      </div>
     </div>}
   </div>;
 }
@@ -1632,8 +1631,11 @@ function EditOrder({o,onSave,onCancel}){
 
 /* Day-by-day production plan: what runs on which machine on which date.
    Built entirely from the computed stage allocations — nothing new is inferred. */
-function PlanTab({state}){
+function PlanTab({state,caps}){
   const centres = Object.keys(INPUTS.workcenters);
+  // The schedule was built from the edited capacities; reading the seed here
+  // made this screen disagree with Machine load the moment one was changed.
+  const capacityOf = c => (caps && caps[c]) ?? INPUTS.workcenters[c].capacity_per_day;
   const byDay = {};
   for(const o of state.orders){
     for(const st of o.stages){
@@ -1652,7 +1654,7 @@ function PlanTab({state}){
 
   const active = centres.filter(c=>days.some(d=>byDay[d][c]));
 
-  return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+  return <div data-print-area className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div className="flex items-center gap-3 mb-3 flex-wrap">
       <div>
         <div className="text-sm font-semibold text-slate-700">Production plan</div>
@@ -1677,7 +1679,7 @@ function PlanTab({state}){
               </td>
               {active.map(c=>{
                 const jobs = byDay[d][c] || [];
-                const cap = INPUTS.workcenters[c].capacity_per_day;
+                const cap = capacityOf(c);
                 const used = jobs.reduce((a,j)=>a+j.pairs,0);
                 return <td key={c} className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>
                   {!jobs.length ? <span className="text-slate-300 text-xs">—</span> : <>
@@ -1694,7 +1696,7 @@ function PlanTab({state}){
         </tbody>
       </table>
     </div>
-    <p className="text-xs text-slate-400 mt-3">Sole molding takes one order at a time, so it never shows two orders on the same day. The other centres can share a day up to capacity.</p>
+    <p className="text-xs text-slate-400 mt-3">Each molding machine takes one order at a time, so a molding column never shows two orders on the same day — but the molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
   </div>;
 }
 
@@ -1745,11 +1747,11 @@ function ScheduleTab({state}){
     <details className="mb-3">
       <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>
       <div className="text-xs text-slate-500 mt-1 leading-relaxed">
-        1. Orders queue <b>first-in, first-out</b>: earliest order date first (tie: order number). Every order starts as P2 - priority is a manual override only (P1 jumps the queue, P3 yields).<br/>
+        1. Orders queue by <b>priority first</b>, then earliest order date, then order number. Every order starts at P2, so in practice that is first-in first-out until someone sets P1 to jump the queue or P3 to yield.<br/>
         2. Each order follows its article route. A stage starts on the next planning day after the previous stage finishes; in-house Preparation appears once in that route and is not added again as a buffer.<br/>
         3. Each machine line has a daily capacity in pairs. An order takes whatever is free each day - rows higher in the queue get first claim, which is why lower rows show hatched waiting.<br/>
         4. An order never starts before its own order date (faint grey zone).<br/>
-        5. Dispatch = the day packing finishes. Same inputs always give the same plan.
+        5. Dispatch is its own stage with its own capacity — the dispatch date is the day it finishes, not the day packing ends. Same inputs always give the same plan.
       </div>
     </details>
     <div className="overflow-x-auto">
@@ -1848,12 +1850,9 @@ function MachinesTab({state,caps,setCaps,targets,setTargets}){
   const days=Array.from({length:maxDay+1},(_,i)=>i);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <p className="text-sm text-slate-500 mb-1">One strip per line, day by day: <b>how full that line is on each day</b>. Red = fully booked, amber = nearly full, blue = partly used, empty = free. The date on the right is when the line frees up.</p>
-    <p className="text-xs text-slate-400 mb-4">Capacities are placeholders — type the client's real pairs/day and the whole plan recomputes. Rows never re-order.</p>
+    <p className="text-xs text-slate-400 mb-4">Each molding machine runs one order at a time, but they run in parallel with each other. Capacities are placeholders until the factory confirms them.</p>
     <SlaTargets targets={targets} setTargets={setTargets} />
     <MoldingAssignment />
-    <div className="text-xs rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-900 px-3 py-2 mb-4">
-      <b>Sole molding is one machine.</b> PVC, PU and EVA all queue for the same machine — it runs <b>one order at a time, start to finish</b>, so molding blocks never overlap. Sole sticking is a separate line and can take several orders at once.
-    </div>
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
       const cap=caps[code];

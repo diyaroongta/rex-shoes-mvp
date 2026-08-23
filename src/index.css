@@ -4,3 +4,40 @@
 
 html, body, #root { height: 100%; }
 body { margin: 0; background: #eef0f4; }
+
+/* ---------------------------------------------------------------------------
+   Printing. window.print() used to put the sidebar, the header stats and every
+   button on the page onto the PDF. Anything the printed sheet does not need
+   carries data-noprint; the one region being printed carries data-print-area
+   and is lifted out of the app chrome so it starts at the top of the page. */
+@media print {
+  @page { margin: 12mm; }
+
+  html, body, #root { height: auto; background: #fff; }
+  body { background: #fff; }
+
+  [data-noprint] { display: none !important; }
+
+  /* Print ONLY the marked region. visibility (not display) is what makes this
+     work: it hides every element but still lets descendants of the print area
+     turn themselves back on, so we need one marker instead of tagging every
+     wrapper between <body> and the document. The :has() guard means a screen
+     with nothing marked still prints normally rather than blank. */
+  body:has([data-print-area]) * { visibility: hidden; }
+  body:has([data-print-area]) [data-print-area],
+  body:has([data-print-area]) [data-print-area] * { visibility: visible; }
+
+  [data-print-area] {
+    position: absolute; left: 0; top: 0; width: 100%;
+    margin: 0; padding: 0; border: none; box-shadow: none; background: #fff;
+  }
+  /* Controls are never content, even inside the printed region. */
+  [data-print-area] button { display: none !important; }
+
+  /* Tables must not be sliced through a row across a page break. */
+  tr, img { break-inside: avoid; page-break-inside: avoid; }
+  thead { display: table-header-group; }
+
+  /* Flatten the app's card chrome so the document reads as a document. */
+  .shadow-sm, .shadow { box-shadow: none !important; }
+}

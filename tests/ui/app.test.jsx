@@ -129,6 +129,26 @@ describe("critical UI contracts",()=>{
     expect(await screen.findByText(/1 missing order added to the production schedule/)).toBeInTheDocument();
   });
 
+  /* The schedule is computed from the capacities saved in settings. The
+     production plan used to read the BUNDLED SEED figure instead, so the moment
+     anyone changed a capacity the two screens disagreed about how full a line
+     was — while both claimed to describe the same plan. */
+  it("shows production-plan utilisation against the saved capacity, not the seed",async()=>{
+    mocks.getSettings.mockResolvedValue({capacities:{CUTTING:100}});
+    mocks.listOrders.mockResolvedValue([{
+      order_no:"JO6001",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"Buyer",
+      lines:[{combo:"7X10S",qty:100,label:"7X10S"}],pi:{},
+    }]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Production plan"}));
+    // 100 pairs of cutting against a saved 100/day is a full day, and the cell
+    // must say so against 100 — not against the seed's 2,500.
+    const cutting=await screen.findByText(/100% of 100/);
+    expect(cutting).toBeInTheDocument();
+    expect(screen.queryByText(/of 2,500/)).not.toBeInTheDocument();
+  });
+
   /* A sheet that writes SPIKE with a Velcro section and a Lace section ordered
      ONE shoe in two rolls. It used to arrive as two article cards, two PI items
      and two jobs in the plan. The size range now decides the roll, so the

@@ -12,8 +12,6 @@ export const RANK = {on_track:0,at_risk:1,breach:2};
 export const round2 = (n,d)=>{const f=10**d;return Math.round(n*f)/f;};
 export const dayIndex = (iso,origin)=>Math.round((new Date(iso)-new Date(origin))/86400000);
 export const fromDay = (i,origin)=>{const d=new Date(origin);d.setUTCDate(d.getUTCDate()+i);return d.toISOString().slice(0,10);};
-// MOLDING is ONE physical machine shared by every sole type (PVC/PU/EVA) —
-// it is never split by sole. ASSEMBLY (stuck-on sole sticking) stays its own line.
 /* Molding is several distinct machines, not one. Which one an order uses
    depends on its sole type, and for PVC on the article's assigned machine
    (rotary or vertical) — that assignment is factory knowledge, so when it is
