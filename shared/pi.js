@@ -73,6 +73,20 @@ export function buildLines(order, mrp = {}, terms = DEFAULT_TERMS){
       ? sizes.map(s => Math.max(0, Math.round(Number(line.sizes[s]) || 0)))
       : splitQty(line.qty, sizes.length);
 
+    // A stored size the range doesn't name is pairs that were ordered and would
+    // otherwise vanish from the invoice while still loading the machines. That
+    // is a data fault (usually a missing size_order on a lace line), so it is
+    // reported rather than silently dropped.
+    if(line.sizes){
+      const named = new Set(sizes.map(String));
+      const stranded = Object.entries(line.sizes)
+        .filter(([s,q]) => !named.has(String(s)) && Math.round(Number(q) || 0) > 0)
+        .map(([s]) => String(s));
+      if(stranded.length)
+        missing.push({ combo: line.combo,
+          why: `sizes ${stranded.join(", ")} are not in this range as ${line.combo} prints` });
+    }
+
     sizes.forEach((size, i) => {
       const qty = qtys[i] || 0;
       if(!qty) return;
@@ -80,6 +94,9 @@ export function buildLines(order, mrp = {}, terms = DEFAULT_TERMS){
       const rate   = mrpVal == null ? null : Math.round(mrpVal * (1 - discount/100));
       out.push({
         combo: line.combo, size, qty,
+        // One article can be ordered in both its Velcro and its Lace roll, so
+        // V/L is printed per size range, not once for the whole article.
+        vl: line.vl || null,
         mrp: mrpVal, discount_pct: discount, rate,
         amount: rate == null ? null : qty * rate,
       });

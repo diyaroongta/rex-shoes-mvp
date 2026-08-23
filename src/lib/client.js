@@ -38,6 +38,10 @@ export const listParties = ()   => j("/api/parties");
 export const saveParty   = p    => j("/api/parties", {
   method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(p) });
 export const removeParty = name => j(`/api/parties?name=${encodeURIComponent(name)}`, { method:"DELETE" });
+/* Re-price the orders already raised for a party with their current terms.
+   `previewPartyTerms` reports what would change; `applyPartyTerms` does it. */
+export const previewPartyTerms = name => post("/api/parties", { name, preview:true });
+export const applyPartyTerms   = name => post("/api/parties", { name });
 
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");

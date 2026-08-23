@@ -14,6 +14,7 @@ export default function PartiesTab(){
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
+  const [apply,setApply]=useState(null);   // pending offer to re-price existing orders
 
   const load=()=>api.listParties().then(setParties).catch(e=>setErr(e.message||String(e)));
   useEffect(()=>{ load(); },[]);
@@ -21,8 +22,32 @@ export default function PartiesTab(){
   async function save(){
     if(!edit.name.trim()){ setErr("Party name is required."); return; }
     setBusy(true); setErr("");
-    try{ await api.saveParty(edit); await load(); setEdit(null); setMsg("Saved."); }
+    const name=edit.name.trim();
+    try{
+      await api.saveParty(edit);
+      await load(); setEdit(null); setMsg("Saved. New orders for this party use these terms.");
+      // Existing orders keep the terms they were issued under. Offer to bring
+      // them forward rather than doing it silently — see applyToExisting.
+      try{
+        const p=await api.previewPartyTerms(name);
+        if(p.orders>0) setApply({name, ...p});
+      }catch(_){ /* the party itself saved; the offer is a convenience */ }
+    }
     catch(e){ setErr(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  /* Re-pricing already-issued PIs is a revision, not a refresh — so it is an
+     explicit, confirmed action that says exactly how many orders it touches. */
+  async function applyToExisting(){
+    if(!apply) return;
+    setBusy(true); setErr("");
+    try{
+      const r=await api.applyPartyTerms(apply.name);
+      setMsg(`${apply.name}: ${r.updated} order${r.updated===1?"":"s"} re-priced at ${r.terms.discount_pct}% `
+        +(r.pis.length?`— PI ${r.pis.join(", ")} now show the new terms.`:"— none of them are on an issued PI."));
+      setApply(null);
+    }catch(e){ setErr(String(e.message||e)); }
     finally{ setBusy(false); }
   }
   async function remove(name){
@@ -47,6 +72,34 @@ export default function PartiesTab(){
 
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 my-2">{err}</div>}
     {msg && <div className="text-xs text-emerald-700 my-2">{msg}</div>}
+
+    {apply && (
+      <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 my-3">
+        <div className="text-sm font-semibold text-amber-900 mb-1">
+          Apply these terms to {apply.name}&rsquo;s existing orders?
+        </div>
+        <div className="text-xs text-amber-900 leading-relaxed mb-2">
+          {apply.orders} order{apply.orders===1?"":"s"} already exist for this party
+          {apply.pis.length ? <> on PI <b className="mono">{apply.pis.join(", ")}</b></> : null}.
+          {apply.changing>0
+            ? <> <b>{apply.changing}</b> of them were issued at a different discount and would be
+                re-priced to <b>{apply.terms.discount_pct}%</b>.</>
+            : <> All of them already use {apply.terms.discount_pct}% — only the deductions, GST and
+                payment split would be refreshed.</>}
+          <br/>
+          New orders always use the latest terms. This only matters for invoices already issued,
+          so leave it if the customer has been given those PIs.
+        </div>
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={applyToExisting}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-700 text-white disabled:opacity-50">
+            {busy?"Applying…":`Re-price ${apply.orders} order${apply.orders===1?"":"s"}`}</button>
+          <button onClick={()=>setApply(null)}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">
+            Leave existing PIs as issued</button>
+        </div>
+      </div>
+    )}
 
     {edit && (
       <div className="border border-indigo-200 bg-indigo-50/60 rounded-xl p-4 my-3">
@@ -111,6 +164,13 @@ export default function PartiesTab(){
               <td className="text-right">
                 <button onClick={()=>{setEdit({...BLANK,...p}); setMsg("");}}
                   className="text-xs font-semibold text-slate-600 hover:underline mr-2">Edit</button>
+                <button onClick={async()=>{ setErr(""); setMsg("");
+                    try{ const pv=await api.previewPartyTerms(p.name);
+                         if(pv.orders>0) setApply({name:p.name,...pv});
+                         else setMsg(`${p.name} has no orders yet — nothing to re-price.`); }
+                    catch(e){ setErr(String(e.message||e)); } }}
+                  title="Apply the terms above to orders already raised for this party"
+                  className="text-xs font-semibold text-indigo-700 hover:underline mr-2">Re-price orders</button>
                 <button onClick={()=>remove(p.name)} className="text-rose-500 text-sm leading-none">×</button></td>
             </tr>))}
         </tbody>

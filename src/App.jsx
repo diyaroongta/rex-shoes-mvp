@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { compute, fromDay, dayIndex } from "../shared/engine.js";
-import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle } from "../shared/bridge.js";
+import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards } from "../shared/intake.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
@@ -13,6 +13,7 @@ import DispatchTab from "./DispatchTab.jsx";
 import PartiesTab from "./PartiesTab.jsx";
 import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
+import MISDashboard from "./MISDashboard.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes } from "../shared/pi.js";
 
@@ -27,8 +28,11 @@ const niceDate = iso => iso ? new Date(String(iso).slice(0,10)+"T00:00:00").toLo
 /* ------------- App shell ------------- */
 export default function App(){
   const [orders, setOrders] = useState(null);   // null = loading
+  const [dispatches, setDispatches] = useState([]);
+  const [dispatchLoading, setDispatchLoading] = useState(true);
+  const [dispatchErr, setDispatchErr] = useState("");
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
-  const [tab, setTab] = useState("intake");
+  const [tab, setTab] = useState("mis");
   const [selected, setSelected] = useState(null);
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
 
@@ -46,8 +50,30 @@ export default function App(){
     }catch(e){ setLoadErr(e.message||String(e)); setOrders([]); }
   })(); },[]);
 
+  useEffect(()=>{ (async()=>{
+    try{ setDispatches(await api.listDispatches()); setDispatchErr(""); }
+    catch(e){ setDispatchErr(e.message||String(e)); }
+    finally{ setDispatchLoading(false); }
+  })(); },[]);
+
+  // The executive view is intended to stay open on a management screen. Pull
+  // fresh orders and dispatch events once a minute so another clerk's update
+  // appears without requiring a full browser reload.
+  useEffect(()=>{
+    const timer=setInterval(()=>{
+      api.listOrders().then(setOrders).catch(()=>{});
+      api.listDispatches().then(rows=>{setDispatches(rows);setDispatchErr("");}).catch(()=>{});
+    },60000);
+    return ()=>clearInterval(timer);
+  },[]);
+
   // The server is the source of truth. Mutate, then re-read the list.
   const refresh = async ()=>{ try{ setOrders(await api.listOrders()); }catch(e){ setLoadErr(e.message||String(e)); } };
+  const refreshDispatches = async ()=>{
+    try{ setDispatchLoading(true); setDispatches(await api.listDispatches()); setDispatchErr(""); }
+    catch(e){ setDispatchErr(e.message||String(e)); }
+    finally{ setDispatchLoading(false); }
+  };
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
     const next=Math.max(1,cur.priority+dir);
@@ -145,6 +171,9 @@ export default function App(){
      answers "what needs me?" without opening anything. */
   const lateCount = state.orders.filter(o=>o.sla!=="on_track").length;
   const nav = [
+    ["Overview", [
+      ["mis","Executive MIS", {n:state.totals.sla.breach, tone:"#BE123C"}],
+    ]],
     ["Orders", [
       ["intake","PI generation"],
       ["pis","PI database"],
@@ -279,6 +308,8 @@ export default function App(){
         {/* Keep PI intake mounted while navigating. Its draft belongs to the
             clerk until Save or Close PI, not to the currently visible tab. */}
         <div style={{display:tab==="intake"?"block":"none"}}><NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} /></div>
+        {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
+          onRefresh={async()=>{await Promise.all([refresh(),refreshDispatches()]);}} />}
         {tab==="pis" && <PiDatabaseTab orders={orders} onScheduled={refresh} />}
         {tab==="orders" && <>
           <OrdersTab state={state} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
@@ -290,7 +321,7 @@ export default function App(){
         {tab==="plan" && <PlanTab state={state} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
-        {tab==="dispatch" && <DispatchTab orders={state.orders} onChanged={refresh} />}
+        {tab==="dispatch" && <DispatchTab orders={state.orders} onChanged={async()=>{await refresh();await refreshDispatches();}} />}
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="bulk" && <BulkOrderTab onImported={async()=>{ await refresh(); setTab("schedule"); }} />}
         {tab==="parties" && <PartiesTab />}
@@ -328,6 +359,16 @@ const PACKING = new Proxy({}, {
 const packQty = (article, combo) => pairsPerCarton(article, combo)
   ?? ((SEED_PACKING[article]||{})[combo]) ?? null;
 
+/* What to print in the article's V/L column. A shoe ordered in both rolls says
+   so, rather than being split into two articles to give each one a value. */
+const vlSummary = card => {
+  const rolls=[...new Set((card.lines||[])
+    .map(l=>l.type||comboType(card.article,l.combo)).filter(Boolean))];
+  if(rolls.length>1) return rolls.map(r=>r[0]+r.slice(1).toLowerCase()).join(" + ");
+  if(rolls.length===1) return rolls[0][0]+rolls[0].slice(1).toLowerCase();
+  return card.vl||"";
+};
+
 function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [img,setImg]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -354,6 +395,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [remarks,setRemarks]=useState("None");
   const [orderNature,setOrderNature]=useState("");
   const [stitching,setStitching]=useState("inhouse");
+  // One sheet usually means one customer. Turned on automatically when the
+  // reader finds more than one name, because party belongs to each order.
+  const [multiParty,setMultiParty]=useState(false);
   const [printing,setPrinting]=useState(false);
   const [attachment,setAttachment]=useState(null);
   const [discountPct,setDiscountPct]=useState(40);
@@ -425,6 +469,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     // sheet, so it is never used to overwrite a party the reader actually read.
     const readParties=[...new Set((parsed.orders||[]).map(o=>(o.party||"").trim()).filter(Boolean))];
     if(readParties.length===1 && !party) setParty(readParties[0]);
+    setMultiParty(readParties.length>1);
     if(parsed.date){
       const today=new Date(); const rd=new Date(parsed.date);
       const diff=(rd-today)/86400000;
@@ -540,94 +585,155 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     if(!out.length) setErr("Nothing readable found — try a clearer photo or enter by hand.");
   }
 
-  function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art,type)[0];
-    return withArticleDetails({article:art, vl:type==="ALL"?"":type, matched:true, raw:"", lines:[{combo:c,exact:true,raw:"",cartons:0,ppc:packQty(art,c)||24}]}); }
+  function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art)[0];
+    return withArticleDetails({article:art, vl:type==="ALL"?"":comboType(art,c), matched:true, raw:"",
+      lines:[{combo:c,type:comboType(art,c),exact:true,raw:"",cartons:0,ppc:packQty(art,c)||24}]}); }
   const startBlank=()=>{ setCards([blankCard()]); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setErr(""); setSavedMsg(""); };
 
   const setCard=(i,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setPiCard=(i,patch)=>setPiCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setLine=(i,k,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.map((l,m)=>m===k?{...l,...patch}:l)}:c));
-  const addLine=i=>setCards(cs=>cs.map((c,j)=>{ if(j!==i)return c; const cb=articleTypeCombos(c.article,c.vl)[0];
-    return {...c,lines:[...c.lines,{combo:cb,exact:true,raw:"",cartons:0,ppc:packQty(c.article,cb)||24}]}; }));
+  const addLine=i=>setCards(cs=>cs.map((c,j)=>{ if(j!==i)return c;
+    // Offer the WHOLE shoe, not one roll: a size range that is already on the
+    // card is skipped, so the next Velcro range then the next Lace range come
+    // up naturally without the article being split in two.
+    const used=new Set(c.lines.map(l=>l.combo));
+    const all=articleTypeCombos(c.article);
+    const cb=all.find(x=>!used.has(x))||all[0];
+    return {...c,lines:[...c.lines,{combo:cb,type:comboType(c.article,cb),exact:true,raw:"",cartons:0,
+      ppc:packQty(c.article,cb)||24,size_order:comboSizesForArticle(c.article,cb)}]}; }));
   const delLine=(i,k)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
   const addCard=()=>setCards(cs=>[...(cs||[]),blankCard()]);
   const delCard=i=>setCards(cs=>cs.filter((_,j)=>j!==i));
-  function remapForArticle(card,art,type){
-    const availableTypes=articleTypes(art);
-    const nextType=availableTypes.includes(String(type||"").toUpperCase())
-      ? String(type).toUpperCase() : (availableTypes[0]==="ALL"?(type||""):availableTypes[0]);
-    const oldCombos=articleTypeCombos(card.article,card.vl);
-    const combos=articleTypeCombos(art,nextType);
+  /* Changing the article remaps each line onto the equivalent range of the new
+     article BY POSITION across its whole range list — both rolls together, so a
+     Velcro line stays Velcro and a Lace line stays Lace instead of the shoe
+     being flattened onto one half. */
+  function remapForArticle(card,art){
+    const oldCombos=articleTypeCombos(card.article);
+    const combos=articleTypeCombos(art);
     const lines=(card.lines||[]).map((l,k)=>{
       const foundPos=oldCombos.indexOf(l.combo);
       const oldPos=foundPos>=0?foundPos:k;
       const combo=combos[Math.min(oldPos,combos.length-1)]||combos[0];
       const ppc=packQty(art,combo)||24;
+      const sizes=comboSizesForArticle(art,combo);          // the range decides the roll
+      const type=comboType(art,combo);
       if(card.fromPi){
         const qty=Number(l.qty)||Object.values(l.sizes||{}).reduce((a,b)=>a+(Number(b)||0),0);
-        const sizes=comboSizesForArticle(art,combo,nextType);
         const base=Math.floor(qty/Math.max(1,sizes.length)), rem=qty-base*sizes.length;
-        return {...l,combo,ppc,qty,sizes:Object.fromEntries(sizes.map((s,n)=>[s,base+(n<rem?1:0)])),size_order:sizes};
+        return {...l,combo,type,ppc,qty,sizes:Object.fromEntries(sizes.map((s,n)=>[s,base+(n<rem?1:0)])),size_order:sizes};
       }
-      return {...l,combo,ppc,size_order:comboSizesForArticle(art,combo,nextType)};
+      // Not a PI card: any exact sizes were keyed to the OLD article's size
+      // list. Keeping them against a new list silently strands pairs, so they
+      // are dropped and the line reverts to a carton count.
+      const keep=l.sizes && Object.keys(l.sizes).every(s=>sizes.includes(String(s)));
+      return {...l,combo,type,ppc,size_order:sizes,...(keep?{}:{sizes:undefined})};
     });
-    return {...card,article:art,vl:nextType,matched:true,lines};
+    const present=[...new Set(lines.map(l=>l.type).filter(Boolean))];
+    return {...card,article:art,vl:present.length===1?present[0]:"",types:present,matched:true,lines};
   }
   function onArticleChange(i,art){
-    setCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art,c.vl):c));
+    setCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art):c));
   }
   function onPiArticleChange(i,art){
-    setPiCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art,c.vl):c));
+    setPiCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art):c));
   }
+  /* Only free-type articles (the legacy "(V)"/"(L)" codes) still carry a
+     card-level V/L. For a split article the size ranges already say it. */
   function onTypeChange(i,type,isPi=false){
     const setter=isPi?setPiCards:setCards;
-    setter(cs=>cs.map((c,j)=>j===i?remapForArticle(c,c.article,type):c));
+    setter(cs=>cs.map((c,j)=>j===i?{...c,vl:type}:c));
   }
 
+  /* A sheet belongs to ONE customer on one date far more often than not, so
+     those fields are asked once at the top and pushed to every article. Only a
+     genuinely multi-party sheet reveals a per-article customer, and the reader
+     turns that on by itself when it reads more than one name. */
+  const applyToAll = patch => {
+    const stamp = cs => (cs ? cs.map(c => ({...c, ...patch})) : cs);
+    setCards(stamp); setPiCards(stamp); setPiPreviewCards(stamp);
+  };
+  const FIELD = "block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5";
+  const LABEL = "text-xs font-medium text-slate-500";
+
+  const sheetHeader = () => (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-3 mb-4">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <div className="sign text-slate-500" style={{fontSize:10.5,fontWeight:600}}>Applies to every article below</div>
+        <label className="ml-auto text-xs text-slate-500 flex items-center gap-1.5">
+          <input type="checkbox" checked={multiParty} onChange={e=>setMultiParty(e.target.checked)} />
+          Different customers on this sheet
+        </label>
+      </div>
+      <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))"}}>
+        {!multiParty && <>
+          <label className={LABEL}>Customer *
+            <input list="party-options" value={party}
+              onChange={e=>{setParty(e.target.value); applyToAll({party:e.target.value});}}
+              className={FIELD} /></label>
+          <label className={LABEL}>City
+            <input value={customerCity}
+              onChange={e=>{setCustomerCity(e.target.value); applyToAll({customer_city:e.target.value});}}
+              className={FIELD} /></label>
+        </>}
+        <label className={LABEL}>Order date *
+          <input type="date" value={orderDate}
+            onChange={e=>{setOrderDate(e.target.value); applyToAll({order_date:e.target.value});}}
+            className={FIELD+" mono"} /></label>
+        <label className={LABEL}>Priority
+          <select value={priority}
+            onChange={e=>{const v=Number(e.target.value); setPriority(v); applyToAll({priority:v});}}
+            className={FIELD+" bg-white"}>
+            <option value={1}>1 — urgent</option><option value={2}>2 — normal</option><option value={3}>3 — low</option>
+          </select></label>
+        <label className={LABEL}>Order nature *
+          <input list="order-nature-options" value={orderNature}
+            onChange={e=>{setOrderNature(e.target.value); applyToAll({order_nature:e.target.value});}}
+            className={FIELD} /></label>
+        <label className={LABEL}>Stitching
+          <select value={stitching}
+            onChange={e=>{setStitching(e.target.value); applyToAll({stitching:e.target.value});}}
+            className={FIELD+" bg-white"}>
+            <option value="inhouse">In-house</option><option value="outside">Outside</option>
+          </select></label>
+      </div>
+      {multiParty && <div className="text-xs text-slate-500 mt-2">
+        Each article carries its own customer below. A PI is issued to one customer, so this sheet
+        will produce one invoice per customer.
+      </div>}
+    </div>
+  );
+
+  /* Per article: only what genuinely differs between two articles on the same
+     sheet. V/L is NOT here for a split article — its size ranges already say
+     which roll each line is, and asking again invites a contradiction. */
   const articleDetails = (c, change, changeType) => (
     <div className="grid gap-2 px-3 py-3 border-b border-slate-200 bg-white"
-         style={{gridTemplateColumns:"repeat(auto-fit,minmax(125px,1fr))"}}>
-      <label className="text-xs text-slate-500">Customer *
-        <input value={c.party||""} onChange={e=>change({party:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-      <label className="text-xs text-slate-500">City
-        <input value={c.customer_city||""} onChange={e=>change({customer_city:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-      <label className="text-xs text-slate-500">Order date *
-        <input type="date" value={c.order_date||""} onChange={e=>change({order_date:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono" /></label>
-      <label className="text-xs text-slate-500">Priority
-        <select value={c.priority||2} onChange={e=>change({priority:Number(e.target.value)})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
-          <option value={1}>1 — urgent</option><option value={2}>2 — normal</option><option value={3}>3 — low</option>
-        </select></label>
-      <label className="text-xs text-slate-500">Order nature *
-        <input list="order-nature-options" value={c.order_nature||""}
-          onChange={e=>change({order_nature:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-      <label className="text-xs text-slate-500">V/L *
-        {articleTypes(c.article).includes("ALL")
-          ? <input value={c.vl||""} onChange={e=>changeType?changeType(e.target.value):change({vl:e.target.value})} placeholder="Velcro / Lace"
-              className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" />
-          : <select value={(c.vl||articleTypes(c.article)[0]).toUpperCase()} onChange={e=>changeType?changeType(e.target.value):change({vl:e.target.value})}
-              className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
-              {articleTypes(c.article).map(t=><option key={t}>{t}</option>)}
-            </select>}</label>
-      <label className="text-xs text-slate-500">Sole colour *
+         style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
+      {multiParty && <>
+        <label className={LABEL}>Customer *
+          <input list="party-options" value={c.party||""} onChange={e=>change({party:e.target.value})}
+            className={FIELD} /></label>
+        <label className={LABEL}>City
+          <input value={c.customer_city||""} onChange={e=>change({customer_city:e.target.value})}
+            className={FIELD} /></label>
+      </>}
+      {articleTypes(c.article).includes("ALL") && (
+        <label className={LABEL}>V/L *
+          <input value={c.vl||""} onChange={e=>changeType?changeType(e.target.value):change({vl:e.target.value})}
+            placeholder="Velcro / Lace" className={FIELD} /></label>
+      )}
+      <label className={LABEL}>Sole colour *
         <input value={c.sole_colour||""} onChange={e=>change({sole_colour:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-      <label className="text-xs text-slate-500">Upper colour *
+          className={FIELD} /></label>
+      <label className={LABEL}>Upper colour *
         <input value={c.upper_colour||""} onChange={e=>change({upper_colour:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
-      <label className="text-xs text-slate-500">Print
+          className={FIELD} /></label>
+      <label className={LABEL}>Print
         <select value={c.printing?"yes":"no"} onChange={e=>change({printing:e.target.value==="yes"})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+          className={FIELD+" bg-white"}>
           <option value="no">No</option><option value="yes">Yes</option>
-        </select></label>
-      <label className="text-xs text-slate-500">Stitching
-        <select value={c.stitching||"inhouse"} onChange={e=>change({stitching:e.target.value})}
-          className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
-          <option value="inhouse">In-house</option><option value="outside">Outside</option>
         </select></label>
     </div>
   );
@@ -666,12 +772,15 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         +". One sheet can list several customers, so each order needs its own.");
       return;
     }
+    // V/L is only asked for on articles whose code does not already fix it and
+    // whose size ranges do not imply it — a split article gets it per line.
+    const needsVl=c=>articleTypes(c.article).includes("ALL");
     const incomplete=source.filter(c=>
-      !String(c.order_nature||"").trim() || !String(c.vl||"").trim()
+      !String(c.order_nature||"").trim() || (needsVl(c) && !String(c.vl||"").trim())
       || !String(c.sole_colour||"").trim() || !String(c.upper_colour||"").trim()
       || !String(c.order_date||"").trim());
     if(incomplete.length){
-      setErr("Complete order nature, V/L, sole colour and upper colour for every article before issuing the PI: "
+      setErr("Complete order nature, sole colour and upper colour for every article before issuing the PI: "
         +incomplete.map(c=>c.article).join(", "));
       return;
     }
@@ -691,13 +800,21 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       order_date:c.order_date, article_code:c.article,
       priority:Number(c.priority)||2, party:String(c.party||"").trim(),
       lines:(c.lines||[]).filter(l=>c.fromPi?(Number(l.qty)||0)>0:(Number(l.cartons)||0)>0).map(l=>c.fromPi
-        ? {combo:l.combo,qty:Number(l.qty)||0,label:l.label||l.combo,sizes:l.sizes,size_order:l.size_order||comboSizesForArticle(c.article,l.combo,c.vl)}
+        ? {combo:l.combo,qty:Number(l.qty)||0,label:l.label||l.combo,sizes:l.sizes,
+           size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
+           vl:comboType(c.article,l.combo)||c.vl||""}
         : {combo:l.combo,qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0),
-           label:l.raw||l.combo,sizes:l.sizes,size_order:l.size_order||comboSizesForArticle(c.article,l.combo,c.vl)}),
+           label:l.raw||l.combo,sizes:l.sizes,size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
+           vl:comboType(c.article,l.combo)||c.vl||""}),
       stitching:c.stitching||"inhouse", printing:!!c.printing,
-      pi:{pi_no:piNumberFor(c,source), price:prices[c.article], discount_pct:termsForParty(c.party).discount_pct,
+      // The FULL commercial terms are snapshotted onto the order, not just the
+      // discount. Re-opening an issued PI must reproduce the invoice that was
+      // printed — reading today's deductions back over an old PI silently
+      // restates money that has already been agreed.
+      pi:{pi_no:piNumberFor(c,source), price:prices[c.article],
+          terms:termsForParty(c.party), discount_pct:termsForParty(c.party).discount_pct,
           customer_city:c.customer_city||"",
-          vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
+          vl:vlSummary(c), sole_colour:c.sole_colour, upper_colour:c.upper_colour,
           remarks, order_nature:c.order_nature, printing:!!c.printing,
           production_status:"produced", attachment:attachment||undefined},
     })).filter(d=>d.lines.length);
@@ -732,6 +849,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   return <div>
     <datalist id="order-nature-options">
       <option value="MTS" /><option value="Institutional" /><option value="MTO" />
+    </datalist>
+    <datalist id="party-options">
+      {parties.map(p=><option key={p.name} value={p.name} />)}
     </datalist>
     {/* step 1: photo */}
     <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
@@ -785,16 +905,21 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     {/* step 2: match & check */}
     {cards && <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
       <div className="serif text-lg font-semibold mb-1">2 · Match &amp; check</div>
-      <p className="text-slate-500 text-xs mb-3">Each category is matched to a real factory article; each size entry to a real combo pack. Yellow = mapped approximately — please confirm. Pairs = cartons × pairs/carton (from your packing chart, editable).</p>
+      <p className="text-slate-500 text-xs mb-3">Each category is matched to a real factory article; each size entry to a real size range. Amber = mapped approximately, please confirm. Pairs = cartons × pairs/carton.</p>
+      {sheetHeader()}
       {cards.map((c,i)=>(
         <div key={i} className="border border-slate-200 rounded-xl mb-3 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2.5 bg-slate-50 border-b border-slate-200 flex-wrap">
             <select value={c.article} onChange={e=>onArticleChange(i,e.target.value)}
-              className="border rounded-lg px-2 py-1.5 text-sm bg-white" style={{borderColor:c.matched?"#e2e8f0":"#f59e0b"}}>
+              className="border rounded-lg px-2 py-1.5 text-sm font-semibold bg-white" style={{borderColor:c.matched?"#e2e8f0":"#f59e0b"}}>
               {ARTS.map(a=><option key={a} value={a}>{a}</option>)}</select>
+            {/* One article, however many rolls it was ordered in. */}
+            {vlSummary(c) && <span className="text-xs font-semibold rounded-full px-2 py-0.5"
+              style={{background:"#eef2ff",color:"#4338ca"}}>{vlSummary(c)}</span>}
             {c.raw && <span className="mono text-xs text-slate-400">read: “{c.raw.trim()}”</span>}
             <span className="mono text-xs ml-auto" style={{color:SOLE_COLOR[INPUTS.articles[c.article].sole_type]}}>{INPUTS.articles[c.article].sole_type}</span>
-            <button onClick={()=>delCard(i)} className="text-rose-500 px-1.5 text-lg leading-none">×</button>
+            <span className="mono text-xs text-slate-400">{fmt(c.lines.reduce((a,l)=>a+(l.sizes?Object.values(l.sizes).reduce((x,y)=>x+(Number(y)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0)),0))} pr</span>
+            <button onClick={()=>delCard(i)} title="Remove this article" className="text-rose-500 px-1.5 text-lg leading-none">×</button>
           </div>
           {articleDetails(c, patch=>setCard(i,patch), type=>onTypeChange(i,type))}
           {(c.ambiguous || !c.matched || !PACKING[c.article]) && (
@@ -813,10 +938,21 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     className="text-sm font-semibold w-full bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-white rounded-md px-1.5 py-1 -ml-1.5 outline-none"/>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="mono text-slate-400" style={{fontSize:9}}>{l.raw?"rates from:":"combo:"}</span>
-                    <select value={l.combo || ""} onChange={e=>{const combo=e.target.value; setLine(i,k,{combo,single:undefined,exact:true,ppc:packQty(c.article,combo)||24});}}
+                    {/* The WHOLE shoe's ranges, each labelled with its roll. One
+                        article, both rolls — picking a Lace range simply makes
+                        that line Lace. */}
+                    <select value={l.combo || ""} onChange={e=>{const combo=e.target.value;
+                        setLine(i,k,{combo,single:undefined,exact:true,type:comboType(c.article,combo),
+                          ppc:packQty(c.article,combo)||24,size_order:comboSizesForArticle(c.article,combo),sizes:undefined});}}
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
                       {!l.combo && <option value="">— pick a combo —</option>}
-                      {articleTypeCombos(c.article,c.vl).map(cb=><option key={cb} value={cb}>{cb}</option>)}</select>
+                      {articleTypeCombos(c.article).map(cb=>{ const t=comboType(c.article,cb);
+                        return <option key={cb} value={cb}>{cb}{t?` · ${t[0]+t.slice(1).toLowerCase()}`:""}</option>; })}</select>
+                    {l.combo && comboType(c.article,l.combo) && (
+                      <span className="text-xs font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
+                        background:comboType(c.article,l.combo)==="LACE"?"#eef2ff":"#ecfdf5",
+                        color:comboType(c.article,l.combo)==="LACE"?"#4338ca":"#047857"}}>
+                        {comboType(c.article,l.combo)}</span>)}
                     {!l.exact && l.combo && <span className="text-amber-700 font-semibold" style={{fontSize:10}}>confirm</span>}
                   </div>
                   {!l.combo && l.single && (
@@ -855,7 +991,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
               </div>))}
             <button onClick={()=>addLine(i)} className="text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-md px-2.5 py-1.5 mt-1">+ Add combo</button>
             <div className="mt-2">
-              <AddSize articleCode={c.article} articleType={c.vl}
+              <AddSize articleCode={c.article}
                 lines={c.lines.map(l=>({combo:l.combo, qty:(Number(l.cartons)||0)*(Number(l.ppc)||0), sizes:l.sizes, label:l.raw||l.combo}))}
                 onChange={next=>setCards(cs=>cs.map((cc,j)=>{
                   if(j!==i) return cc;
@@ -874,8 +1010,8 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                 }))} />
             </div>
             <details className="mt-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
-              <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article} · {c.vl||"All"}</summary>
-              <div className="mt-2"><ArticleRules article={c.article} type={c.vl} compact /></div>
+              <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
+              <div className="mt-2"><ArticleRules article={c.article} compact /></div>
             </details>
           </div>
         </div>))}
@@ -938,6 +1074,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
             once saved, per-size quantities can still be changed from Orders &amp; Dispatch, but fixing
             them here avoids re-issuing the invoice.
           </p>
+          {sheetHeader()}
           {piCards.map((c,ci)=>(
             <div key={ci} className="mb-3 last:mb-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
               <div className="px-3 py-2 bg-slate-50">
@@ -965,8 +1102,8 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
               ))}
               </div>
               <details className="mx-3 mb-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
-                <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article} · {c.vl||"All"}</summary>
-                <div className="mt-2"><ArticleRules article={c.article} type={c.vl} compact /></div>
+                <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
+                <div className="mt-2"><ArticleRules article={c.article} compact /></div>
               </details>
             </div>
           ))}
@@ -1006,12 +1143,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
               image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
               mrp: (INPUTS.mrp||{})[c.article] || {},
               lines: c.fromPi
-                ? c.lines.map(l=>({...l,size_order:l.size_order||comboSizesForArticle(c.article,l.combo,c.vl)}))
+                ? c.lines.map(l=>({...l,size_order:l.size_order||comboSizesForArticle(c.article,l.combo)}))
                 : c.lines.filter(l=>(Number(l.cartons)||0)>0)
                     .map(l=>({ combo:l.combo,
                       qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0),
                       sizes:l.sizes, label:l.raw||l.combo,
-                      size_order:l.size_order||comboSizesForArticle(c.article,l.combo,c.vl) })),
+                      size_order:l.size_order||comboSizesForArticle(c.article,l.combo) })),
             })).filter(it => it.lines.length);
             if(!items.length) return null;
 
@@ -1050,6 +1187,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
 /* One line of orientation per view — what this screen is for, in the user's
    terms rather than the system's. */
 const VIEWS = {
+  mis:         {title:"Executive MIS",       sub:"Live order health, delivery outlook, dispatch gap and planned capacity"},
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   bulk:        {title:"Bulk upload",        sub:"Add many orders at once from a spreadsheet"},
@@ -1165,7 +1303,10 @@ function PiDatabaseTab({orders=[],onScheduled}){
         }}/>)}</div>}
       <PiDocument piNo={chosen.pi_no} order={{order_no:chosen.pi_no,party:first.party,customer_city:firstPi.customer_city,
           order_date:first.order_date,pi_date:first.order_date,remarks:firstPi.remarks,items}}
-        article={{}} terms={{...(settings.pi_terms||{}),discount_pct:Number(firstPi.discount_pct??(settings.pi_terms||{}).discount_pct??40)}} config={settings.pi_config}/>
+        article={{}}
+        terms={{...(settings.pi_terms||{}), ...(firstPi.terms||{}),
+                discount_pct:Number((firstPi.terms||{}).discount_pct??firstPi.discount_pct??(settings.pi_terms||{}).discount_pct??40)}}
+        config={settings.pi_config}/>
     </div>}
   </div>;
 }
@@ -1299,8 +1440,21 @@ function EditOrder({o,onSave,onCancel}){
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
 
+  // A line that carries exact sizes is edited size by size and its total is
+  // DERIVED. Typing a new total against an untouched size map produced an order
+  // the server rightly rejected ("exact-size quantities total 400, not 500"),
+  // which made Save edits fail on every photo-read, bulk-imported or PI-read
+  // order — i.e. almost all of them.
+  const sizeTotal=sizes=>Object.values(sizes||{}).reduce((a,b)=>a+(Number(b)||0),0);
   const setQty=(i,v)=>setLines(ls=>ls.map((l,j)=>j===i?{...l,qty:v}:l));
-  const total=lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
+  const setSize=(i,size,v)=>setLines(ls=>ls.map((l,j)=>{
+    if(j!==i) return l;
+    const next={...(l.sizes||{}),[size]:Math.max(0,Number(v)||0)};
+    return {...l,sizes:next,qty:sizeTotal(next)};
+  }));
+  const clearLine=i=>setLines(ls=>ls.map((l,j)=>j!==i?l
+    :l.sizes?{...l,sizes:Object.fromEntries(Object.keys(l.sizes).map(s=>[s,0])),qty:0}:{...l,qty:0}));
+  const total=lines.reduce((a,l)=>a+(l.sizes?sizeTotal(l.sizes):(Number(l.qty)||0)),0);
 
   async function pickFile(f){
     if(!f) return;
@@ -1314,13 +1468,25 @@ function EditOrder({o,onSave,onCancel}){
     setArticle(next);
     setLines(ls=>ls.map((l,i)=>{
       const combo=combos.includes(l.combo)?l.combo:(combos[i]||combos[0]);
-      return {...l,combo,label:combo,sizes:undefined};
+      // The old article's exact sizes and its printed size list do not carry
+      // over — a lace range numbers 6..9 where a velcro one numbers 6s..9s.
+      return {...l,combo,label:combo,sizes:undefined,size_order:undefined};
     }).filter(l=>l.combo));
   }
 
   async function save(produce=false){
-    const clean=lines.filter(l=>(Number(l.qty)||0)>0).map(l=>({combo:l.combo,qty:Number(l.qty),label:l.label||l.combo,
-      sizes:l.sizes,size_order:l.size_order,ppc:l.ppc}));
+    // On a line with exact sizes the sizes ARE the quantity. Deriving the total
+    // here means the two can never disagree, whatever the editor did.
+    const clean=lines.map(l=>{
+      const exact=l.sizes&&Object.keys(l.sizes).length;
+      const sizes=exact?Object.fromEntries(Object.entries(l.sizes)
+        .map(([s,v])=>[s,Math.max(0,Number(v)||0)]).filter(([,v])=>v>0)):null;
+      const qty=sizes?sizeTotal(sizes):(Number(l.qty)||0);
+      return {combo:l.combo,qty,label:l.label||l.combo,
+        ...(sizes&&Object.keys(sizes).length?{sizes}:{}),
+        ...(Array.isArray(l.size_order)&&l.size_order.length?{size_order:l.size_order}:{}),
+        ...(Number(l.ppc)>0?{ppc:Number(l.ppc)}:{})};
+    }).filter(l=>l.qty>0);
     if(!clean.length){ setErr("Keep at least one line with a quantity above zero."); return; }
     if(produce&&(!nature.trim()||!vlEdit.trim()||!soleEdit.trim()||!upperEdit.trim())){
       setErr("Order nature, V/L, sole colour and upper colour are required before producing the revised PI."); return;
@@ -1385,21 +1551,46 @@ function EditOrder({o,onSave,onCancel}){
         // Cartons are the unit the factory actually counts in; pairs are what
         // the planner needs. Show both, edit either, keep them in step.
         const ppc=packQty(article,l.combo);
-        const qty=Number(l.qty)||0;
-        return <label key={i} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
-          <span className="mono font-semibold">{l.label||l.combo}</span>
-          <div className="flex gap-1.5 mt-1 items-end">
-            <div><span className="text-slate-400" style={{fontSize:9}}>pairs</span>
-              <input type="number" min={0} value={l.qty} onChange={e=>setQty(i,e.target.value)}
-                className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-1 mono" /></div>
-            <div><span className="text-slate-400" style={{fontSize:9}}>cartons</span>
-              <input type="number" min={0} step="any" disabled={!ppc}
-                value={ppc ? +(qty/ppc).toFixed(2) : ""}
-                title={ppc ? `${ppc} pairs per carton` : "no packing chart for this size range"}
-                onChange={e=>{ const c=Number(e.target.value)||0; if(ppc) setQty(i, Math.round(c*ppc)); }}
-                className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-1 mono disabled:bg-slate-50" /></div>
+        const exact=l.sizes&&Object.keys(l.sizes).length;
+        const qty=exact?sizeTotal(l.sizes):(Number(l.qty)||0);
+        return <div key={i} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+          <div className="flex items-center gap-2">
+            <span className="mono font-semibold">{l.label||l.combo}</span>
+            <button onClick={()=>clearLine(i)} title="Set this line to zero — it is dropped on save"
+              className="ml-auto text-rose-500 leading-none">×</button>
           </div>
-        </label>;})}
+          {exact
+            /* This order records the exact pairs per size. The total is derived
+               from them: typing a different total would contradict the sizes and
+               the server rejects the order outright. */
+            ? <>
+                <div className="flex gap-1.5 mt-1 flex-wrap">
+                  {Object.entries(l.sizes).map(([size,v])=>(
+                    <label key={size} className="text-slate-500">
+                      <span className="mono" style={{fontSize:9}}>{size}</span>
+                      <input type="number" min={0} value={v}
+                        aria-label={`${l.combo} size ${size} pairs`}
+                        onChange={e=>setSize(i,size,e.target.value)}
+                        className="block w-16 text-sm border border-slate-300 rounded px-1.5 py-1 mono" />
+                    </label>))}
+                </div>
+                <div className="text-slate-400 mt-1" style={{fontSize:9}}>
+                  = <b className="mono text-slate-600">{fmt(qty)}</b> pairs{ppc?` · ${+(qty/ppc).toFixed(2)} cartons`:""}
+                </div>
+              </>
+            : <div className="flex gap-1.5 mt-1 items-end">
+                <div><span className="text-slate-400" style={{fontSize:9}}>pairs</span>
+                  <input type="number" min={0} value={l.qty}
+                    aria-label={`${l.combo} pairs`} onChange={e=>setQty(i,e.target.value)}
+                    className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-1 mono" /></div>
+                <div><span className="text-slate-400" style={{fontSize:9}}>cartons</span>
+                  <input type="number" min={0} step="any" disabled={!ppc}
+                    value={ppc ? +(qty/ppc).toFixed(2) : ""}
+                    title={ppc ? `${ppc} pairs per carton` : "no packing chart for this size range"}
+                    onChange={e=>{ const c=Number(e.target.value)||0; if(ppc) setQty(i, Math.round(c*ppc)); }}
+                    className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-1 mono disabled:bg-slate-50" /></div>
+              </div>}
+        </div>;})}
     </div>
     <div className="flex gap-2 items-end flex-wrap mb-2">
       <label className="text-xs text-slate-600">Add a whole size range

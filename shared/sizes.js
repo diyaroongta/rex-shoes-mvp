@@ -76,9 +76,16 @@ export function resolveSize(articleCode, article, size, packing = {}, singlePack
 /* Merge a specific-size quantity into an order's lines. A single size is
    stored as an ordinary line on its borrowed range, carrying a `sizes` map —
    the same shape a PI-read line uses — so the planner, the invoice and the
-   dispatch tracker all handle it without special cases. */
-export function addSizeToLines(lines, { combo, size, qty }){
+   dispatch tracker all handle it without special cases.
+
+   `size_order` is the range's size list AS THIS ARTICLE PRINTS IT, and it must
+   travel with the line. The lace half of a split article numbers its sizes
+   6..9 where the default roll says 6s..9s; without the list the invoice
+   re-derives the wrong labels, matches none of the stored sizes, and prices
+   the whole line at zero while the planner still loads the pairs. */
+export function addSizeToLines(lines, { combo, size, qty, size_order }){
   const next = (lines || []).map(l => ({ ...l, sizes: l.sizes ? { ...l.sizes } : undefined }));
+  const order = Array.isArray(size_order) && size_order.length ? size_order.map(String) : null;
   // Exact-size refills and whole-range orders may legitimately share a combo.
   // Only merge into another exact-size line; otherwise the whole-range amount
   // would be replaced by the new size map.
@@ -89,8 +96,11 @@ export function addSizeToLines(lines, { combo, size, qty }){
     existing.sizes[size] = (Number(existing.sizes[size]) || 0) + n;
     existing.qty = Object.values(existing.sizes).reduce((a,b) => a + (Number(b)||0), 0);
     if(!existing.label) existing.label = combo;
+    if(order && !(Array.isArray(existing.size_order) && existing.size_order.length))
+      existing.size_order = order;
   }else{
-    next.push({ combo, qty:n, label:`${combo} · size ${size}`, sizes:{ [size]: n } });
+    next.push({ combo, qty:n, label:`${combo} · size ${size}`, sizes:{ [size]: n },
+      ...(order ? { size_order: order } : {}) });
   }
   return next;
 }

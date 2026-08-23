@@ -9,6 +9,7 @@ import {
   articleTypes,
   articleTypeCombos,
   comboSizesForArticle,
+  comboType,
   matchAmbiguous,
   matchArticle,
   pairsPerCarton,
@@ -74,33 +75,38 @@ export function buildPhotoCards(parsed, reference){
 
   for(const order of (parsed && parsed.orders) || []){
     const matched = matchArticle(order.category, order.color);
-    const article = matched && articles[matched] ? matched : Object.keys(articles)[0];
-    if(!article){ issues.push("No articles are configured."); continue; }
-
-    const groups = new Map();
-    for(const rawLine of order.lines || []){
-      const type = inferredType(article, order, rawLine);
-      const key = type || "UNRESOLVED";
-      if(!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(rawLine);
+    if(!Object.keys(articles).length){ issues.push("No articles are configured."); continue; }
+    if(!matched || !articles[matched]){
+      issues.push(`${String(order.category || "Unknown article").trim()}: no configured article match; add or select the article before generating the PI.`);
+      continue;
     }
-    if(!groups.size) groups.set(articleTypes(article)[0] || "", []);
+    const article = matched;
 
-    for(const [groupKey, rawLines] of groups){
-      const available = articleTypes(article);
-      const type = groupKey === "UNRESOLVED"
-        ? (available.includes("ALL") ? "" : available[0])
-        : groupKey;
+    const available = articleTypes(article);
+    const unresolvedSizes = [];
+
+    /* ONE CARD PER ARTICLE. A sheet that writes SPIKE with a Velcro section and
+       a Lace section underneath is one shoe ordered in two rolls, not two
+       shoes — so the type rides on each LINE and the article stays whole. */
+    {
       const lines = [];
-      if(groupKey === "UNRESOLVED" && !available.includes("ALL"))
-        issues.push(`${article}: V/L was not readable for sizes ${rawLines.flatMap(l => l.sizes || []).join(", ")}; review the selected type.`);
 
-      for(const rawLine of rawLines){
+      for(const rawLine of order.lines || []){
+        const inferred = inferredType(article, order, rawLine);
+        if(!inferred && !available.includes("ALL"))
+          unresolvedSizes.push(...(rawLine.sizes || []));
+        // An unmarked opening section falls to the article's first roll, and
+        // says so above rather than guessing quietly.
+        const type = inferred || (available.includes("ALL") ? "" : available[0]);
         const sizes = (rawLine.sizes || []).map(size => sizeForArticleType(size, type)).filter(Boolean);
         const cartons = Math.max(0, Number(rawLine.cartons) || 0);
         if(!sizes.length || cartons <= 0) continue;
         const combo = exactCombo(article, type, sizes);
         const raw = sizes.join("|") + (type ? ` (${type})` : "");
+
+        // Once a range is known IT decides the type — the section heading only
+        // has to get us to the right range.
+        const lineType = combo ? (comboType(article, combo) || type) : type;
 
         if(sizes.length === 1){
           const size = sizes[0];
@@ -108,6 +114,7 @@ export function buildPhotoCards(parsed, reference){
           const qty = ppc == null ? 0 : cartons * ppc;
           const incoming = {
             combo,
+            type: lineType,
             single: combo ? undefined : size,
             exact: !!combo,
             raw,
@@ -116,7 +123,7 @@ export function buildPhotoCards(parsed, reference){
             ppcKnown: ppc != null,
             qty,
             sizes: qty > 0 ? { [size]: qty } : undefined,
-            size_order: combo ? comboSizesForArticle(article, combo, type) : [size],
+            size_order: combo ? comboSizesForArticle(article, combo, lineType) : [size],
           };
           mergeSpecific(lines, incoming);
           if(!combo) issues.push(`${article} ${type || ""}: size ${size} has no matching BOM range.`);
@@ -127,6 +134,7 @@ export function buildPhotoCards(parsed, reference){
         const ppc = combo ? pairsPerCarton(article, combo) : null;
         lines.push({
           combo,
+          type: lineType,
           single: combo ? undefined : sizes.join("×"),
           exact: !!combo,
           raw,
@@ -134,16 +142,25 @@ export function buildPhotoCards(parsed, reference){
           ppc: ppc ?? 1,
           ppcKnown: ppc != null,
           qty: ppc == null ? 0 : cartons * ppc,
-          size_order: combo ? comboSizesForArticle(article, combo, type) : sizes,
+          size_order: combo ? comboSizesForArticle(article, combo, lineType) : sizes,
         });
         if(!combo) issues.push(`${article} ${type || ""}: ${sizes.join("×")} is not an exact configured size range.`);
       }
+
+      if(unresolvedSizes.length)
+        issues.push(`${article}: V/L was not readable for sizes ${unresolvedSizes.join(", ")}; check the type on each line.`);
+
+      // The card's own V/L is a SUMMARY of its lines, never a discriminator.
+      // A shoe ordered in both rolls has no single type, and must not be split
+      // into two articles to give it one.
+      const present = [...new Set(lines.map(l => l.type).filter(Boolean))];
 
       cards.push({
         article,
         party: String(order.party || "").trim(),
         customer_city: order.customer_city || "",
-        vl: type,
+        vl: present.length === 1 ? present[0] : "",
+        types: present,
         matched: !!matched,
         ambiguous: matchAmbiguous(order.category, order.color),
         raw: `${order.category || ""} ${order.color || ""}`.trim(),

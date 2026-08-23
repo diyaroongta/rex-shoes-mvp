@@ -124,6 +124,27 @@ test("each article prices from its OWN mrp and keeps its OWN image", () => {
   assert.equal(pi.totals.subtotal, 4*100*407 + 4*100*599);
 });
 
+console.log("\nF2 — pairs can never leave the invoice silently");
+/* A lace range prints its sizes 6..9; the default roll calls the same positions
+   6s..9s. A line stored with lace sizes but no size_order used to price at zero
+   and disappear from the invoice while the planner still loaded every pair. */
+test("sizes the range does not name are reported, not dropped", () => {
+  const stranded = buildPI(
+    { article_code:"ARMOUR", lines:[{ combo:"6X9", qty:400, sizes:{ "6":100,"7":100,"8":100,"9":100 } }] },
+    {}, { "6X9":500 });
+  assert.equal(stranded.totals.total_qty, 0, "the mismatch really does empty the line");
+  assert.ok(stranded.missing.some(m => m.combo === "6X9" && /6, 7, 8, 9/.test(m.why)),
+    "and it must be reported on the invoice rather than vanishing");
+
+  // With the article's own printed size list the same line prices in full.
+  const ok = buildPI(
+    { article_code:"ARMOUR", lines:[{ combo:"6X9", qty:400, size_order:["6","7","8","9"],
+      sizes:{ "6":100,"7":100,"8":100,"9":100 } }] },
+    {}, { "6X9":500 });
+  assert.equal(ok.totals.total_qty, 400);
+  assert.equal(ok.missing.length, 0);
+});
+
 console.log("\nG — Indian digit grouping");
 test("lakh/crore separators", () => {
   assert.equal(inr(2266970), "22,66,970");

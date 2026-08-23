@@ -160,7 +160,7 @@ const productList = () => [...new Set(articleIndex().map(a=>a.base.join(" ")))]
 
 export const readPrompt = () => { const PRODUCT_LIST = productList(); return `You are reading a HANDWRITTEN shoe factory order.
 PARTIES - a single sheet very often lists SEVERAL DIFFERENT CUSTOMERS, each with their own order beneath them. A party name is usually a business or a person plus a town (e.g. 'Bansal Bannala', 'Dhanani Shoe Guhati', 'Star Flw Manglore', 'Paras Indore'), often numbered 1) 2) 3). Put each order's own customer on that order as "party". NEVER carry one party across the whole sheet when other names appear - an order filed under the wrong customer is worse than one with no customer at all. If the sheet genuinely has only one party at the top, repeat it on every order. If an order has no identifiable party, return "party":"" for it rather than guessing or borrowing a neighbour's.
-KNOWN PRODUCTS - the \"category\" you return must be one of these: ${PRODUCT_LIST}. Category headers on the sheet are often shortened or misspelled ('Gala' = Gola, 'Silky Bly' = Silky Belly) - map what you see onto the closest known product. Where a product comes in Black and White, put which in \"color\"; otherwise leave color empty.
+KNOWN PRODUCTS - use one of these only when the writing genuinely identifies that product: ${PRODUCT_LIST}. Common minor spellings may be normalised ('Gala' = Gola, 'Silky Bly' = Silky Belly). UNRECOGNISED PRODUCT - if the sheet clearly names a different product that is not in the list (for example GLAMOUR), return that name exactly as written in \"category\" so the app can stop and ask the user to add or select it. NEVER force an unknown product onto the closest catalogue name. Where a product comes in Black and White, put which in \"color\"; otherwise leave color empty.
 HOW ENTRIES ARE WRITTEN - read this part carefully, it is the single most common source of error:
 - STACKED (one number written directly ABOVE another, like a fraction, often with a bar between them): the TOP number is the SIZE and the BOTTOM number is that size's NUMBER OF CARTONS. Each stack is a SEPARATE line item. Two stacks written next to each other, e.g. 8-over-2 then 9-over-3, are TWO lines - size 8 with 2 cartons, and size 9 with 3 cartons. NEVER merge two stacks into a single size-pair, and never take one stack's bottom number as the carton count for both.
 - SIDE BY SIDE on the same baseline, joined by | or a space or a slash (e.g. '6|8', '9 11', '12/1'): this is ONE SIZE-PAIR (a combo pack), with its carton count written below or beside it.
@@ -253,6 +253,16 @@ export function packingRuleSource(article,combo){
    (VELCRO) continue to expose their complete own range list. */
 export const SPLIT_ARTICLE_TYPES = new Set(["JILL","ARMOUR","PERCY","SPADE","SPIKE"]);
 
+/* Where the Velcro roll ends and the Lace roll begins in combo_order. One
+   constant, because every function below has to agree about it. */
+export const VELCRO_RANGE_COUNT = 3;
+
+export const articleCombos = article => {
+  const ref=reference();
+  const a=(ref.articles||{})[article]||{};
+  return a.combo_order || Object.keys(a.combos||{});
+};
+
 export function articleTypes(article){
   if(SPLIT_ARTICLE_TYPES.has(article)) return ["VELCRO","LACE"];
   const text=String(article||"").toUpperCase();
@@ -261,21 +271,43 @@ export function articleTypes(article){
   return ["ALL"];
 }
 
+/* THE TYPE BELONGS TO THE SIZE RANGE, NOT TO THE ORDER.
+
+   SPIKE is ONE shoe. Its first three ranges are the Velcro roll and its last
+   two are the Lace roll, and no range name appears in both halves — so the
+   range alone says which it is. Treating V/L as a property of the order forced
+   one handwritten SPIKE order with a Velcro section and a Lace section to
+   become two separate articles on the invoice and two separate jobs in the
+   plan, which is not what the factory made.
+
+   Every size/packing lookup derives the type from the range, so a caller can no
+   longer pass a type that contradicts it. */
+export function comboType(article, combo){
+  if(!SPLIT_ARTICLE_TYPES.has(article)){
+    const [only]=articleTypes(article);
+    return only==="ALL" ? "" : only;
+  }
+  const i=articleCombos(article).indexOf(combo);
+  if(i<0) return "";
+  return i<VELCRO_RANGE_COUNT ? "VELCRO" : "LACE";
+}
+
 export function articleTypeCombos(article, type){
-  const ref=reference();
-  const all=(((ref.articles||{})[article]||{}).combo_order)
-    || Object.keys((((ref.articles||{})[article]||{}).combos)||{});
+  const all=articleCombos(article);
   if(!SPLIT_ARTICLE_TYPES.has(article)) return [...all];
   const t=String(type||"").trim().toUpperCase();
-  if(t.startsWith("L")) return all.slice(3);
-  if(t.startsWith("V")) return all.slice(0,3);
-  return [...all];
+  if(t.startsWith("L")) return all.slice(VELCRO_RANGE_COUNT);
+  if(t.startsWith("V")) return all.slice(0,VELCRO_RANGE_COUNT);
+  return [...all];                                  // no type given: the whole shoe
 }
 
 export function comboSizesForArticle(article, combo, type){
-  const isLace=SPLIT_ARTICLE_TYPES.has(article)
-    && String(type||"").trim().toUpperCase().startsWith("L");
-  if(!isLace) return comboSizes(combo);
+  // For a split article the RANGE decides, whatever `type` claims — that
+  // mismatch is what used to relabel 6..9 as 6s..9s and price a line at zero.
+  const resolved=SPLIT_ARTICLE_TYPES.has(article)
+    ? comboType(article, combo)
+    : String(type||"").trim().toUpperCase();
+  if(!resolved.startsWith("L")) return comboSizes(combo);
   const [a,b]=String(combo||"").toUpperCase().replace(/[SB]$/," ").trim().split("X");
   const adult=["6","7","8","9","10","11","12","13"];
   const i=adult.indexOf(a), j=adult.indexOf(b);

@@ -110,6 +110,22 @@ test("a specific size does not overwrite a whole-range line", () => {
   assert.equal(lines[0].qty,180);
   assert.deepEqual(lines[1].sizes,{"3":18});
 });
+/* A lace range prints 6..9 where the default roll says 6s..9s. Without the
+   article's own size list on the line the invoice re-derives the wrong labels,
+   matches none of the stored sizes and prices the whole line at zero while the
+   planner still loads the pairs. */
+test("a specific size carries the article's own printed size list", () => {
+  const order=["6","7","8","9"];
+  const one=addSizeToLines([],{combo:"6X9",size:"8",qty:240,size_order:order});
+  assert.deepEqual(one[0].size_order,order);
+
+  const two=addSizeToLines(one,{combo:"6X9",size:"7",qty:60,size_order:order});
+  assert.equal(two.length,1);
+  assert.deepEqual(two[0].size_order,order,"merging a second size keeps the list");
+
+  const none=addSizeToLines([],{combo:"6X8",size:"8s",qty:24});
+  assert.equal(none[0].size_order,undefined,"callers without a list are unchanged");
+});
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

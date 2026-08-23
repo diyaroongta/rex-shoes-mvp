@@ -99,6 +99,70 @@ describe("database API contracts",()=>{
     expect(dbMocks.q).not.toHaveBeenCalled();
   });
 
+  // A cleared box used to arrive as "" and be stored as 0%, which prices every
+  // future PI for that customer at full MRP with nothing said.
+  it("refuses a blank commercial term rather than storing it as zero",async()=>{
+    const res=response();
+    await partiesHandler({method:"PUT",url:"/api/parties",body:{name:"Buyer",discount_pct:""}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/discount_pct cannot be blank/);
+    expect(dbMocks.q).not.toHaveBeenCalled();
+  });
+
+  it("still applies the default when a term is simply not sent",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[{name:"Buyer"}]});
+    const res=response();
+    await partiesHandler({method:"PUT",url:"/api/parties",body:{name:"Buyer"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(dbMocks.q.mock.calls[0][1][2]).toBe(40);
+  });
+
+  /* Re-pricing already-issued PIs is a revision, not a refresh. It must be an
+     explicit call, it must preview without writing, and it must not damage the
+     rest of the pi blob when it does write. */
+  it("previews a party re-price without touching any order",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[{discount_pct:"35",deductions:[{label:"F.O.R.",pct:2}],
+      gst_pct:"5",payment_split_pct:"50",dispatch_timeline:"45 days"}]})
+      .mockResolvedValueOnce({rows:[{order_no:"JO1",pi_no:"PI7",discount_pct:"40"},
+                                    {order_no:"JO2",pi_no:"PI7",discount_pct:"35"}]});
+    const res=response();
+    await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Buyer",preview:true}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.orders).toBe(2);
+    expect(res.body.changing).toBe(1);          // only JO1 was issued at a different discount
+    expect(res.body.pis).toEqual(["PI7"]);
+    expect(dbMocks.q.mock.calls.some(([sql])=>String(sql).startsWith("update orders"))).toBe(false);
+  });
+
+  it("merges new terms into the pi blob instead of replacing it",async()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const text=String(sql);
+      if(text.includes("from parties where name")) return {rows:[{discount_pct:"35",deductions:[],
+        gst_pct:"5",payment_split_pct:"50",dispatch_timeline:"45 days"}]};
+      if(text.includes("from orders where party")) return {rows:[{order_no:"JO1",pi_no:"PI7",discount_pct:"40"}]};
+      if(text.startsWith("update orders")) return {rowCount:1,rows:[]};
+      return {rows:[],rowCount:0};
+    });
+    const res=response();
+    await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Buyer"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.updated).toBe(1);
+    const [sql,params]=dbMocks.q.mock.calls.find(([s])=>String(s).startsWith("update orders"));
+    // `||` merges at the top level, so pi_no / remarks / attachment survive.
+    expect(sql).toMatch(/pi = coalesce\(pi,'\{\}'::jsonb\) \|\| \$2::jsonb/);
+    const written=JSON.parse(params[1]);
+    expect(written.discount_pct).toBe(35);
+    expect(written.terms.gst_pct).toBe(5);
+    expect(written).not.toHaveProperty("pi_no");
+  });
+
+  it("refuses to re-price a party that does not exist",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[]});
+    const res=response();
+    await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Nobody"}},res);
+    expect(res.statusCode).toBe(404);
+  });
+
   it("rejects invalid catalogue prices before writing",async()=>{
     const res=response();
     await catalogueHandler({method:"PUT",url:"/api/catalogue",body:{article_code:"SPIKE",price:-1}},res);

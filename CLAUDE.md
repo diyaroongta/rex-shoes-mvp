@@ -45,6 +45,7 @@ shared/            imported by BOTH browser and server — pure, testable
   bom-import.js    parsing the factory's BOM workbooks
   order-import.js  parsing bulk order spreadsheets
   intake.js        photo-read normalization; preserves exact sizes and V/L
+  mis.js           pure executive MIS KPIs: health, dispatch gap, output/utilisation
   inputs.js        SEED reference data only — real data lives in Postgres
   catalogue-seed.js article photos + MRP bands from the catalogue PDF
 src/
@@ -97,6 +98,13 @@ These came from the original handoff and still hold:
 - Cutting, stitching, preparation, upper QC, packing and dispatch are pooled: several
   orders share a day's capacity.
 - Which PVC machine an article uses comes from `article.molding_machine`
+
+**Executive MIS.** Factory OS opens on a management dashboard backed by the
+same computed order schedule and recorded dispatch events as the operating
+screens. `shared/mis.js` owns the KPI definitions and is date-injected/tested.
+Order health, planned dates, scheduled machine output and planned utilisation
+are forecasts; dispatch events are recorded actuals. Do not label machine
+figures as actual until a shop-floor actual-production feed is stored.
   (`ROTARY`/`VERTICAL`). Unassigned falls back to rotary and is flagged.
 
 **Sizes.** The roll is `6,7,8,9,10,11,12,13,1,2,3,4,5,5.5`. Positions 6–13 are the

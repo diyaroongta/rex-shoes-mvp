@@ -4,6 +4,13 @@ Production planning for a shoe factory. Photograph a handwritten order slip → 
 into structured lines → clerk checks it and prices it → Proforma Invoice → the order joins the
 order sheet → dispatch dates, machine load and material procurement recompute for every order.
 
+The default landing screen is now **Executive MIS**: total orders, on-time / at-risk /
+delayed counts with planned date ranges, 30-day ordered-versus-dispatched shortfall,
+average scheduled production days, planned capacity utilisation, management exceptions,
+machine output and a searchable order-health table. It refreshes orders and dispatch
+events every 60 seconds. Dispatch is recorded actual data; machine output remains clearly
+labelled scheduled until shop-floor actual production is connected.
+
 Vite + React frontend, Vercel serverless functions, Postgres.
 
 ---

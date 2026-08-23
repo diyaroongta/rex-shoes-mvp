@@ -95,7 +95,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
           {pi.groups.map(g => g.lines.map((l,li)=>(
             <tr key={`${g.index}-${li}`}>
               <td style={N}>{g.article_label}</td>
-              <td style={N}>{g.vl}</td>
+              <td style={N}>{l.vl || g.vl}</td>
               <td style={N}>{g.sole_colour}</td>
               <td style={N}>{g.upper_colour}</td>
               <td style={N}>{g.order_nature || g.source}</td>

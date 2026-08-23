@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { pairsPerCarton } from "../shared/bridge.js";
+import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
@@ -22,40 +23,14 @@ export default function DispatchTab({ orders, onChanged }){
   const load=()=>api.listDispatches().then(setDispatches).catch(e=>setErr(e.message||String(e)));
   useEffect(()=>{ load(); },[]);
 
-  /* ordered − dispatched, per combo, per order */
-  const pending = useMemo(()=>{
-    const byOrder={};
-    for(const o of (orders||[])){
-      const ordered={};
-      for(const l of o.lines) ordered[l.combo]=(ordered[l.combo]||0)+Number(l.qty);
-      byOrder[o.order_no]={ ordered, dispatched:{}, order:o };
-    }
-    for(const d of dispatches){
-      const rec=byOrder[d.order_no]; if(!rec) continue;
-      for(const [c,v] of Object.entries(d.dispatched))
-        rec.dispatched[c]=(rec.dispatched[c]||0)+Number(v);
-    }
-    for(const rec of Object.values(byOrder)){
-      rec.rows=Object.keys(rec.ordered).map(c=>{
-        const ord=rec.ordered[c], disp=rec.dispatched[c]||0;
-        const article=rec.order.article_code||rec.order.article;
-        const ppc=pairsPerCarton(article,c);
-        return { combo:c, ordered:ord, dispatched:disp, pending:ord-disp,
-                 ppc: ppc ?? null,
-                 pending_cartons: ppc ? (ord-disp)/ppc : null };
-      });
-      rec.total_ordered=rec.rows.reduce((a,r)=>a+r.ordered,0);
-      rec.total_dispatched=rec.rows.reduce((a,r)=>a+r.dispatched,0);
-      rec.total_pending=rec.total_ordered-rec.total_dispatched;
-      rec.status = rec.total_dispatched===0 ? "not started"
-                 : rec.total_pending<=0 ? "complete" : "partial";
-    }
-    return byOrder;
-  },[orders,dispatches]);
+  /* ordered − dispatched, per combo, per order. The arithmetic — including what
+     closing an order short does to the pending balance — lives in shared/. */
+  const pending = useMemo(
+    ()=>buildLedger(orders||[], dispatches, pairsPerCarton),
+    [orders,dispatches]);
 
   const list=Object.values(pending);
-  const totals=list.reduce((a,r)=>({ord:a.ord+r.total_ordered,disp:a.disp+r.total_dispatched,
-    pend:a.pend+r.total_pending,short:a.short+(r.shortfall||0)}),{ord:0,disp:0,pend:0,short:0});
+  const totals=ledgerTotals(pending);
 
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
@@ -98,10 +73,10 @@ export default function DispatchTab({ orders, onChanged }){
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
 
     <div className="flex gap-4 flex-wrap mb-3 text-xs">
-      <span className="text-slate-500">Ordered <b className="mono text-slate-800">{fmt(totals.ord)}</b></span>
-      <span className="text-slate-500">Dispatched <b className="mono text-emerald-700">{fmt(totals.disp)}</b></span>
-      <span className="text-slate-500">Pending <b className="mono text-amber-700">{fmt(totals.pend)}</b></span>
-      {totals.short>0 && <span className="text-slate-500">Closed short <b className="mono text-rose-700">{fmt(totals.short)}</b></span>}
+      <span className="text-slate-500">Ordered <b className="mono text-slate-800">{fmt(totals.ordered)}</b></span>
+      <span className="text-slate-500">Dispatched <b className="mono text-emerald-700">{fmt(totals.dispatched)}</b></span>
+      <span className="text-slate-500">Pending <b className="mono text-amber-700">{fmt(totals.pending)}</b></span>
+      {totals.shortfall>0 && <span className="text-slate-500">Closed short <b className="mono text-rose-700">{fmt(totals.shortfall)}</b></span>}
     </div>
 
     <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">

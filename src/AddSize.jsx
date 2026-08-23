@@ -37,7 +37,11 @@ export default function AddSize({ articleCode, articleType, lines, onChange }){
 
   function add(){
     if(!canAdd) return;
-    onChange(addSizeToLines(lines, { combo: chosenCombo, size, qty: pairs }));
+    // The size list must travel with the line: a lace range prints 6..9 where
+    // the default roll says 6s..9s, and without it the invoice re-derives the
+    // wrong labels and prices the line at nothing.
+    onChange(addSizeToLines(lines, { combo: chosenCombo, size, qty: pairs,
+      size_order: comboSizesForArticle(articleCode, chosenCombo, articleType) }));
     setSize(""); setCombo(""); setAmount(""); setManualPpc("");
   }
 
