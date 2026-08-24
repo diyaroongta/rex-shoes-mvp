@@ -170,14 +170,48 @@ describe("database API contracts",()=>{
     expect(dbMocks.q).not.toHaveBeenCalled();
   });
 
+  it("stores catalogue edits only for a known article and records a revision",async()=>{
+    const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}}};
+    const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await catalogueHandler({method:"PUT",url:"/api/catalogue",body:{article_code:" custom ",description:"Demo",price:500}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.article_code).toBe("CUSTOM");
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("catalogue_history"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
   it("stores validated packing edits in shared reference data",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{},packing:{}};
-    dbMocks.q.mockResolvedValueOnce({rows:[{value:ref}]}).mockResolvedValueOnce({rows:[]});
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("select value from reference_data")) return {rows:[{value:ref}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
     const res=response();
     await referenceHandler({method:"PATCH",url:"/api/reference",body:{packing:{CUSTOM:{"1X2":12}}}},res);
     expect(res.statusCode).toBe(200);
-    const saved=JSON.parse(dbMocks.q.mock.calls[1][1][0]);
+    const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const saved=JSON.parse(saveCall[1][0]);
     expect(saved.packing.CUSTOM["1X2"]).toBe(12);
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("reference_data_history"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
+  it("requires explicit confirmation before replacing an existing BOM",async()=>{
+    const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{},packing:{}};
+    const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{parsed:{
+      article:" custom ",soleType:"EVA",combo_order:["1X2"],materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},
+      combos:{"1X2":{rates:{CUTTING:{"MAT||MTR":1}}}},
+    }}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/replace existing BOMs: CUSTOM/);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("insert into reference_data (id, value)"))).toBe(false);
   });
 
   it("links a historical PI snapshot into the live order queue once",async()=>{

@@ -51,6 +51,18 @@ create table if not exists reference_data (
   updated_at timestamptz not null default now()
 );
 
+-- Immutable snapshots of every BOM, packing, MRP, stock and routing change.
+-- A bad upload can therefore be recovered without relying on a browser cache.
+create table if not exists reference_data_history (
+  revision_id bigserial primary key,
+  change_type text        not null,
+  article_code text,
+  value       jsonb       not null,
+  created_at  timestamptz not null default now()
+);
+create index if not exists reference_data_history_created_idx
+  on reference_data_history (created_at desc);
+
 -- Product catalogue: one row per article. Images are stored as resized data
 -- URLs, which is fine at this scale; move to Vercel Blob if they get large.
 create table if not exists catalogue (
@@ -60,6 +72,15 @@ create table if not exists catalogue (
   price        numeric,
   updated_at   timestamptz not null default now()
 );
+
+create table if not exists catalogue_history (
+  revision_id bigserial primary key,
+  article_code text        not null,
+  value        jsonb       not null,
+  created_at   timestamptz not null default now()
+);
+create index if not exists catalogue_history_article_idx
+  on catalogue_history (article_code, created_at desc);
 
 -- ---------------------------------------------------------------------------
 -- Dispatch / packing reports. One row per dispatch event against an order, so

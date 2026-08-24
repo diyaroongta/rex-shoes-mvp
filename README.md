@@ -273,6 +273,11 @@ Ordered by how much they matter.
 
 ## Adding BOMs and catalogue — no deploy needed
 
+For the safest client workflow, use **Data & BOM → Download upload template**. The standard workbook has BOM,
+Packing and Catalogue tabs, validates the complete file before saving, requires confirmation before replacing an
+existing BOM, and records each successful save in the reference-data revision history. Catalogue photos are added
+separately on the Catalogue card.
+
 This is the split that matters for day-to-day use:
 
 | Change | Example | Goes through |

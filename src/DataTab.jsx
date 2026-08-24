@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import * as XLSX from "xlsx";
 import { parseBom } from "../shared/bom-import.js";
+import { parseReferenceWorkbook } from "../shared/reference-import.js";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
 
@@ -16,9 +17,12 @@ export default function DataTab({ onChanged }){
   const [busy,setBusy]=useState(false);
   const [msg,setMsg]=useState("");
   const [err,setErr]=useState("");
+  const [confirmReplace,setConfirmReplace]=useState(false);
+  const [masterPreview,setMasterPreview]=useState(null);
+  const [masterConfirm,setMasterConfirm]=useState(false);
 
   async function pick(file){
-    setErr(""); setMsg(""); setPreview(null);
+    setErr(""); setMsg(""); setPreview(null); setConfirmReplace(false);
     if(!file) return;
     try{
       const buf=await file.arrayBuffer();
@@ -33,9 +37,11 @@ export default function DataTab({ onChanged }){
 
   async function commit(){
     if(!preview) return;
+    const replacing=!!INPUTS.articles[preview.article];
+    if(replacing&&!confirmReplace){setErr(`Confirm that ${preview.article}'s existing BOM should be replaced.`);return;}
     setBusy(true); setErr(""); setMsg("");
     try{
-      const r=await api.uploadBom({ parsed:{...preview, soleType:sole} });
+      const r=await api.uploadBom({ parsed:{...preview, soleType:sole}, confirm_replace:replacing });
       await reloadReference();
       setMsg(`${r.article} ${r.replaced?"replaced":"added"} — ${r.combos} size ranges, ${r.rates} rates. `+
              (r.new_materials.length?`${r.new_materials.length} new materials at stock 0.`:"No new materials.")+
@@ -46,11 +52,68 @@ export default function DataTab({ onChanged }){
     finally{ setBusy(false); }
   }
 
+  async function pickMaster(file){
+    setErr("");setMsg("");setMasterPreview(null);setMasterConfirm(false);
+    if(!file)return;
+    try{
+      const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
+      const sheets=wb.SheetNames.map(name=>({name,rows:XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null})}));
+      const parsed=parseReferenceWorkbook(sheets);
+      if(parsed.errors.length){setErr(parsed.errors.slice(0,8).join(" "));return;}
+      const replacements=parsed.boms.map(b=>b.article).filter(a=>INPUTS.articles[a]);
+      setMasterPreview({...parsed,replacements});
+    }catch(e){setErr("Could not read that master workbook: "+(e.message||e));}
+  }
+
+  async function commitMaster(){
+    if(!masterPreview)return;
+    if(masterPreview.replacements.length&&!masterConfirm){setErr("Confirm the existing BOM replacements before saving.");return;}
+    setBusy(true);setErr("");setMsg("");
+    try{
+      const {replacements,...batch}=masterPreview;
+      const r=await api.uploadBom({batch,confirm_replace:replacements.length>0});
+      await reloadReference();
+      setMasterPreview(null);setMasterConfirm(false);
+      setMsg(`Master workbook saved safely — ${r.articles.length} BOM article(s), ${r.packing_articles.length} packing article(s) and ${r.catalogue_articles.length} catalogue article(s). A database revision was recorded.`);
+      onChanged&&onChanged();
+    }catch(e){setErr(String(e.message||e));}
+    finally{setBusy(false);}
+  }
+
   const warn = preview ? preview.warnings.reduce((a,w)=>{ (a[w.type]=a[w.type]||[]).push(w); return a; },{}) : {};
   const rateCount = preview ? Object.values(preview.combos)
     .reduce((a,c)=>a+Object.values(c.rates).reduce((b,st)=>b+Object.keys(st).length,0),0) : 0;
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+    <div className="text-sm font-semibold text-slate-700 mb-1">Upload the Factory OS article master</div>
+    <p className="text-xs text-slate-500 mb-3">
+      Use the standard workbook for BOM, packing and catalogue details. The complete file is validated first,
+      then saved in one database transaction with a revision snapshot. Nothing is partly saved when a row is invalid.
+    </p>
+    <div className="flex gap-3 items-center flex-wrap mb-3">
+      <a href="/Factory_OS_Reference_Upload_Template.xlsx" download
+        className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-2">Download upload template</a>
+      <input type="file" accept=".xlsx" onChange={e=>pickMaster(e.target.files&&e.target.files[0])} className="text-sm" />
+    </div>
+    {masterPreview&&<div className="border border-slate-200 bg-slate-50 rounded-xl p-4 mb-5">
+      <div className="text-sm font-semibold text-slate-800">Ready to save</div>
+      <div className="text-xs text-slate-600 mt-1">
+        {masterPreview.boms.length} BOM article(s) · {Object.keys(masterPreview.packing).length} packing article(s) · {Object.keys(masterPreview.catalogue).length} catalogue article(s)
+      </div>
+      {!!masterPreview.warnings.length&&<div className="text-xs text-amber-800 mt-2">{masterPreview.warnings.join(" ")}</div>}
+      {!!masterPreview.replacements.length&&<label className="flex gap-2 items-start text-xs text-amber-900 mt-3">
+        <input type="checkbox" checked={masterConfirm} onChange={e=>setMasterConfirm(e.target.checked)} />
+        I understand this will replace the complete BOM for: {masterPreview.replacements.join(", ")}. Packing and catalogue rows are merged without deleting omitted values.
+      </label>}
+      <div className="flex gap-2 mt-3">
+        <button disabled={busy||(masterPreview.replacements.length&&!masterConfirm)} onClick={commitMaster}
+          className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{busy?"Saving…":"Validate and save all"}</button>
+        <button disabled={busy} onClick={()=>{setMasterPreview(null);setMasterConfirm(false);}}
+          className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Discard</button>
+      </div>
+    </div>}
+
+    <div className="border-t border-slate-200 pt-4">
     <div className="text-sm font-semibold text-slate-700 mb-1">Upload a BOM workbook</div>
     <p className="text-xs text-slate-500 mb-4">
       One article per file, in the same layout your factory already uses — an ARTICLE row, a SIZE RANGE row
@@ -79,6 +142,10 @@ export default function DataTab({ onChanged }){
       {INPUTS.articles[preview.article] &&
         <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mb-2">
           <b>{preview.article} already exists</b> and will be replaced by this upload.</div>}
+      {INPUTS.articles[preview.article]&&<label className="flex gap-2 items-start text-xs text-amber-900 mb-3">
+        <input type="checkbox" checked={confirmReplace} onChange={e=>setConfirmReplace(e.target.checked)} />
+        I confirm that the existing {preview.article} BOM should be replaced. A revision snapshot will be kept.
+      </label>}
 
       {!!warn["cm-converted"] && <div className="text-xs text-slate-600 mb-1">
         <b>{warn["cm-converted"].length} rows converted CM → MTR</b> so they merge with the materials already held in metres.</div>}
@@ -93,12 +160,13 @@ export default function DataTab({ onChanged }){
       </details>}
 
       <div className="flex gap-2">
-        <button disabled={busy} onClick={commit}
+        <button disabled={busy||(!!INPUTS.articles[preview.article]&&!confirmReplace)} onClick={commit}
           className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
           {busy?"Saving…":`Load ${preview.article} into reference data`}</button>
         <button onClick={()=>setPreview(null)} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Discard</button>
       </div>
     </div>}
+    </div>
 
     <MrpEditor onChanged={onChanged} />
     <StockEditor onChanged={onChanged} />

@@ -36,6 +36,13 @@ export function stageFor(component, materialCategory){
 }
 
 export const comboCode = s => String(s || "").toUpperCase().replace(/\s+/g, "");
+export const articleCode = s => String(s || "").toUpperCase().replace(/[^A-Z0-9()+&./ -]+/g, "")
+  .replace(/\s+/g, " ").trim();
+
+export function existingArticleCode(articles, raw){
+  const wanted=articleCode(raw);
+  return Object.keys(articles||{}).find(code=>articleCode(code)===wanted)||null;
+}
 
 /* rows: array of arrays, straight from the sheet.
    opts.soleRate / opts.soleType: the sole is absent from the client's
@@ -52,7 +59,7 @@ export function parseBom(rows, opts = {}){
   for(const r of rows){
     const c0 = r[0] == null ? "" : String(r[0]).trim();
     const c1 = r[1] == null ? "" : String(r[1]).trim();
-    if(/^ARTICLE/i.test(c0)){ article = c1.toUpperCase(); continue; }
+    if(/^ARTICLE/i.test(c0)){ article = articleCode(c1); continue; }
     if(/^SIZE\s*RANGE/i.test(c0)){ combo = comboCode(c1); if(combo) combos[combo] = combos[combo] || {}; continue; }
     if(!/^\d+$/.test(c0) || !combo) continue;
 
@@ -110,19 +117,24 @@ export function parseBom(rows, opts = {}){
    user knows procurement will show their full requirement, not a shortfall. */
 export function mergeBom(reference, parsed, opts = {}){
   const ref = JSON.parse(JSON.stringify(reference));
-  const routing = opts.routing || ["CUTTING","STITCHING","MOLDING","PACKING","DISPATCH"];
-  const replaced = !!ref.articles[parsed.article];
+  const canonical=existingArticleCode(ref.articles,parsed.article)||articleCode(parsed.article);
+  const process=parsed.soleType==="STUCK-ON"?"ASSEMBLY":"MOLDING";
+  const routing = opts.routing || ["CUTTING","PREPARATION","STITCHING","UPPER_QC",process,"PACKING","DISPATCH"];
+  const replaced = !!ref.articles[canonical];
   const newMaterials = [];
 
   for(const [key, m] of Object.entries(parsed.materials)){
     if(!ref.materials[key]){ ref.materials[key] = { ...m, stock:0 }; newMaterials.push(key); }
   }
-  ref.articles[parsed.article] = {
+  const previous=ref.articles[canonical]||{};
+  ref.articles[canonical] = {
+    ...previous,
     sole_type: parsed.soleType,
     sole_assumed: false,
     combo_order: parsed.combo_order,
     routing,
     combos: parsed.combos,
   };
-  return { reference:ref, replaced, newMaterials };
+  if(parsed.soleType!=="PVC") ref.articles[canonical].molding_machine=null;
+  return { reference:ref, replaced, newMaterials, article:canonical };
 }
