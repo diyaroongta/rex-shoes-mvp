@@ -51,6 +51,9 @@ export const deleteDispatch  = id      => j(`/api/dispatches?id=${id}`, { method
 /* ---- reference data (articles, BOM rates, materials, packing) ---- */
 export const getReference   = ()        => j("/api/reference");
 export const uploadBom      = payload   => post("/api/reference", payload);
+/* The reference revision log, and the undo that makes it worth keeping. */
+export const referenceHistory = ()   => j("/api/reference?history=1");
+export const restoreReference = id   => post("/api/reference", { restore_revision:id });
 export const patchReference = patch     => j("/api/reference", {
   method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(patch) });
 

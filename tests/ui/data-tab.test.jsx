@@ -4,7 +4,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as XLSX from "xlsx";
 
-const apiMocks=vi.hoisted(()=>({uploadBom:vi.fn(),patchReference:vi.fn()}));
+const apiMocks=vi.hoisted(()=>({uploadBom:vi.fn(),patchReference:vi.fn(),
+  referenceHistory:vi.fn(),restoreReference:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>apiMocks);
 vi.mock("../../src/lib/refdata.js",()=>({
   REF:{
@@ -19,6 +20,8 @@ import DataTab from "../../src/DataTab.jsx";
 beforeEach(()=>{
   vi.clearAllMocks();
   apiMocks.uploadBom.mockResolvedValue({articles:["CUSTOM"],packing_articles:["CUSTOM"],catalogue_articles:["CUSTOM"]});
+  apiMocks.referenceHistory.mockResolvedValue([]);
+  apiMocks.restoreReference.mockResolvedValue({});
 });
 
 it("previews a master workbook and blocks an existing BOM replacement until confirmed",async()=>{

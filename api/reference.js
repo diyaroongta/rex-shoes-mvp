@@ -82,6 +82,18 @@ function applyPacking(ref, packing){
 
 export default wrap(async (req, res) => {
   if(req.method === "GET"){
+    /* The revision log, so a wrong upload can actually be undone. Snapshots
+       nobody can restore are not a safety net. Values are omitted here — the
+       list is for choosing, the restore reads the value itself. */
+    if(req.query && req.query.history){
+      const { rows } = await q(
+        `select revision_id, change_type, article_code, created_at
+           from reference_data_history order by created_at desc limit 25`);
+      return res.status(200).json(rows.map(r => ({
+        ...r,
+        created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      })));
+    }
     const ref = await current();
     return res.status(200).json(ref);
   }
@@ -90,6 +102,26 @@ export default wrap(async (req, res) => {
      parser and posts the result; everything is re-checked here. */
   if(req.method === "POST"){
     try{
+      /* Undo. The restore is itself snapshotted first, so undoing a wrong undo
+         is also possible — otherwise recovery becomes its own way to lose data. */
+      if(req.body && req.body.restore_revision != null){
+        const id = Number(req.body.restore_revision);
+        if(!Number.isInteger(id)) return fail(res, 400, "restore_revision must be a revision id");
+        const { rows } = await q("select value, change_type, article_code, created_at from reference_data_history where revision_id = $1",[id]);
+        if(!rows.length) return fail(res, 404, `no such revision: ${id}`);
+        const snapshot = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
+        if(!snapshot || !snapshot.articles) return fail(res, 422, "that revision does not hold a usable reference document");
+        const result = await mutateReference("restore", rows[0].article_code, ref => {
+          for(const k of Object.keys(ref)) delete ref[k];
+          Object.assign(ref, snapshot);
+          return { articles: Object.keys(snapshot.articles || {}).length,
+                   materials: Object.keys(snapshot.materials || {}).length };
+        });
+        return res.status(200).json({ ok:true, restored_revision:id,
+          undid: rows[0].change_type, article_code: rows[0].article_code,
+          articles_total: result.articles, materials_total: result.materials });
+      }
+
       const {parsed,routing,batch,confirm_replace=false}=req.body||{};
       const incoming=batch?.boms||(parsed?[parsed]:[]);
       if(!incoming.length&&!batch) return fail(res,400,"expected a parsed BOM or master workbook batch");

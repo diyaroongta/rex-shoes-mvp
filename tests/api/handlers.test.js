@@ -214,6 +214,49 @@ describe("database API contracts",()=>{
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("insert into reference_data (id, value)"))).toBe(false);
   });
 
+  /* A snapshot nobody can restore is not a safety net. A wrong BOM upload
+     replaces an article's rates outright, so the undo is the difference
+     between a bad file costing a minute and costing a day of retyping. */
+  it("lists reference revisions without shipping their payloads",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[
+      {revision_id:2,change_type:"master-upload",article_code:null,created_at:new Date("2026-08-23T10:00:00Z")},
+      {revision_id:1,change_type:"bom-upload",article_code:"SPIKE",created_at:new Date("2026-08-22T09:00:00Z")},
+    ]});
+    const res=response();
+    await referenceHandler({method:"GET",url:"/api/reference?history=1",query:{history:"1"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0].change_type).toBe("master-upload");
+    expect(res.body[0]).not.toHaveProperty("value");   // the list is for choosing
+  });
+
+  it("restores a revision and records the restore so it can itself be undone",async()=>{
+    const snapshot={articles:{SPIKE:{combos:{},combo_order:[]}},materials:{"M||MTR":{name:"M",uom:"MTR"}}};
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:snapshot,change_type:"bom-upload",article_code:"SPIKE",created_at:new Date()}]});
+    const client={query:vi.fn(async sql=>
+      String(sql).includes("select value from reference_data") ? {rows:[{value:{articles:{OLD:{}}}}]} : {rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{restore_revision:1}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.restored_revision).toBe(1);
+    expect(res.body.articles_total).toBe(1);
+    // The state being replaced is snapshotted BEFORE the restore overwrites it.
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("insert into reference_data_history"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+    const written=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data"))[1];
+    expect(JSON.parse(written[0]).articles.SPIKE).toBeDefined();
+    expect(JSON.parse(written[0]).articles.OLD).toBeUndefined();  // replaced, not merged
+  });
+
+  it("refuses to restore a revision that is not a reference document",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:{not:"a reference"},change_type:"x",article_code:null,created_at:new Date()}]});
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{restore_revision:9}},res);
+    expect(res.statusCode).toBe(422);
+    expect(dbMocks.connect).not.toHaveBeenCalled();
+  });
+
   it("links a historical PI snapshot into the live order queue once",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}}};
     const snapshot={orders:[{order_no:"JO77",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",lines:[{combo:"1X2",qty:12}],pi:{pi_no:"PI77"}}]};
