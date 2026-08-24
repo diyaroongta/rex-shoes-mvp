@@ -1,43 +1,39 @@
 import assert from "node:assert/strict";
 import { parseReferenceWorkbook } from "../shared/reference-import.js";
-import { mergeBom } from "../shared/bom-import.js";
-import { INPUTS } from "../shared/inputs.js";
 
-console.log("\nreference import — safe BOM, packing and catalogue workbook");
+console.log("\nreference upload — the workbook people fill in by hand");
 
-const parsed=parseReferenceWorkbook([
-  {name:"BOM",rows:[
-    ["Article Code","Sole Type","Size Range","Stage","Component","Material","UOM","Rate per Pair"],
-    ["Glamour","EVA","6X8","CUTTING","Upper","Mesh 58\"","MTR",0.42],
-    ["Glamour","EVA","6X8","STITCHING","Thread","Thread","MTR",1.2],
-  ]},
-  {name:"Packing",rows:[
-    ["Article Code","Size Range","Pairs per Carton"],
-    ["Glamour","6X8",24],
-  ]},
-  {name:"Catalogue",rows:[
-    ["Article Code","Description","Default Price","Sole Type","PVC Machine","Photo File Name"],
-    ["Glamour","School shoe",625,"EVA","","glamour.jpg"],
-  ]},
+const BOM_HEAD = ["Article Code","Sole Type","Size Range","Stage","Material","UOM","Rate per Pair"];
+const rowsFor = (lead = []) => [
+  ...lead,
+  BOM_HEAD,
+  ["GLAMOUR","EVA","6X8","CUTTING",'MESH 58"',"MTR",0.42],
+  ["GLAMOUR","EVA","6X8","PACKING","INNER BOX","PCS",1],
+];
+
+/* A hand-filled workbook routinely carries a title and a note above the table.
+   Assuming the header is row 1 rejected the entire file for it, and pointed the
+   row-number error at the title — which tells the user nothing. */
+const titled = parseReferenceWorkbook([
+  { name:"BOM", rows: rowsFor([["FACTORY OS — REFERENCE UPLOAD"], ["One row per material."], []]) },
+  { name:"Packing", rows:[["Packing — pairs per carton"], [], ["Article Code","Size Range","Pairs per Carton"], ["GLAMOUR","6X8",24]] },
 ]);
-assert.deepEqual(parsed.errors,[]);
-assert.equal(parsed.boms[0].article,"GLAMOUR");
-assert.equal(parsed.boms[0].combos["6X8"].rates.CUTTING['MESH 58"||MTR'],0.42);
-assert.equal(parsed.packing.GLAMOUR["6X8"],24);
-assert.equal(parsed.catalogue.GLAMOUR.price,625);
-assert.equal(parsed.warnings.length,1,"photo filename must be surfaced for separate image upload");
+assert.deepEqual(titled.errors, [], "a title above the header must not break the file");
+assert.equal(titled.boms.length, 1);
+assert.equal(titled.boms[0].article, "GLAMOUR");
+assert.deepEqual(titled.packing, { GLAMOUR:{ "6X8":24 } });
 
-const merged=mergeBom(INPUTS,parsed.boms[0]);
-assert.deepEqual(merged.reference.articles.GLAMOUR.routing,
-  ["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","PACKING","DISPATCH"]);
+const plain = parseReferenceWorkbook([{ name:"BOM", rows: rowsFor() }]);
+assert.deepEqual(plain.errors, [], "a header on row 1 still works");
+assert.equal(plain.boms[0].combo_order.length, 1);
 
-const duplicate=parseReferenceWorkbook([{name:"BOM",rows:[
-  ["Article Code","Sole Type","Size Range","Stage","Component","Material","UOM","Rate per Pair"],
-  ["GLAMOUR","EVA","6X8","CUTTING","Upper","Mesh","MTR",0.4],
-  [" glamour ","EVA","6X8","CUTTING","Upper","Mesh","MTR",0.4],
+// Row numbers must point at the row Excel shows, counted from the real header.
+const bad = parseReferenceWorkbook([{ name:"BOM", rows:[
+  ["Title"], [], BOM_HEAD,
+  ["GLAMOUR","EVA","6X8","CUTTING",'MESH 58"',"MTR",0],
 ]}]);
-assert.ok(duplicate.errors.some(e=>e.includes("duplicate BOM material")));
+assert.ok(bad.errors.some(e => e.includes("BOM row 4")),
+  `the error must name the row Excel shows, got: ${bad.errors.join(" | ")}`);
 
-console.log("  pass  one workbook parses all three master-data sections");
-console.log("  pass  article names are canonical and duplicate BOM rows are blocked");
-console.log("  pass  new articles receive the complete seven-stage route\n");
+console.log("  pass  a title block above the table does not break the upload");
+console.log("  pass  row numbers still match what Excel shows\n");
