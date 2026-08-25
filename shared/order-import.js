@@ -1,4 +1,4 @@
-import { matchArticle, articleTypeCombos, comboSizesForArticle, pairsPerCarton } from "./bridge.js";
+import { matchArticle, articleTypeCombos, articleTypes, comboSizesForArticle, pairsPerCarton } from "./bridge.js";
 
 /* Bulk order import from a spreadsheet. Pure — no xlsx dependency, no I/O.
    Takes rows already read out of a sheet (array of arrays) and returns order
@@ -60,7 +60,34 @@ const HEADER_ALIASES = {
   remarks:"remarks", remark:"remarks", notes:"remarks",
 };
 
-const yes = v => /^(yes|y|true|1)$/i.test(String(v||"").trim());
+const TRUE_WORDS = new Set(["yes","y","true","1","required","needed","applicable","print","printed"]);
+const FALSE_WORDS = new Set(["no","n","false","0","not required","not needed","na","n/a"]);
+function booleanCell(v, label, row, errors){
+  const raw=String(v==null?"":v).trim().toLowerCase();
+  if(!raw) return false;
+  if(TRUE_WORDS.has(raw)) return true;
+  if(FALSE_WORDS.has(raw)) return false;
+  errors.push({row,error:`${label} must be Yes or No (read "${String(v).trim()}")`});
+  return false;
+}
+
+function numberCell(v, units=""){
+  if(typeof v === "number") return Number.isFinite(v)?v:null;
+  const raw=String(v==null?"":v).trim().replace(/,/g,"");
+  if(!raw) return null;
+  const re=units
+    ? new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)\\s*(?:${units})?$`,"i")
+    : /^([+-]?\d+(?:\.\d+)?)$/;
+  const hit=raw.match(re);
+  return hit&&Number.isFinite(Number(hit[1]))?Number(hit[1]):null;
+}
+
+function validIso(iso){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(iso||""))) return false;
+  const [y,m,d]=iso.split("-").map(Number);
+  const dt=new Date(Date.UTC(y,m-1,d));
+  return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d;
+}
 
 const headerRowIndex = rows => (rows||[]).findIndex(r =>
   (r||[]).some(c => HEADER_ALIASES[norm(c)] === "article"));
@@ -74,7 +101,13 @@ export function parseOrderWorkbook(sheets, reference, packing = {}){
   let orderSheets=0;
   for(const sheet of (sheets||[])){
     const rows=(sheet&&sheet.rows)||[];
-    if(headerRowIndex(rows)<0) continue;
+    if(headerRowIndex(rows)<0){
+      const nonempty=rows.some(r=>(r||[]).some(v=>v!=null&&String(v).trim()!==""));
+      const informational=/^(read\s*me|instructions?|example(?:\s+only)?|summary|print)$/i.test(String(sheet?.sheetName||"").trim());
+      if(nonempty&&!informational)
+        combined.warnings.push(`${sheet?.sheetName||"Unnamed sheet"}: skipped because no recognised Article column was found.`);
+      continue;
+    }
     orderSheets++;
     const sheetName=String((sheet&&sheet.sheetName)||"");
     const parsed=parseOrderSheet(rows,reference,packing,{sheetName});
@@ -84,6 +117,14 @@ export function parseOrderWorkbook(sheets, reference, packing = {}){
     combined.rowCount+=parsed.rowCount;
   }
   if(!orderSheets) combined.errors.push({row:0,error:'No order sheet found — include a column named "Article" or "Article Name".'});
+  const piParties=new Map();
+  for(const order of combined.orders){
+    const no=String(order.pi?.pi_no||"").trim(); if(!no) continue;
+    const prior=piParties.get(no);
+    if(prior&&prior!==order.party&&!combined.errors.some(e=>e.error.includes(`PI ${no} is assigned`)))
+      combined.errors.push({row:0,error:`PI ${no} is assigned to more than one customer (${prior} and ${order.party}). Use a different PI number for each customer.`});
+    else piParties.set(no,order.party);
+  }
   return combined;
 }
 
@@ -96,16 +137,18 @@ function toIsoDate(v){
     return isNaN(d) ? null : d.toISOString().slice(0,10);
   }
   const s = String(v).trim();
-  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return validIso(s)?s:null;
   const dmy = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
   if(dmy){                                    // Indian sheets write day first
     let [,d,m,y] = dmy;
     if(y.length === 2) y = "20" + y;
     const iso = `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-    return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
+    return validIso(iso) ? iso : null;
   }
   const parsed = new Date(s);
-  return isNaN(parsed) ? null : parsed.toISOString().slice(0,10);
+  if(isNaN(parsed)) return null;
+  const iso=parsed.toISOString().slice(0,10);
+  return validIso(iso)?iso:null;
 }
 
 function orderBookSizeColumns(headers){
@@ -127,7 +170,7 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
   const sizeCols=orderBookSizeColumns(headers);
   const out={orders:[],errors:[],warnings:[],rowCount:0};
   const get=(r,k)=>map[k]==null?null:r[map[k]];
-  const nature=/mto/i.test(opts.sheetName||"")?"MTO":/institution/i.test(opts.sheetName||"")?"Institutional":"";
+  const sheetNature=/mto/i.test(opts.sheetName||"")?"MTO":/institution/i.test(opts.sheetName||"")?"Institutional":"";
   for(let i=headerRow+1;i<rows.length;i++){
     const r=rows[i]||[]; const row=i+1;
     if(!r.some(v=>v!=null&&String(v).trim()!=="")) continue;
@@ -145,8 +188,8 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
     const lines=[];
     const unsupported=[];
     for(const sc of sizeCols){
-      const qty=Number(r[sc.index]);
-      if(!Number.isFinite(qty)||qty<=0) continue;
+      const qty=numberCell(r[sc.index],"pairs?|prs?");
+      if(qty==null||qty<=0) continue;
       const combo=combos.find(c=>comboSizesForArticle(article,c,vl).includes(sc.key));
       if(!combo){unsupported.push(sc.key);continue;}
       let line=lines.find(l=>l.combo===combo);
@@ -155,13 +198,18 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
     }
     if(unsupported.length){out.errors.push({row,error:`${article}: sizes ${unsupported.join(", ")} do not match its ${vl||"selected"} packing ranges`});continue;}
     if(!lines.length){out.errors.push({row,error:`${article}: no positive supported size quantities`});continue;}
+    const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
+    if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row,error:"Priority must be 1, 2 or 3"});continue;}
+    const printing=booleanCell(get(r,"printing"),"Print",row,out.errors);
+    if(out.errors.some(e=>e.row===row)) continue;
+    const explicitNature=String(get(r,"order_nature")||"").trim();
     out.orders.push({
-      order_date:date,article_code:article,party,priority:Math.max(1,Math.round(Number(get(r,"priority"))||2)),lines,
-      printing:yes(get(r,"printing")),
+      order_date:date,article_code:article,party,priority,lines,
+      printing,
       pi:{pi_no:String(get(r,"pi_no")||"").trim()||undefined,customer_city:String(get(r,"city")||"").trim()||undefined,
-        order_nature:nature||undefined,vl:vl||undefined,sole_type:String(get(r,"sole_type")||"").trim()||undefined,
+        order_nature:explicitNature||sheetNature||undefined,vl:vl||undefined,sole_type:String(get(r,"sole_type")||"").trim()||undefined,
         sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
-        current_status:String(get(r,"current_status")||"").trim()||undefined,printing:yes(get(r,"printing"))}
+        current_status:String(get(r,"current_status")||"").trim()||undefined,printing}
     });
   }
   return out;
@@ -210,7 +258,7 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
     // The downloadable wide template has one pre-labelled row per article.
     // An untouched row is a placeholder, not a malformed order.
     if(wide && article && !party && !get(r,"order_date")
-       && !comboCols.some(c=>Number(r[c.index])>0)){ out.rowCount--; continue; }
+       && !comboCols.some(c=>(numberCell(r[c.index],"pairs?|prs?" )||0)>0)){ out.rowCount--; continue; }
 
     if(!party)   { out.errors.push({ row:rowNo, error:"Party is blank" }); continue; }
     if(!date)    { out.errors.push({ row:rowNo, error:`Could not read the order date "${get(r,"order_date")}"` }); continue; }
@@ -226,16 +274,25 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
       const lines=[];
       for(const c of comboCols){
         if(!combos.includes(c.combo)) continue;
-        const qty=Number(r[c.index]);
+        const qty=numberCell(r[c.index],"pairs?|prs?");
         if(Number.isFinite(qty)&&qty>0) lines.push({combo:c.combo,qty,label:c.combo});
       }
       if(!lines.length){ out.errors.push({row:rowNo,error:`Enter pairs in at least one size column for ${article}`}); continue; }
-      const requiredMeta=[["Order Nature","order_nature"],["V/L","vl"],["Sole Colour","sole_colour"],["Upper Colour","upper_colour"]];
+      const requiredMeta=[["Order Nature","order_nature"],
+        ...(articleTypes(article).includes("ALL")?[["V/L","vl"]]:[]),
+        ["Sole Colour","sole_colour"],["Upper Colour","upper_colour"]];
       const missingMeta=requiredMeta.filter(([,k])=>!String(get(r,k)||"").trim()).map(([label])=>label);
       if(missingMeta.length){ out.errors.push({row:rowNo,error:`Complete ${missingMeta.join(", ")} for ${article}`}); continue; }
+      const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
+      if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row:rowNo,error:"Priority must be 1, 2 or 3"});continue;}
+      const printing=booleanCell(get(r,"printing"),"Print",rowNo,out.errors);
+      if(out.errors.some(e=>e.row===rowNo)) continue;
+      const estimated=String(get(r,"estimated_dispatch_date")||"").trim();
+      const estimatedIso=estimated?toIsoDate(get(r,"estimated_dispatch_date")):null;
+      if(estimated&&!estimatedIso){out.errors.push({row:rowNo,error:`Could not read estimated dispatch date "${estimated}"`});continue;}
       out.orders.push({order_date:date,article_code:article,party,
-        priority:Math.max(1,Math.round(Number(get(r,"priority"))||2)), lines,
-        printing:yes(get(r,"printing")),
+        priority, lines,
+        printing,
         pi:{pi_no:String(get(r,"pi_no")||"").trim()||undefined,
           customer_city:String(get(r,"city")||"").trim()||undefined,
           order_nature:String(get(r,"order_nature")||"").trim()||undefined,
@@ -244,15 +301,16 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
           sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,
           upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
           current_status:String(get(r,"current_status")||"").trim()||undefined,
-          printing:yes(get(r,"printing")),
+          estimated_dispatch_date:estimatedIso||undefined,
+          printing,
           remarks:String(get(r,"remarks")||"").trim()||undefined}});
       continue;
     }
 
     // Legacy long format: pairs wins when both are given.
-    let pairs = Number(get(r,"pairs"));
+    let pairs = numberCell(get(r,"pairs"),"pairs?|prs?");
     if(!isFinite(pairs) || pairs <= 0){
-      const cartons = Number(get(r,"cartons"));
+      const cartons = numberCell(get(r,"cartons"),"cartons?|ctns?|ctn");
       const ppc = (packing[article] || {})[combo];
       if(!isFinite(cartons) || cartons <= 0){
         out.errors.push({ row:rowNo, error:"Give either Pairs or Cartons" }); continue;
@@ -264,7 +322,8 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
       pairs = cartons * ppc;
     }
 
-    const priority = Math.max(1, Math.round(Number(get(r,"priority")) || 2));
+    const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
+    if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row:rowNo,error:"Priority must be 1, 2 or 3"});continue;}
     const piNo=String(get(r,"pi_no")||"").trim();
     const vl=String(get(r,"vl")||"").trim();
     const soleColour=String(get(r,"sole_colour")||"").trim();
@@ -272,7 +331,7 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
     // PI identity wins. Without it, two different PIs for the same customer,
     // date and article collapsed into one order and lost their line boundary.
     const key = piNo
-      ? `PI||${piNo}||${article}||${vl}||${soleColour}||${upperColour}`
+      ? `PI||${piNo}||${party}||${article}||${vl}||${soleColour}||${upperColour}`
       : `${party}||${date}||${article}||${vl}||${soleColour}||${upperColour}`;
     if(!buckets.has(key)) buckets.set(key, {
       order_date: date, article_code: article, party, priority,
@@ -286,17 +345,27 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
         sole_colour:  soleColour || undefined,
         upper_colour: upperColour || undefined,
         current_status:String(get(r,"current_status")||"").trim() || undefined,
-        printing:     yes(get(r,"printing")),
+        printing:     false,
         remarks:      String(get(r,"remarks")||"").trim()      || undefined,
       },
-      printing: yes(get(r,"printing")),
+      printing: false,
     });
     const b = buckets.get(key);
+    const printing=booleanCell(get(r,"printing"),"Print",rowNo,out.errors);
+    if(out.errors.some(e=>e.row===rowNo)) continue;
+    b.printing=printing;b.pi.printing=printing;
     const existing = b.lines.find(l => l.combo === combo);
     if(existing) existing.qty += pairs;                 // same combo twice = add
     else b.lines.push({ combo, qty: pairs, label: combo });
   }
 
   if(!wide) out.orders = [...buckets.values()].filter(o => o.lines.length);
+  const piParties=new Map();
+  for(const order of out.orders){
+    const no=String(order.pi?.pi_no||"").trim(); if(!no) continue;
+    const prior=piParties.get(no);
+    if(prior&&prior!==order.party) out.errors.push({row:0,error:`PI ${no} is assigned to more than one customer (${prior} and ${order.party}). Use a different PI number for each customer.`});
+    else piParties.set(no,order.party);
+  }
   return out;
 }

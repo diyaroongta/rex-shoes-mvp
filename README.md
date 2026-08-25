@@ -276,7 +276,8 @@ Ordered by how much they matter.
 For the safest client workflow, use **Data & BOM → Download upload template**. The standard workbook has BOM,
 Packing and Catalogue tabs, validates the complete file before saving, requires confirmation before replacing an
 existing BOM, and records each successful save in the reference-data revision history. Catalogue photos are added
-separately on the Catalogue card.
+separately on the Catalogue card. The optional **Packing Source** column makes inheritance explicit: blank uses the
+factory default, `SELF` uses the article's own chart, or an existing article code reuses that chart by range position.
 
 This is the split that matters for day-to-day use:
 
@@ -285,19 +286,26 @@ This is the split that matters for day-to-day use:
 | **Code** | a new tab, a bug fix, the PI layout | `git push` → Vercel redeploys |
 | **Data** | BOM workbooks, catalogue, stock, prices, capacities, delivery targets | the app itself → database |
 
-**BOM upload.** Data & BOM tab → pick the sole type → choose one of the per-article workbooks in
-the factory's existing layout. The sheet is parsed in the browser by `shared/bom-import.js` — the
-same module the server validates against, so the preview is exactly what gets stored. The preview
-reports anything it had to interpret: CM→MTR conversions, unit typos, and rows whose rate cell was
-unusable. Confirm and it writes to `reference_data`. The article is live immediately, including in
-the order reader's vocabulary.
+**Article-master upload.** Data & BOM has one upload control for the standard workbook. It may
+contain BOM, Packing and Catalogue together, or only the standard tab being changed. The browser
+shows one card per affected article: new versus existing, complete size ranges, material-rate
+count, packing chart or inherited source, catalogue fields and optional range MRP. Nothing is
+written until **Confirm and save to database**; the server validates the same payload again and
+commits the reference and catalogue changes in one transaction.
 
-**Catalogue.** One card per article, generated from the reference data. Photos are resized to
-640px in the browser and stored as data URLs. Move to Vercel Blob if the images get large.
+**Catalogue.** One card per article, generated from the reference data. A catalogue-only item may
+be added directly, but it is marked **Missing BOM**, excluded from order matching, and links back
+to the article-master uploader. Photos are resized to 640px in the browser and stored as data URLs.
+Move to Vercel Blob if the images get large.
 
-**Stock.** The Data tab lists every material sitting at zero and lets you fill them in. Until
-they're real, procurement shows full requirements instead of shortfalls — it over-orders rather
-than under-orders.
+**Stock.** Opening, receipts, issues, minimums and rates are maintained only in **Stock register**.
+Stock editing is deliberately not repeated on the article-master page.
+
+**Packing rulebook.** Packing & BOM rules displays every named range, all individual sizes inside
+it, the effective pairs/carton and its source. An individual size inherits its selected range's
+carton quantity when no individual value is stored. An explicit individual-size row overrides the
+range; clearing that override restores inheritance. Linked articles use the corresponding
+ARMOUR/GOLA source range by position, so the same rule is used in Match & Check and order entry.
 
 **Delivery targets.** Machine load tab. See "How lateness is decided" below.
 

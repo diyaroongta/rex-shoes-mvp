@@ -26,6 +26,7 @@ export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponen
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
 export const listPis         = ()          => j("/api/pis");
 export const schedulePi      = pi_no       => post("/api/pis", { pi_no });
+export const nextPiNumber    = ()          => post("/api/pi-numbers", {});
 
 /* ---- shared config (machine capacities) ---- */
 export const getSettings = ()      => j("/api/settings");
@@ -46,7 +47,6 @@ export const applyPartyTerms   = name => post("/api/parties", { name });
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);
-export const deleteDispatch  = id      => j(`/api/dispatches?id=${id}`, { method:"DELETE" });
 
 /* ---- reference data (articles, BOM rates, materials, packing) ---- */
 export const getReference   = ()        => j("/api/reference");

@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as XLSX from "xlsx";
 
@@ -44,9 +44,10 @@ it("previews a master workbook and blocks an existing BOM replacement until conf
   const {container}=render(<DataTab onChanged={onChanged}/>);
   const inputs=container.querySelectorAll('input[type="file"]');
   fireEvent.change(inputs[0],{target:{files:[file]}});
-  expect(await screen.findByText("Ready to save")).toBeInTheDocument();
-  expect(screen.getByText("Articles read from this file: CUSTOM")).toBeInTheDocument();
-  const save=screen.getByRole("button",{name:"Validate and save all"});
+  expect(await screen.findByText("Review changes before saving")).toBeInTheDocument();
+  expect(screen.getByText("Existing article — update")).toBeInTheDocument();
+  expect(screen.getByText(/1 size ranges, 1 material rates/)).toBeInTheDocument();
+  const save=screen.getByRole("button",{name:"Confirm and save to database"});
   expect(save).toBeDisabled();
   await userEvent.click(screen.getByRole("checkbox"));
   expect(save).toBeEnabled();
@@ -65,10 +66,10 @@ it("downloads the supported template and discards a master preview without savin
   const file=new File([bytes],"new.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
   const {container}=render(<DataTab/>);
   expect(screen.getByRole("link",{name:"Download upload template"})).toHaveAttribute("href","/Factory_OS_Reference_Upload_Template.xlsx");
-  fireEvent.change(container.querySelectorAll('input[type="file"]')[0],{target:{files:[file]}});
-  expect(await screen.findByText("Articles read from this file: NEW")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button",{name:"Discard"}));
-  expect(screen.queryByText("Articles read from this file: NEW")).not.toBeInTheDocument();
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
+  expect(await screen.findByText("New article — add")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button",{name:"Cancel"}));
+  expect(screen.queryByText("New article — add")).not.toBeInTheDocument();
   expect(apiMocks.uploadBom).not.toHaveBeenCalled();
 });
 
@@ -85,40 +86,57 @@ it("reports duplicate catalogue rows before any database request",async()=>{
   const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
   const file=new File([bytes],"duplicate.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
   const {container}=render(<DataTab/>);
-  fireEvent.change(container.querySelectorAll('input[type="file"]')[0],{target:{files:[file]}});
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
   expect(await screen.findByText(/duplicate Catalogue row for NEW.*add Size Range/)).toBeInTheDocument();
   expect(apiMocks.uploadBom).not.toHaveBeenCalled();
 });
 
-it("loads and can discard the legacy one-article BOM format",async()=>{
-  apiMocks.uploadBom.mockResolvedValueOnce({article:"NEW",replaced:false,combos:1,rates:2,new_materials:[],articles_total:2,materials_total:2});
+it("uses one uploader and explains that legacy marker workbooks are not the article master",async()=>{
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
     ["ARTICLE","NEW"],["SIZE RANGE","1X2"],[1,"Upper","Mesh","MTR",null,null,0.5],
   ]),"BOM");
   const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
   const file=new File([bytes],"legacy.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
-  const {container}=render(<DataTab/>);const input=container.querySelectorAll('input[type="file"]')[1];
-  fireEvent.change(input,{target:{files:[file]}});
-  expect(await screen.findByRole("button",{name:"Load NEW into reference data"})).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button",{name:"Discard"}));
-  expect(screen.queryByRole("button",{name:"Load NEW into reference data"})).not.toBeInTheDocument();
-  fireEvent.change(input,{target:{files:[file]}});
-  await userEvent.click(await screen.findByRole("button",{name:"Load NEW into reference data"}));
-  await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalledWith(expect.objectContaining({parsed:expect.objectContaining({article:"NEW"})})));
+  const {container}=render(<DataTab/>);
+  expect(container.querySelectorAll('input[type="file"]')).toHaveLength(1);
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
+  expect(await screen.findByText(/No data rows found/)).toBeInTheDocument();
+  expect(screen.queryByText(/No ARTICLE row found/)).not.toBeInTheDocument();
+  expect(apiMocks.uploadBom).not.toHaveBeenCalled();
 });
 
-it("saves MRP and stock buttons with their exact API formats",async()=>{
-  apiMocks.patchReference.mockResolvedValue({ok:true});
+it("previews a standard article master through the single upload control",async()=>{
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Article Code","Sole Type","Size Range","Stage","Material","UOM","Rate per Pair"],
+    ["THUNDER","EVA","1X2","CUTTING","Mesh","MTR",0.5],
+  ]),"BOM Master");
+  const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  const file=new File([bytes],"article-master.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
   const {container}=render(<DataTab/>);
-  const mrpSection=screen.getByText("MRP by size range").parentElement;
-  fireEvent.change(mrpSection.querySelector('input[type="number"]'),{target:{value:"650"}});
-  await userEvent.click(within(mrpSection).getByRole("button",{name:"Save MRP"}));
-  await waitFor(()=>expect(apiMocks.patchReference).toHaveBeenCalledWith({mrp:{CUSTOM:{"1X2":650}}}));
-  const stockSection=screen.getByText("Stock still to fill (1)").parentElement;
-  fireEvent.change(stockSection.querySelector('input[type="number"]'),{target:{value:"75"}});
-  await userEvent.click(within(stockSection).getByRole("button",{name:"Save stock figures"}));
-  await waitFor(()=>expect(apiMocks.patchReference).toHaveBeenCalledWith({stock:{"OLD||MTR":75}}));
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
+  expect(await screen.findByText("THUNDER")).toBeInTheDocument();
+  expect(screen.queryByText(/No ARTICLE row found/)).not.toBeInTheDocument();
+});
+
+it("allows optional MRP edits in the preview and has no stock editor",async()=>{
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Article Code","Sole Type","Size Range","Stage","Material","UOM","Rate per Pair"],
+    ["NEW","EVA","1X2","CUTTING","Mesh","MTR",0.5],
+  ]),"BOM");
+  const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  const file=new File([bytes],"new.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
+  const {container}=render(<DataTab/>);
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
+  const mrp=await screen.findByLabelText("1X2");
+  fireEvent.change(mrp,{target:{value:"650"}});
+  await userEvent.click(screen.getByRole("button",{name:"Confirm and save to database"}));
+  await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalledWith(expect.objectContaining({
+    batch:expect.objectContaining({mrp:{NEW:{"1X2":650}}}),
+  })));
+  expect(screen.queryByText(/Stock still to fill/)).not.toBeInTheDocument();
 });
 
 it("requires a second click before restoring a reference revision",async()=>{

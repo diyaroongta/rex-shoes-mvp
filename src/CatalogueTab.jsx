@@ -27,13 +27,16 @@ function shrink(file, maxDim=640, quality=0.8){
   });
 }
 
-export default function CatalogueTab({onChanged}){
+export default function CatalogueTab({onChanged,onAddBom}){
   const [cat,setCat]=useState({});
   const [busy,setBusy]=useState("");
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
   const [version,setVersion]=useState(0);
   const [mrpEdits,setMrpEdits]=useState({});
+  const [showAdd,setShowAdd]=useState(false);
+  const [newEntry,setNewEntry]=useState({article_code:"",description:"",price:"",sole_type:"EVA"});
+  const [missingBom,setMissingBom]=useState("");
   const arts=Object.keys(INPUTS.articles);
 
   useEffect(()=>{ api.getCatalogue().then(setCat).catch(e=>setErr(e.message||String(e))); },[]);
@@ -84,13 +87,58 @@ export default function CatalogueTab({onChanged}){
       setMrpEdits(all=>{const next={...all};delete next[code];return next;});
   }
 
+  async function addCatalogueItem(e){
+    e.preventDefault();setBusy("new");setErr("");setMsg("");setMissingBom("");
+    try{
+      const result=await api.putCatalogue({...newEntry,create_catalogue_only:true});
+      await reloadReference();
+      setCat(c=>({...c,[result.article_code]:{article_code:result.article_code,
+        description:newEntry.description,price:newEntry.price===""?null:Number(newEntry.price)}}));
+      setVersion(v=>v+1);setShowAdd(false);
+      setNewEntry({article_code:"",description:"",price:"",sole_type:"EVA"});
+      if(onChanged) onChanged();
+      setMsg(`${result.article_code} was added to the catalogue.`);
+      if(result.missing_bom) setMissingBom(result.article_code);
+    }catch(e){setErr(String(e.message||e));}
+    finally{setBusy("");}
+  }
+
   return <div>
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3">{err}</div>}
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
-    <p className="text-xs text-slate-500 mb-4">
-      Every article is editable here, including Gola Plus and articles added through a BOM upload.
-      Photos are resized to 640px. Sole process, machine assignment and range prices update the shared planning reference.
-    </p>
+    {missingBom&&<div className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 mb-3 flex items-center gap-3 flex-wrap">
+      <span><b>{missingBom} has catalogue details but no BOM or sizes.</b> It cannot be ordered or scheduled yet.</span>
+      <button onClick={()=>onAddBom&&onAddBom(missingBom)} className="text-xs font-semibold bg-amber-700 text-white rounded-lg px-3 py-1.5">Add its BOM now</button>
+    </div>}
+    <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+      <p className="text-xs text-slate-500 max-w-2xl">
+        Add or edit catalogue details here. An article added without a BOM stays clearly marked and cannot be ordered until its BOM is uploaded.
+      </p>
+      <button onClick={()=>setShowAdd(v=>!v)} className="text-xs font-semibold bg-indigo-600 text-white rounded-lg px-3 py-2">
+        {showAdd?"Cancel":"Add new catalogue item"}</button>
+    </div>
+    {showAdd&&<form onSubmit={addCatalogueItem} className="bg-white border border-indigo-200 rounded-xl p-4 mb-4">
+      <div className="text-sm font-semibold text-slate-800 mb-3">New catalogue item</div>
+      <div className="grid gap-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))"}}>
+        <label className="text-xs text-slate-600">Article code or name
+          <input required value={newEntry.article_code} onChange={e=>setNewEntry(x=>({...x,article_code:e.target.value}))}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        <label className="text-xs text-slate-600">Description
+          <input value={newEntry.description} onChange={e=>setNewEntry(x=>({...x,description:e.target.value}))}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        <label className="text-xs text-slate-600">Optional default price
+          <input type="number" min={0} value={newEntry.price} onChange={e=>setNewEntry(x=>({...x,price:e.target.value}))}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5" /></label>
+        <label className="text-xs text-slate-600">Sole process
+          <select value={newEntry.sole_type} onChange={e=>setNewEntry(x=>({...x,sole_type:e.target.value}))}
+            className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+            <option value="EVA">EVA</option><option value="PVC">PVC</option><option value="PU">PU</option><option value="STUCK-ON">Stuck-on</option>
+          </select></label>
+      </div>
+      <div className="text-xs text-amber-800 mt-3">This creates only the catalogue item. Factory OS will ask for its BOM before it can be used in an order.</div>
+      <button disabled={busy==="new"} type="submit" className="mt-3 text-xs font-semibold bg-indigo-600 text-white rounded-lg px-4 py-2 disabled:opacity-50">
+        {busy==="new"?"Adding…":"Add to catalogue"}</button>
+    </form>}
     <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))"}}>
       {arts.map(code=>{
         const e=cat[code]||{}; const a=INPUTS.articles[code];
@@ -111,6 +159,9 @@ export default function CatalogueTab({onChanged}){
             <div className="text-xs text-slate-500 mt-0.5">
               {a.sole_type} sole{a.sole_assumed && <span className="text-amber-600"> · assumed</span>} · {combos.length} size ranges
             </div>
+            {!combos.length&&<button onClick={()=>onAddBom&&onAddBom(code)}
+              className="mt-2 w-full text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-2 py-1.5">
+              Missing BOM — add now</button>}
             <div className="mono text-xs text-slate-400 mt-1 truncate" title={combos.join(", ")}>{combos.join(", ")}</div>
             <input defaultValue={e.description||""} placeholder="Description"
               onBlur={ev=>saveField(code,{description:ev.target.value})}

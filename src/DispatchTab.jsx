@@ -39,11 +39,12 @@ export default function DispatchTab({ orders, onChanged }){
   }
 
   async function submit(rec, closes=false){
+    const closing=closes||kind==="shortage";
     const dispatched={};
     for(const [c,v] of Object.entries(draft)){ const n=Number(v)||0; if(n>0) dispatched[c]=n; }
-    if(!Object.keys(dispatched).length && !closes){ setErr("Enter at least one quantity."); return; }
+    if(!Object.keys(dispatched).length && !closing){ setErr("Enter at least one quantity."); return; }
     const short=rec.total_ordered-rec.total_dispatched-Object.values(dispatched).reduce((a,b)=>a+b,0);
-    if(closes && short>0 &&
+    if(closing && short>0 &&
        !confirm(`Close ${rec.order.order_no} with ${fmt(short)} pairs never delivered?\n\n`+
                 `The balance stops counting as pending and is recorded as a shortage. This cannot be undone from here.`))
       return;
@@ -55,9 +56,9 @@ export default function DispatchTab({ orders, onChanged }){
         if(ppc) cartons[c]=v/ppc;
       }
       await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
-        kind: closes ? "shortage" : kind, note, closes_order: closes });
+        kind: closing ? "shortage" : kind, note, closes_order: closing });
       await load(); setOpen(null);
-      setMsg(closes
+      setMsg(closing
         ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
         : `Packing report recorded for ${rec.order.order_no}.`);
       onChanged && onChanged();

@@ -3,7 +3,7 @@ import { fail, wrap } from "./_lib/http.js";
 import { INPUTS } from "../shared/inputs.js";
 import { articleCode, existingArticleCode, mergeBom } from "../shared/bom-import.js";
 import { SOLE_TYPES, routingForSole } from "../shared/reference-edit.js";
-import { comboSizes } from "../shared/pi.js";
+import { comboSizesForArticleIn } from "../shared/bridge.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -22,7 +22,9 @@ async function mutateReference(changeType, article, mutation){
     await client.query("begin");
     const {rows}=await client.query("select value from reference_data where id = 1 for update");
     const ref=JSON.parse(JSON.stringify(rows.length?rows[0].value:INPUTS));
-    const before=JSON.stringify(ref);
+    const {rows:catalogueBefore}=await client.query(
+      "select article_code, image, description, price from catalogue order by article_code for update");
+    const before=JSON.stringify({reference:ref,catalogue:catalogueBefore});
     const result=(await mutation(ref,client))||{};
     await client.query(`insert into reference_data (id, value) values (1, $1)
                         on conflict (id) do update set value = $1, updated_at = now()`,
@@ -71,8 +73,8 @@ function applyPacking(ref, packing){
     for(const [rawCombo,ppc] of Object.entries(chart||{})){
       const combo=String(rawCombo).toUpperCase().replace(/\s+/g,"");
       if(!allowed.has(combo)) reject(`Packing ${art} ${combo}: size range is not in that article's BOM`);
-      const n=Math.round(Number(ppc));
-      if(!Number.isFinite(n)||n<1) reject(`pairs/carton for ${art} ${combo} must be 1 or more`);
+      const n=Number(ppc);
+      if(!Number.isInteger(n)||n<1) reject(`pairs/carton for ${art} ${combo} must be a whole number of 1 or more`);
       clean[combo]=n;
     }
     ref.packing[art]={...(ref.packing[art]||{}),...clean};
@@ -81,20 +83,21 @@ function applyPacking(ref, packing){
   return touched;
 }
 
-function applySinglePacking(ref, packingSingles){
+function applySinglePacking(ref, packingSingles,{allowDelete=false}={}){
   const touched=[];
   ref.packing_singles_exact=ref.packing_singles_exact||{};
   for(const [rawArticle,chart] of Object.entries(packingSingles||{})){
     const art=existingArticleCode(ref.articles,rawArticle);
     if(!art) reject(`unknown article in single-size Packing rows: ${rawArticle} — add its BOM first`);
     const combos=ref.articles[art].combo_order||Object.keys(ref.articles[art].combos||{});
-    const allowed=new Set(combos.flatMap(c=>comboSizes(c)).map(s=>String(s).toUpperCase().replace(/S$/,"")));
+    const allowed=new Set(combos.flatMap(c=>comboSizesForArticleIn(ref,art,c)).map(s=>String(s).toUpperCase()));
     const clean={};
     for(const [rawSize,ppc] of Object.entries(chart||{})){
-      const size=String(rawSize).toUpperCase().replace(/S$/,"");
+      const size=String(rawSize).toUpperCase();
       if(!allowed.has(size)) reject(`Packing ${art} size ${size}: size is not inside that article's BOM ranges`);
-      const n=Math.round(Number(ppc));
-      if(!Number.isFinite(n)||n<1) reject(`pairs/carton for ${art} size ${size} must be 1 or more`);
+      if(allowDelete&&(ppc==null||ppc==="")){delete ref.packing_singles_exact[art]?.[size];continue;}
+      const n=Number(ppc);
+      if(!Number.isInteger(n)||n<1) reject(`pairs/carton for ${art} size ${size} must be a whole number of 1 or more`);
       clean[size]=n;
     }
     ref.packing_singles_exact[art]={...(ref.packing_singles_exact[art]||{}),...clean};
@@ -114,7 +117,7 @@ function applyMrp(ref,mrp){
     for(const [rawCombo,value] of Object.entries(chart||{})){
       const combo=String(rawCombo).toUpperCase().replace(/\s+/g,"");
       if(!allowed.has(combo)) reject(`MRP ${art} ${combo}: size range is not in that article's BOM`);
-      const n=Math.round(Number(value));
+      const n=Number(value);
       if(!Number.isFinite(n)||n<0) reject(`MRP for ${art} ${combo} must be 0 or more`);
       clean[combo]=n;
     }
@@ -153,16 +156,36 @@ export default wrap(async (req, res) => {
         const { rows } = await q("select value, change_type, article_code, created_at from reference_data_history where revision_id = $1",[id]);
         if(!rows.length) return fail(res, 404, `no such revision: ${id}`);
         const snapshot = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
-        if(!snapshot || !snapshot.articles) return fail(res, 422, "that revision does not hold a usable reference document");
-        const result = await mutateReference("restore", rows[0].article_code, ref => {
+        const snapshotRef=snapshot?.reference||snapshot;
+        const snapshotCatalogue=Array.isArray(snapshot?.catalogue)?snapshot.catalogue:null;
+        if(!snapshotRef || !snapshotRef.articles) return fail(res, 422, "that revision does not hold a usable reference document");
+        const {rows:liveOrders}=await q(`select order_no, article_code, lines from orders where active`);
+        const conflicts=[];
+        for(const order of liveOrders){
+          const def=snapshotRef.articles[order.article_code];
+          if(!def){conflicts.push(`${order.order_no}: article ${order.article_code} would disappear`);continue;}
+          const combos=new Set(def.combo_order||Object.keys(def.combos||{}));
+          const missing=(order.lines||[]).map(l=>l.combo).filter(c=>!combos.has(c));
+          if(missing.length) conflicts.push(`${order.order_no}: ranges ${[...new Set(missing)].join(", ")} would disappear`);
+        }
+        if(conflicts.length) return fail(res,409,"Cannot restore while it would invalidate live orders — "+conflicts.slice(0,10).join("; "));
+        const result = await mutateReference("restore", rows[0].article_code, async (ref,client) => {
           for(const k of Object.keys(ref)) delete ref[k];
-          Object.assign(ref, snapshot);
-          return { articles: Object.keys(snapshot.articles || {}).length,
-                   materials: Object.keys(snapshot.materials || {}).length };
+          Object.assign(ref, snapshotRef);
+          if(snapshotCatalogue){
+            await client.query("delete from catalogue");
+            for(const entry of snapshotCatalogue)
+              await client.query(`insert into catalogue (article_code, image, description, price)
+                values ($1,$2,$3,$4)`,[entry.article_code,entry.image||null,entry.description||null,entry.price??null]);
+          }
+          return { articles: Object.keys(snapshotRef.articles || {}).length,
+                   materials: Object.keys(snapshotRef.materials || {}).length,
+                   catalogue: snapshotCatalogue?.length??null };
         });
         return res.status(200).json({ ok:true, restored_revision:id,
           undid: rows[0].change_type, article_code: rows[0].article_code,
-          articles_total: result.articles, materials_total: result.materials });
+          articles_total: result.articles, materials_total: result.materials,
+          catalogue_total: result.catalogue });
       }
 
       const {parsed,routing,batch,confirm_replace=false,confirm_remove_ranges=false}=req.body||{};
@@ -201,6 +224,9 @@ export default wrap(async (req, res) => {
         }
         const packed=applyPacking(ref,batch?.packing||{});
         const packedSingles=applySinglePacking(ref,batch?.packingSingles||{});
+        for(const art of new Set([...packed,...packedSingles])){
+          if(ref.articles[art]) ref.articles[art].packing_source="SELF";
+        }
         const priced=applyMrp(ref,batch?.mrp||{});
         const catalogue=[];
         for(const [raw,entry] of Object.entries(batch?.catalogue||{})){
@@ -210,6 +236,20 @@ export default wrap(async (req, res) => {
           if(entry.molding_machine&&!['ROTARY','VERTICAL'].includes(entry.molding_machine)) reject(`${art}: invalid PVC Machine`);
           if(entry.price!=null&&(!Number.isFinite(Number(entry.price))||Number(entry.price)<0)) reject(`${art}: Default Price must be 0 or more`);
           if(entry.description!=null&&String(entry.description).length>500) reject(`${art}: description must be 500 characters or fewer`);
+          if(Object.prototype.hasOwnProperty.call(entry,"packing_source")){
+          if(entry.packing_source){
+              const requested=String(entry.packing_source).toUpperCase();
+              const source=requested==="SELF"?art:existingArticleCode(ref.articles,entry.packing_source);
+              if(!source) reject(`${art}: Packing Source ${entry.packing_source} is not an article with a BOM`);
+              ref.articles[art].packing_source=source===art?"SELF":source;
+            }else if((batch?.packing||{})[art]||(batch?.packingSingles||{})[art]){
+              // Supplying an article's own packing chart is an explicit
+              // customization. Use it unless this same row names a source.
+              ref.articles[art].packing_source="SELF";
+            }else{
+              delete ref.articles[art].packing_source;
+            }
+          }
           if(entry.sole_type){
             ref.articles[art].sole_type=entry.sole_type;
             ref.articles[art].sole_assumed=false;
@@ -261,6 +301,9 @@ export default wrap(async (req, res) => {
     if(packing && typeof packing === "object"){
       applyPacking(ref,packing);
     }
+    if(body.packing_singles && typeof body.packing_singles === "object"){
+      applySinglePacking(ref,body.packing_singles,{allowDelete:true});
+    }
     if(body.stock_meta && typeof body.stock_meta === "object"){
       ref.stock_meta = ref.stock_meta || {};
       for(const [key, fields] of Object.entries(body.stock_meta)){
@@ -287,7 +330,7 @@ export default wrap(async (req, res) => {
         if(!ref.articles[art]) reject(`unknown article: ${art}`);
         const clean = { ...(ref.mrp[art] || {}) };
         for(const [combo, v] of Object.entries(chart)){
-          const n = Math.round(Number(v));
+          const n = Number(v);
           if(!Number.isFinite(n) || n < 0) reject(`MRP for ${art} ${combo} must be 0 or more`);
           clean[combo] = n;
         }

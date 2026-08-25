@@ -14,14 +14,24 @@ import partiesHandler from "../../api/parties.js";
 import catalogueHandler from "../../api/catalogue.js";
 import referenceHandler from "../../api/reference.js";
 import pisHandler from "../../api/pis.js";
+import piNumbersHandler from "../../api/pi-numbers.js";
 
 function response(){
   return {statusCode:200,body:null,status(code){this.statusCode=code;return this;},json(body){this.body=body;return this;}};
 }
 
-beforeEach(()=>vi.clearAllMocks());
+beforeEach(()=>vi.resetAllMocks());
 
 describe("database API contracts",()=>{
+  it("allocates collision-resistant PI numbers from a database sequence",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{n:"42"}]});
+    const res=response();
+    await piNumbersHandler({method:"POST",url:"/api/pi-numbers",body:{}},res);
+    expect(res.statusCode).toBe(201);
+    expect(res.body.pi_no).toMatch(/^PI-\d{4}-000042$/);
+    expect(String(dbMocks.q.mock.calls[1][0])).toContain("nextval('pi_no_seq')");
+  });
+
   it("preserves untouched settings when one capacity changes",async()=>{
     const previous={capacities:{CUTTING:91,PREPARATION:77},sla_targets:{CUTTING:12},pi_config:{company_name:"REX"}};
     dbMocks.q.mockResolvedValueOnce({rows:[{value:previous}]})
@@ -42,6 +52,26 @@ describe("database API contracts",()=>{
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/only 20 pairs remain/);
     expect(dbMocks.q).toHaveBeenCalledTimes(2);
+  });
+
+  it("derives dispatch cartons from the order's snapshotted packing rate",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240,ppc:24}]}]})
+      .mockResolvedValueOnce({rows:[]})
+      .mockResolvedValueOnce({rows:[]})
+      .mockResolvedValueOnce({rows:[{id:1,order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":2},kind:"partial",dispatched_on:"2026-08-25",closes_order:false}]});
+    const res=response();
+    await dispatchHandler({method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":999},kind:"partial",dispatched_on:"2026-08-25"}},res);
+    expect(res.statusCode).toBe(201);
+    const insert=dbMocks.q.mock.calls.find(([sql])=>String(sql).includes("insert into dispatches"));
+    expect(JSON.parse(insert[1][2])).toEqual({"7X10S":2});
+  });
+
+  it("rejects an impossible dispatch date before reading an order",async()=>{
+    const res=response();
+    await dispatchHandler({method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{A:1},dispatched_on:"2026-02-30"}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/real date/);
+    expect(dbMocks.q).not.toHaveBeenCalled();
   });
 
   it("accepts an article present in live reference data even when absent from the seed",async()=>{
@@ -73,21 +103,25 @@ describe("database API contracts",()=>{
   });
 
   it("preserves exact-size ordering metadata when editing a saved order",async()=>{
-    const current={order_no:"JO1",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",lines:[],pi:{pi_no:"PI1"}};
+    const current={order_no:"JO1",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",lines:[],pi:{pi_no:"PI1"},version:0};
     const live={articles:{CUSTOM:{combos:{"1X2":{}},combo_order:["1X2"]}}};
     dbMocks.q.mockImplementation(async sql=>{
       const text=String(sql);
       if(text.includes("from orders where order_no")) return {rows:[current]};
       if(text.includes("reference_data")) return {rows:[{value:live}]};
-      if(text.startsWith("update orders")) return {rows:[{...current,lines:[{combo:"1X2",qty:12,sizes:{"1":12},size_order:["1","2"],ppc:12}]}]};
       return {rows:[]};
     });
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).startsWith("update orders")) return {rows:[{...current,version:1,lines:[{combo:"1X2",qty:12,sizes:{"1":12},size_order:["1","2"],ppc:12}]}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
     const res=response();
     await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},body:{lines:[{
       combo:"1X2",qty:12,sizes:{"1":12},size_order:["1","2"],ppc:12,
     }]}},res);
     expect(res.statusCode).toBe(200);
-    const updateCall=dbMocks.q.mock.calls.find(([sql])=>String(sql).startsWith("update orders"));
+    const updateCall=client.query.mock.calls.find(([sql])=>String(sql).startsWith("update orders"));
     expect(updateCall[1][0]).toContain('"size_order":["1","2"]');
     expect(updateCall[1][0]).toContain('"ppc":12');
   });
@@ -140,17 +174,18 @@ describe("database API contracts",()=>{
       if(text.includes("from parties where name")) return {rows:[{discount_pct:"35",deductions:[],
         gst_pct:"5",payment_split_pct:"50",dispatch_timeline:"45 days"}]};
       if(text.includes("from orders where party")) return {rows:[{order_no:"JO1",pi_no:"PI7",discount_pct:"40"}]};
-      if(text.startsWith("update orders")) return {rowCount:1,rows:[]};
       return {rows:[],rowCount:0};
     });
+    const client={query:vi.fn(async sql=>String(sql).startsWith("update orders")?{rowCount:1,rows:[]}:{rows:[],rowCount:0}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
     const res=response();
     await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Buyer"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.updated).toBe(1);
-    const [sql,params]=dbMocks.q.mock.calls.find(([s])=>String(s).startsWith("update orders"));
+    const [sql,params]=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"));
     // `||` merges at the top level, so pi_no / remarks / attachment survive.
-    expect(sql).toMatch(/pi = coalesce\(pi,'\{\}'::jsonb\) \|\| \$2::jsonb/);
-    const written=JSON.parse(params[1]);
+    expect(sql).toMatch(/pi = coalesce\(pi,'\{\}'::jsonb\) \|\| \$3::jsonb/);
+    const written=JSON.parse(params[2]);
     expect(written.discount_pct).toBe(35);
     expect(written.terms.gst_pct).toBe(5);
     expect(written).not.toHaveProperty("pi_no");
@@ -182,6 +217,28 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
+  it("can add a catalogue-only article and marks its missing BOM",async()=>{
+    const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{}};
+    const client={query:vi.fn(async sql=>{
+      const text=String(sql);
+      if(text.includes("select value from reference_data")) return {rows:[{value:ref}]};
+      if(text.includes("select article_code, image, description, price from catalogue order")) return {rows:[]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await catalogueHandler({method:"PUT",url:"/api/catalogue",body:{
+      article_code:" thunder 27 ",description:"New model",price:799,sole_type:"PVC",create_catalogue_only:true,
+    }},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({article_code:"THUNDER 27",created_without_bom:true,missing_bom:true});
+    const referenceWrite=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const written=JSON.parse(referenceWrite[1][0]);
+    expect(written.articles["THUNDER 27"]).toMatchObject({sole_type:"PVC",combo_order:[],combos:{}});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("catalogue-only-add"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
   it("stores validated packing edits in shared reference data",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{},packing:{}};
     const client={query:vi.fn(async sql=>{
@@ -196,6 +253,26 @@ describe("database API contracts",()=>{
     const saved=JSON.parse(saveCall[1][0]);
     expect(saved.packing.CUSTOM["1X2"]).toBe(12);
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("reference_data_history"))).toBe(true);
+    const historyCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data_history"));
+    expect(JSON.parse(historyCall[1][2])).toMatchObject({reference:ref,catalogue:[]});
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
+  it("adds and clears individual-size packing overrides",async()=>{
+    const ref={articles:{CUSTOM:{combo_order:["7X10"],combos:{"7X10":{}}}},materials:{},packing:{CUSTOM:{"7X10":48}},
+      packing_singles_exact:{CUSTOM:{"7S":36}}};
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("select value from reference_data")) return {rows:[{value:ref}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"PATCH",url:"/api/reference",body:{packing_singles:{CUSTOM:{"7S":null,"8S":40}}}},res);
+    expect(res.statusCode).toBe(200);
+    const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const saved=JSON.parse(saveCall[1][0]);
+    expect(saved.packing_singles_exact.CUSTOM["7S"]).toBeUndefined();
+    expect(saved.packing_singles_exact.CUSTOM["8S"]).toBe(40);
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
@@ -212,7 +289,7 @@ describe("database API contracts",()=>{
         materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},
         combos:{"7X10":{rates:{CUTTING:{"MAT||MTR":0.5}}},"11X1":{rates:{CUTTING:{"MAT||MTR":0.6}}}}}],
       packing:{THUNDER:{"7X10":24,"11X1":18}},
-      packingSingles:{THUNDER:{"7":24,"8":24}},
+      packingSingles:{THUNDER:{"7S":24,"8S":24}},
       mrp:{THUNDER:{"7X10":899,"11X1":949}},
       catalogue:{THUNDER:{article_code:"THUNDER",description:"School shoe",price:null,sole_type:"EVA",molding_machine:null}},
     }}},res);
@@ -220,8 +297,9 @@ describe("database API contracts",()=>{
     const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
     const saved=JSON.parse(saveCall[1][0]);
     expect(saved.packing.THUNDER).toEqual({"7X10":24,"11X1":18});
-    expect(saved.packing_singles_exact.THUNDER).toEqual({"7":24,"8":24});
+    expect(saved.packing_singles_exact.THUNDER).toEqual({"7S":24,"8S":24});
     expect(saved.mrp.THUNDER).toEqual({"7X10":899,"11X1":949});
+    expect(saved.articles.THUNDER.packing_source).toBe("SELF");
     expect(res.body.single_packing_articles).toEqual(["THUNDER"]);
     expect(res.body.mrp_articles).toEqual(["THUNDER"]);
   });
@@ -259,7 +337,8 @@ describe("database API contracts",()=>{
 
   it("restores a revision and records the restore so it can itself be undone",async()=>{
     const snapshot={articles:{SPIKE:{combos:{},combo_order:[]}},materials:{"M||MTR":{name:"M",uom:"MTR"}}};
-    dbMocks.q.mockResolvedValueOnce({rows:[{value:snapshot,change_type:"bom-upload",article_code:"SPIKE",created_at:new Date()}]});
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:snapshot,change_type:"bom-upload",article_code:"SPIKE",created_at:new Date()}]})
+      .mockResolvedValueOnce({rows:[]});
     const client={query:vi.fn(async sql=>
       String(sql).includes("select value from reference_data") ? {rows:[{value:{articles:{OLD:{}}}}]} : {rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
@@ -274,6 +353,17 @@ describe("database API contracts",()=>{
     const written=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data"))[1];
     expect(JSON.parse(written[0]).articles.SPIKE).toBeDefined();
     expect(JSON.parse(written[0]).articles.OLD).toBeUndefined();  // replaced, not merged
+  });
+
+  it("blocks a reference restore that would invalidate a live order",async()=>{
+    const snapshot={reference:{articles:{OTHER:{combos:{},combo_order:[]}},materials:{}},catalogue:[]};
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:snapshot,change_type:"master-upload",article_code:null,created_at:new Date()}]})
+      .mockResolvedValueOnce({rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"7X10S",qty:24}]}]});
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{restore_revision:3}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/JO1: article SPIKE would disappear/);
+    expect(dbMocks.connect).not.toHaveBeenCalled();
   });
 
   /* The server must refuse a range-deleting upload on its own, not rely on the

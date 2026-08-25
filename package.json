@@ -11,11 +11,11 @@
     "dev:ui-only": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:core": "node tests/engine.test.mjs && node tests/pi.test.mjs && node tests/sizes.test.mjs && node tests/order-import.test.mjs && node tests/intake.test.mjs && node tests/mis.test.mjs && node tests/dispatch-ledger.test.mjs && node tests/reference-import.test.mjs && node tests/reference-import.test.mjs && node tests/regressions.test.mjs",
+    "test:core": "node tests/engine.test.mjs && node tests/pi.test.mjs && node tests/sizes.test.mjs && node tests/order-import.test.mjs && node tests/intake.test.mjs && node tests/mis.test.mjs && node tests/dispatch-ledger.test.mjs && node tests/reference-import.test.mjs && node tests/regressions.test.mjs",
     "test:ui-api": "vitest run",
     "test": "npm run test:core && npm run test:ui-api",
     "coverage:core": "c8 --all --include='shared/**/*.js' --exclude='shared/inputs.js' --exclude='shared/catalogue-seed.js' --check-coverage --lines=80 --branches=60 --functions=80 --report-dir=coverage/core --reporter=text --reporter=json-summary npm run test:core",
-    "coverage:ui-api": "vitest run --coverage --coverage.reportsDirectory=coverage/ui-api",
+    "coverage:ui-api": "vitest run --coverage --coverage.reportsDirectory=coverage/ui-api --coverage.thresholds.lines=60 --coverage.thresholds.statements=60 --coverage.thresholds.branches=50 --coverage.thresholds.functions=45",
     "test:coverage": "npm run coverage:core && npm run coverage:ui-api",
     "check": "npm run test:coverage && npm run build",
     "db:setup": "psql \"$DATABASE_URL\" -f db/schema.sql"

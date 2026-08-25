@@ -53,8 +53,10 @@ export function resolveSize(articleCode, article, size, packing = {}, singlePack
   }
 
   // packing: the single-size chart first, then the range's own rate as a fallback
-  let ppc = singlePackQty(articleCode, s);
-  let ppcSource = ppc != null ? "single-size chart" : null;
+  const singleResult = singlePackQty(articleCode, s, combo);
+  let ppc = singleResult&&typeof singleResult==="object" ? singleResult.ppc : singleResult;
+  let ppcSource = ppc != null
+    ? (singleResult&&typeof singleResult==="object" ? singleResult.kind : "single-size chart") : null;
   if(ppc == null && combo){
     const fromRange = (packing[articleCode] || {})[combo];
     if(fromRange != null){ ppc = fromRange; ppcSource = `${combo} pack rate`; }

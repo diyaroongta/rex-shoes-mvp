@@ -49,7 +49,10 @@ const norm = t => {
 const COLOURS=["black","white"], VARIANTS={v:"velcro",l:"lace",velcro:"velcro",lace:"lace"};
 
 function articleIndex(){
-  return Object.keys(REF.articles).map(code=>{
+  return Object.keys(REF.articles).filter(code=>{
+    const def=REF.articles[code]||{};
+    return (def.combo_order||Object.keys(def.combos||{})).length>0;
+  }).map(code=>{
     const n=norm(code), toks=n.split(" ");
     const colour=COLOURS.find(c=>toks.includes(c))||null;
     let variant=null;
@@ -190,41 +193,72 @@ Two customers, each with their own order. Jindal's four lines total 2+3+1+2 = 8 
 Return ONLY valid JSON, no prose, no code fences:
 {"date":"YYYY-MM-DD or empty","orders":[{"party":"customer for THIS order, or empty","category":"Smart Boy","color":"Black","lines":[{"sizes":["6","8"],"cartons":2,"group":null,"type":"LACE or VELCRO or empty"}]}]}`; };
 
-/* Pairs-per-carton for a SINGLE size on its own (the chart's "SINGLE
-   PACKSIZES" rows), as opposed to a named range combo. Falls back to null
-   when the article has no single-size chart on file, so callers can tell
-   distinguishes an unknown rate from a real zero — never invents a number. */
-export function singlePackQty(article, size, articleType=""){
+/* Effective packing for one individual size. Explicit single-size rows win.
+   Otherwise the size uses its selected range's pairs/carton, including an
+   inherited ARMOUR/GOLA range. Returning the source keeps the rules screen
+   and order entry able to explain the value rather than merely showing it. */
+export function singlePackingRule(article,size,articleType="",combo=""){
   const ref = reference();
   const raw = String(size).trim();
   const bare = raw.replace(/s$/i, "");
   const exact = (ref.packing_singles_exact || {})[article];
   if(exact){
     const direct = exact[raw] ?? exact[bare] ?? exact[raw.toUpperCase()] ?? exact[bare.toUpperCase()];
-    if(direct != null) return Number(direct);
+    if(direct != null) return {ppc:Number(direct),kind:"individual override",article,size:raw};
   }
-  const section = (ref.packing_singles_by_article || {})[article];
+  const sourceArticle=packingArticleSource(article);
+  let sourceSize=raw;
+  if(sourceArticle!==article&&combo){
+    const sourceRule=packingRuleSource(article,combo);
+    const ownSizes=comboSizesForArticle(article,combo,articleType);
+    const sourceSizes=comboSizesForArticle(sourceRule.article,sourceRule.combo,comboType(sourceRule.article,sourceRule.combo));
+    const position=ownSizes.findIndex(value=>String(value).toLowerCase()===raw.toLowerCase());
+    if(position>=0&&sourceSizes[position]!=null) sourceSize=String(sourceSizes[position]);
+  }
+  const sourceBare=sourceSize.replace(/s$/i,"");
+  const sourceExact=(ref.packing_singles_exact||{})[sourceArticle];
+  if(sourceArticle!==article&&sourceExact){
+    const direct=sourceExact[sourceSize]??sourceExact[sourceBare]??sourceExact[sourceSize.toUpperCase()]??sourceExact[sourceBare.toUpperCase()];
+    if(direct!=null) return {ppc:Number(direct),kind:"individual override",article:sourceArticle,size:sourceSize};
+  }
+  const section = (ref.packing_singles_by_article || {})[sourceArticle]
+    || (ref.packing_singles_by_article || {})[article];
   const chart = section && (ref.packing_singles || {})[section];
-  if(!chart || !size) return null;
+  if(chart && size){
   // Kids sizes are written with an "s" (8s); the roll itself holds bare
   // numerals. Strip it and force the kids band, since a bare "8" could
   // otherwise be the adult repeat further along the roll.
-  const isKids = /[0-9]s$/i.test(raw);
-  const bandSize = isKids ? raw.slice(0,-1) : raw;
+  const isKids = /[0-9]s$/i.test(sourceSize);
+  const bandSize = isKids ? sourceSize.slice(0,-1) : sourceSize;
   let pos = ROLL_KY.indexOf(bandSize);
-  if(pos < 0) return null;
-  if(isKids && pos > 7) return null;
-  const type=String(articleType||"").trim().toUpperCase();
+  if(pos >= 0 && !(isKids && pos > 7)){
+    const type=String(articleType||"").trim().toUpperCase();
   // kids run: positions 0-7 (6..13); adult run: 8-13 (1..5,5.5) then the
   // repeated adult roll printed again as 6..12 further along the sheet.
+    let ppc=null;
   if(chart.kids != null || chart.adult != null){
-    if(type.startsWith("L")) return chart.adult ?? null;
-    if(type.startsWith("V")) return chart.kids ?? null;
-    return pos <= 7 ? chart.kids : chart.adult;
+      if(type.startsWith("L")) ppc=chart.adult ?? null;
+      else if(type.startsWith("V")) ppc=chart.kids ?? null;
+      else ppc=pos <= 7 ? chart.kids : chart.adult;
+    }else if(pos <= 7) ppc=chart["6-13"] ?? null;
+    else if(pos <= 12) ppc=chart["1-5"] ?? chart["5.5-12"] ?? null;
+    else ppc=chart["5.5"] ?? chart["6-12"] ?? chart["5.5-12"] ?? null;
+    if(ppc!=null) return {ppc:Number(ppc),kind:"individual packing chart",article:sourceArticle,size:sourceSize};
   }
-  if(pos <= 7) return chart["6-13"] ?? null;
-  if(pos <= 12) return chart["1-5"] ?? chart["5.5-12"] ?? null;
-  return chart["5.5"] ?? chart["6-12"] ?? chart["5.5-12"] ?? null;
+  }
+
+  if(combo){
+    const ppc=pairsPerCarton(article,combo);
+    if(ppc!=null){
+      const source=packingRuleSource(article,combo);
+      return {ppc:Number(ppc),kind:"range default",article:source.article,combo:source.combo,size:sourceSize};
+    }
+  }
+  return {ppc:null,kind:"missing",article:sourceArticle,size:sourceSize};
+}
+
+export function singlePackQty(article,size,articleType="",combo=""){
+  return singlePackingRule(article,size,articleType,combo).ppc;
 }
 
 /* Combination-pack lookup. SPIKE uses ARMOUR's packing list by position: its
@@ -236,11 +270,16 @@ export function pairsPerCarton(article, combo){
   const source=packingRuleSource(article,combo);
   if(source.inherited){
     const inherited = ((ref.packing||{})[source.article]||{})[source.combo];
-      if(inherited != null) return Number(inherited);
-      // Older database seeds only carried ARMOUR's two middle ranges. Keep
-      // SPIKE correct during migration even before reference data is re-saved.
-    const armour = ((ref.articles||{}).ARMOUR||{}).combo_order || ["7X10S","11X1","2X5","6X9","9X12"];
-    return [24,24,18,18,18][armour.indexOf(source.combo)] ?? null;
+    if(inherited != null) return Number(inherited);
+    const bundledSource=(PACKING[source.article]||{})[source.combo];
+    if(bundledSource!=null) return Number(bundledSource);
+    // Older database seeds did not carry ARMOUR's complete chart. Preserve
+    // the agreed Armour bands while that database is being migrated.
+    if(source.article==="ARMOUR"){
+      const armour = ((ref.articles||{}).ARMOUR||{}).combo_order || ["7X10S","11X1","2X5","6X9","9X12"];
+      return [24,24,18,18,18][armour.indexOf(source.combo)] ?? null;
+    }
+    return null;
   }
   const direct = ((ref.packing||{})[article]||{})[combo];
   if(direct != null) return Number(direct);
@@ -256,13 +295,38 @@ export function pairsPerCarton(article, combo){
 
 export function packingRuleSource(article,combo){
   const ref=reference();
-  if(article==="SPIKE"){
-    const spike=((ref.articles||{}).SPIKE||{}).combo_order||["7X10S","11X1","2X5","6X8","9X12"];
-    const armour=((ref.articles||{}).ARMOUR||{}).combo_order||["7X10S","11X1","2X5","6X9","9X12"];
-    const i=spike.indexOf(combo);
-    if(i>=0) return {article:"ARMOUR",combo:armour[i],inherited:true};
+  const source=packingArticleSource(article);
+  if(source!==article){
+    const own=(((ref.articles||{})[article]||{}).combo_order)||[];
+    const sourceCombos=(((ref.articles||{})[source]||{}).combo_order)||[];
+    const i=own.indexOf(combo);
+    const mapped=(i>=0&&sourceCombos[i])||sourceCombos.includes(combo)&&combo;
+    if(mapped) return {article:source,combo:mapped,inherited:true};
   }
   return {article,combo,inherited:false};
+}
+
+/* Factory packing policy. An explicit `packing_source` uploaded with the
+   article master wins; otherwise the agreed sole-family rules apply. Keeping
+   this in one shared function means Match & Check, PI quantities and the rules
+   screen all change together when an article changes. */
+export function packingArticleSourceFor(ref,article){
+  const def=(ref.articles||{})[article]||{};
+  const explicit=def.packing_source;
+  if(String(explicit||"").toUpperCase()==="SELF") return article;
+  if(explicit&&(ref.articles||{})[explicit]) return explicit;
+  const name=String(article||"").toUpperCase();
+  if(/SMART BOY|SILKY BELLY/.test(name)) return article;
+  if(name==="ARMOUR"||/^ARMOUR \(/.test(name)) return article;
+  if(/^REX GOLA \([VL]/.test(name)) return article;
+  if(name.includes("GOLA PLUS")) return (ref.articles||{})["REX GOLA (V)"]?"REX GOLA (V)":article;
+  if(def.sole_type==="EVA"&&(ref.articles||{}).ARMOUR) return "ARMOUR";
+  if(def.sole_type==="PVC"&&(ref.articles||{})["REX GOLA (V)"]) return "REX GOLA (V)";
+  return article;
+}
+
+export function packingArticleSource(article){
+  return packingArticleSourceFor(reference(),article);
 }
 
 /* JILL/ARMOUR/PERCY/SPADE/SPIKE are single catalogue articles with two order
@@ -321,7 +385,7 @@ export function articleTypeCombos(article, type){
   return [...all];                                  // no type given: the whole shoe
 }
 
-export function comboSizesForArticle(article, combo, type){
+export function comboSizesForArticleIn(ref,article,combo,type){
   /* The adult-roll relabelling belongs ONLY to the split articles, where Lace
      genuinely means the adult roll. On a legacy code like REX GOLA (L) the
      (V)/(L) is the CLOSURE — it names a different article with its own BOM, and
@@ -330,9 +394,16 @@ export function comboSizesForArticle(article, combo, type){
 
      Within a split article the RANGE decides, whatever `type` claims. */
   if(!SPLIT_ARTICLE_TYPES.has(article)) return comboSizes(combo);
-  if(!comboType(article, combo).startsWith("L")) return comboSizes(combo);
+  const definition=(ref.articles||{})[article]||{};
+  const all=definition.combo_order||Object.keys(definition.combos||{});
+  const position=all.indexOf(combo);
+  if(position<VELCRO_RANGE_COUNT) return comboSizes(combo);
   const [a,b]=String(combo||"").toUpperCase().replace(/[SB]$/," ").trim().split("X");
   const adult=["6","7","8","9","10","11","12","13"];
   const i=adult.indexOf(a), j=adult.indexOf(b);
   return i<0||j<0 ? comboSizes(combo) : adult.slice(i,Math.max(i,j)+1);
+}
+
+export function comboSizesForArticle(article,combo,type){
+  return comboSizesForArticleIn(reference(),article,combo,type);
 }

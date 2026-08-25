@@ -8,6 +8,7 @@ const mocks=vi.hoisted(()=>({
   getReference:vi.fn(),getCatalogue:vi.fn(),listParties:vi.fn(),
   createOrders:vi.fn(),patchReference:vi.fn(),saveParty:vi.fn(),
   schedulePi:vi.fn(),patchOrder:vi.fn(),
+  nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),
 }));
 
@@ -37,6 +38,7 @@ beforeEach(()=>{
   mocks.saveParty.mockResolvedValue({name:"Test Buyer"});
   mocks.schedulePi.mockResolvedValue({restored:["JO77"]});
   mocks.patchOrder.mockResolvedValue({});
+  mocks.nextPiNumber.mockResolvedValue({pi_no:"PI-2026-000001"});
   mocks.previewPartyTerms.mockResolvedValue({orders:0,pis:[],changing:0,terms:{discount_pct:40}});
   mocks.applyPartyTerms.mockResolvedValue({updated:0,pis:[],terms:{discount_pct:40}});
 });
@@ -89,6 +91,20 @@ describe("critical UI contracts",()=>{
     const payload=mocks.patchReference.mock.calls[0][0];
     expect(payload.packing.ARMOUR).toBeDefined();
     expect(payload.packing.SPIKE).toBeUndefined();
+  });
+
+  it("shows range defaults for individual sizes and saves an explicit override",async()=>{
+    const user=userEvent.setup();
+    render(<ArticleRulesTab/>);
+    await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
+    expect(screen.getByText("Individual-size packing")).toBeInTheDocument();
+    const individual=screen.getByLabelText("SPIKE 7X10S size 7s pairs per carton");
+    expect(individual).toHaveAttribute("placeholder","24");
+    await user.type(individual,"30");
+    await user.click(screen.getByRole("button",{name:"Save packing changes"}));
+    await waitFor(()=>expect(mocks.patchReference).toHaveBeenCalled());
+    const payload=mocks.patchReference.mock.calls[0][0];
+    expect(payload.packing_singles.ARMOUR["7S"]).toBe(30);
   });
 
   it("adds a party without exposing dispatch-timeline editing",async()=>{

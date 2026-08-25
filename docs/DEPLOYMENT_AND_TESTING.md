@@ -35,13 +35,16 @@ Configure these in the local `.env` file and in Vercel project settings; do not 
 
 ## Database
 
-The authoritative schema is `db/schema.sql`.
+The authoritative schema is `db/schema.sql`. This release adds order archiving/version fields,
+the PI-number sequence, immutable PI revisions and a restrictive dispatch foreign key. Apply the
+numbered migration to an existing Neon database before deploying the code:
 
 ```bash
-psql "$DATABASE_URL" -f db/schema.sql
+psql "$DATABASE_URL" -f db/migrations/001_integrity_and_pi_history.sql
 ```
 
-This repair did not introduce a new database column. It did tighten API validation and protect settings from accidental reset. If production predates any earlier PI, schedule, dispatch, or reference-table work, compare and apply the current schema before deploying. Take a database backup first.
+For a brand-new database, use `npm run db:setup`. Take a database backup first. No new Vercel
+environment variable is required; the existing pooled `DATABASE_URL` is still the database input.
 
 Use a separate test database for API integration tests. The current automated API tests mock PostgreSQL so that they are safe and repeatable, but they do not prove production credentials, network access, or live migration compatibility.
 
@@ -58,7 +61,6 @@ Use a separate test database for API integration tests. The current automated AP
 ## Known release blockers and risks
 
 - The supplied order book currently contains many article names and size combinations absent from the reference master. The importer now blocks these rows instead of silently creating incorrect orders. Complete and approve those reference rules before importing the full workbook.
-- The `xlsx` dependency has a published high-severity advisory with no fixed npm release. Replace it with a maintained XLSX/XLSM reader or isolate spreadsheet parsing before treating uploads as untrusted.
+- The `xlsx` dependency has a published high-severity advisory with no fixed npm release. Uploads are now capped at 10 MB, 20 sheets and 25,000 rows, but the dependency should still be replaced before accepting files from untrusted users.
 - Authentication and role-based permissions are not implemented. Do not expose the production app publicly until access control is added.
 - AI extraction, live Neon persistence, and browser print/PDF require staging tests because they depend on external services or browser behaviour.
-

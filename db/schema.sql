@@ -4,17 +4,29 @@
 -- Order numbers come from a sequence, so two clerks saving simultaneously
 -- can never be handed the same number.
 create sequence if not exists order_no_seq start 2001;
+create sequence if not exists pi_no_seq start 1;
 
 create table if not exists orders (
   order_no     text primary key,
   order_date   date        not null,
   article_code text        not null,
-  priority     integer     not null default 2 check (priority >= 1),
-  party        text,
+  priority     integer     not null default 2 check (priority between 1 and 3),
+  party        text        not null,
   lines        jsonb       not null,          -- [{combo, qty, label}]
   pi           jsonb       not null default '{}'::jsonb,
-  created_at   timestamptz not null default now()
+  active       boolean     not null default true,
+  version      integer     not null default 1,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
 );
+
+alter table orders add column if not exists active boolean not null default true;
+alter table orders add column if not exists version integer not null default 1;
+alter table orders add column if not exists updated_at timestamptz not null default now();
+update orders set party='—' where party is null or btrim(party)='';
+alter table orders alter column party set not null;
+alter table orders drop constraint if exists orders_priority_check;
+alter table orders add constraint orders_priority_check check (priority between 1 and 3);
 
 create index if not exists orders_priority_date_idx on orders (priority, order_date, order_no);
 
@@ -30,6 +42,19 @@ create table if not exists proforma_invoices (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Every issued/revised state is immutable. proforma_invoices remains the fast
+-- pointer to the latest state; this table is the commercial audit trail.
+create table if not exists proforma_invoice_revisions (
+  id          bigserial primary key,
+  pi_no       text        not null,
+  revision    integer     not null,
+  status      text        not null,
+  snapshot    jsonb       not null,
+  recorded_at timestamptz not null default now()
+);
+create index if not exists proforma_invoice_revisions_pi_idx
+  on proforma_invoice_revisions (pi_no, revision, recorded_at desc);
 
 -- Shared config: machine capacities. One row, id = 1.
 -- These are shared factory settings, not per-browser preferences.
@@ -119,3 +144,9 @@ create table if not exists parties (
 -- counting as pending. The shortfall stays recorded rather than being erased —
 -- an order closed 40 pairs short must still be answerable for those 40.
 alter table dispatches add column if not exists closes_order boolean not null default false;
+
+-- Hard deletion must never erase dispatch evidence. The application archives
+-- orders; this RESTRICT guard also protects against an accidental SQL delete.
+alter table dispatches drop constraint if exists dispatches_order_no_fkey;
+alter table dispatches add constraint dispatches_order_no_fkey
+  foreign key (order_no) references orders(order_no) on delete restrict;

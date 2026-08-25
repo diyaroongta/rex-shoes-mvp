@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
 import { comboSizes } from "../shared/pi.js";
-import { singlePackQty, pairsPerCarton, packingRuleSource, matchArticle, setReference } from "../shared/bridge.js";
+import { singlePackQty, singlePackingRule, pairsPerCarton, packingRuleSource, matchArticle, setReference } from "../shared/bridge.js";
 import { INPUTS } from "../shared/inputs.js";
 
 let passed = 0, failed = 0;
@@ -28,6 +28,13 @@ test("Gala matches Gola, not Gola Plus", () => {
   assert.equal(matchArticle("Gala (L)","Blk"), "REX GOLA (L)");
   assert.equal(matchArticle("Gala Plus","Blk"), "REX GOLA PLUS", "only an explicit Plus reaches PLUS");
   assert.equal(matchArticle("Gala Plus (V)","Blk"), "REX GOLA PLUS");
+});
+test("a catalogue-only article is not offered as an orderable match", () => {
+  setReference({...INPUTS,articles:{...INPUTS.articles,
+    "GHOST SAMPLE":{sole_type:"EVA",combo_order:[],combos:{}},
+  }});
+  assert.equal(matchArticle("Ghost Sample",""),null);
+  setReference(INPUTS);
 });
 
 console.log("\nB — size catalog");
@@ -56,7 +63,18 @@ test("SPIKE follows the ARMOUR packing list", () => {
   assert.equal(pairsPerCarton("SPIKE","6X8"), pairsPerCarton("ARMOUR","6X9"));
   assert.deepEqual(packingRuleSource("SPIKE","6X8"), {article:"ARMOUR",combo:"6X9",inherited:true},
     "editing SPIKE must update the corresponding ARMOUR source range");
-  assert.deepEqual(packingRuleSource("SPADE","6X7"), {article:"SPADE",combo:"6X7",inherited:false});
+  assert.deepEqual(packingRuleSource("SPADE","6X7"), {article:"ARMOUR",combo:"6X9",inherited:true});
+});
+test("new EVA and PVC articles inherit the agreed family packing chart", () => {
+  setReference({...INPUTS,articles:{...INPUTS.articles,
+    GLAMOUR:{sole_type:"EVA",combo_order:["7X10S","11X1","2X5","6X8","9X12"],combos:{}},
+    THUNDER:{sole_type:"PVC",combo_order:["8X10","11X13","1X3","4X5"],combos:{}},
+  }});
+  assert.deepEqual(packingRuleSource("GLAMOUR","6X8"),{article:"ARMOUR",combo:"6X9",inherited:true});
+  assert.equal(pairsPerCarton("GLAMOUR","6X8"),18);
+  assert.deepEqual(packingRuleSource("THUNDER","11X13"),{article:"REX GOLA (V)",combo:"11X13",inherited:true});
+  assert.equal(pairsPerCarton("THUNDER","11X13"),18);
+  setReference(INPUTS);
 });
 test("an uploaded exact-size packing rule overrides inherited bands", () => {
   setReference({...INPUTS,
@@ -64,6 +82,44 @@ test("an uploaded exact-size packing rule overrides inherited bands", () => {
     packing_singles_exact:{THUNDER:{"7":30}},
   });
   assert.equal(singlePackQty("THUNDER","7s"),30);
+  setReference(INPUTS);
+});
+test("an explicit SELF source keeps an article's own packing chart", () => {
+  setReference({...INPUTS,
+    articles:{...INPUTS.articles,GLAMOUR:{
+      sole_type:"EVA",packing_source:"SELF",combo_order:["7X10S"],combos:{"7X10S":{}},
+    }},
+    packing:{...INPUTS.packing,GLAMOUR:{"7X10S":30}},
+  });
+  assert.deepEqual(packingRuleSource("GLAMOUR","7X10S"),{
+    article:"GLAMOUR",combo:"7X10S",inherited:false,
+  });
+  assert.equal(pairsPerCarton("GLAMOUR","7X10S"),30);
+  setReference(INPUTS);
+});
+test("an individual size inherits its range carton rate unless overridden", () => {
+  const custom={...INPUTS,
+    articles:{...INPUTS.articles,CUSTOM:{sole_type:"EVA",packing_source:"SELF",combo_order:["7X10"],combos:{"7X10":{}}}},
+    packing:{...INPUTS.packing,CUSTOM:{"7X10":48}},packing_singles_exact:{CUSTOM:{}},
+  };
+  setReference(custom);
+  assert.deepEqual(singlePackingRule("CUSTOM","7s","","7X10"),{
+    ppc:48,kind:"range default",article:"CUSTOM",combo:"7X10",size:"7s",
+  });
+  custom.packing_singles_exact.CUSTOM["7S"]=36;setReference(custom);
+  assert.deepEqual(singlePackingRule("CUSTOM","7s","","7X10"),{
+    ppc:36,kind:"individual override",article:"CUSTOM",size:"7s",
+  });
+  setReference(INPUTS);
+});
+test("an individual size inherits the mapped source article's range rate", () => {
+  setReference({...INPUTS,articles:{...INPUTS.articles,
+    THUNDER:{sole_type:"EVA",combo_order:["7X10S","11X1","2X5","6X8","9X12"],combos:{}},
+  },packing_singles_by_article:{},packing_singles:{},packing_singles_exact:{}});
+  const rule=singlePackingRule("THUNDER","7s","","7X10S");
+  assert.equal(rule.ppc,pairsPerCarton("ARMOUR","7X10S"));
+  assert.equal(rule.kind,"range default");
+  assert.equal(rule.article,"ARMOUR");
   setReference(INPUTS);
 });
 

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
-import { singlePackQty, articleTypeCombos, comboSizesForArticle } from "../shared/bridge.js";
+import { singlePackingRule, articleTypeCombos, comboSizesForArticle } from "../shared/bridge.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 
 /* Add one specific size to an order, instead of a whole size range.
@@ -23,7 +23,7 @@ export default function AddSize({ articleCode, articleType, lines, onChange }){
   const catalog = useMemo(()=> scopedArticle ? sizeCatalog(scopedArticle,sizeResolver) : [], [scopedArticle, articleCode, articleType]);
   const res = useMemo(()=> (article && size)
     ? resolveSize(articleCode, scopedArticle, size, INPUTS.packing || {},
-        (code,oneSize)=>singlePackQty(code,oneSize,articleType), combo || null,sizeResolver)
+        (code,oneSize,chosenCombo)=>singlePackingRule(code,oneSize,articleType,chosenCombo), combo || null,sizeResolver)
     : null, [article, scopedArticle, articleCode, articleType, size, combo]);
 
   if(!article) return null;
@@ -32,7 +32,7 @@ export default function AddSize({ articleCode, articleType, lines, onChange }){
   const pairs = unit === "pairs"
     ? Math.max(0, Math.round(Number(amount) || 0))
     : (ppc ? Math.round((Number(amount) || 0) * ppc) : 0);
-  const chosenCombo = combo || (res && res.combo) || "";
+  const chosenCombo = combo || (res && !res.ambiguous ? res.combo : "") || "";
   const canAdd = !!chosenCombo && pairs > 0;
 
   function add(){

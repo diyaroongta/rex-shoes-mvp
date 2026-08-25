@@ -1,6 +1,6 @@
-import { q } from "./_lib/db.js";
+import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
-import { syncPiMaster } from "./_lib/pis.js";
+import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
 
 const termsOf = row => ({
   discount_pct: Number(row.discount_pct),
@@ -91,10 +91,33 @@ export default wrap(async (req, res) => {
 
     // jsonb || jsonb merges at the top level, so pi_no, remarks, the attachment
     // and every other field on the blob survive untouched.
-    const { rowCount } = await q(
-      `update orders set pi = coalesce(pi,'{}'::jsonb) || $2::jsonb where party = $1`,
-      [name, JSON.stringify({ terms, discount_pct: terms.discount_pct })]);
-    try{ await syncPiMaster(); }catch(_){ /* the re-pricing itself has committed */ }
+    const client=await db().connect();
+    let rowCount=0;
+    try{
+      await client.query("begin");
+      await ensurePiTable(client);
+      const payload=JSON.stringify({terms,discount_pct:terms.discount_pct});
+      const piNos=[...new Set(affected.map(r=>r.pi_no).filter(Boolean))].sort();
+      for(const piNo of piNos){
+        const {rows:master}=await client.query("select revision from proforma_invoices where pi_no=$1 for update",[piNo]);
+        const next=(Number(master[0]?.revision)||0)+1;
+        const result=await client.query(
+          `update orders set pi = coalesce(pi,'{}'::jsonb) || $3::jsonb ||
+            jsonb_build_object('revision',$2::integer,'production_status','edited','revised_at',now()::text),
+            version=version+1, updated_at=now()
+            where party = $1 and pi->>'pi_no'=$4 and active`,[name,next,payload,piNo]);
+        rowCount+=result.rowCount;
+      }
+      if(affected.some(r=>!r.pi_no)){
+        const result=await client.query(
+          `update orders set pi=coalesce(pi,'{}'::jsonb) || $2::jsonb,
+             version=version+1, updated_at=now()
+             where party=$1 and nullif(pi->>'pi_no','') is null and active`,[name,payload]);
+        rowCount+=result.rowCount;
+      }
+      await syncPiMaster(client);
+      await client.query("commit");
+    }catch(e){await client.query("rollback");throw e;}finally{client.release();}
     return res.status(200).json({
       name, terms, updated: rowCount,
       pis: [...new Set(affected.map(r => r.pi_no).filter(Boolean))],

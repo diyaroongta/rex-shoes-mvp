@@ -32,13 +32,14 @@ assert.equal(plain.boms[0].combo_order.length, 1);
 const thunder = parseReferenceWorkbook([
   { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","6X8","CUTTING","MESH","MTR",0.5]] },
   { name:"Packing", rows:[["Article Code","Size Range","Pairs per Carton"],["THUNDER","6X8",18]] },
-  { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type"],["THUNDER","Demo",500,"EVA"]] },
+  { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type","Packing Source"],["THUNDER","Demo",500,"EVA","ARMOUR"]] },
   { name:"Example Only", rows:[BOM_HEAD,["GLAMOUR","EVA","6X8","CUTTING","MESH","MTR",0.5]] },
 ]);
 assert.deepEqual(thunder.errors, []);
 assert.deepEqual(thunder.boms.map(b=>b.article), ["THUNDER"]);
 assert.deepEqual(Object.keys(thunder.packing), ["THUNDER"]);
 assert.deepEqual(Object.keys(thunder.catalogue), ["THUNDER"]);
+assert.equal(thunder.catalogue.THUNDER.packing_source,"ARMOUR");
 assert.ok(!JSON.stringify(thunder).includes('"GLAMOUR"'), "Example Only must never be imported");
 
 const sizeAware = parseReferenceWorkbook([
@@ -56,7 +57,7 @@ const sizeAware = parseReferenceWorkbook([
 ]);
 assert.deepEqual(sizeAware.errors, []);
 assert.deepEqual(sizeAware.packing,{THUNDER:{"7X10":24,"11X1":18}});
-assert.deepEqual(sizeAware.packingSingles,{THUNDER:{"7":24,"8":24}});
+assert.deepEqual(sizeAware.packingSingles,{THUNDER:{"7S":24,"8S":24}});
 assert.deepEqual(sizeAware.mrp,{THUNDER:{"7X10":899,"11X1":949}});
 assert.deepEqual(Object.keys(sizeAware.catalogue),["THUNDER"],"range prices remain one catalogue article");
 
@@ -71,10 +72,24 @@ assert.ok(duplicateCatalogue.errors.some(e=>e.includes("add Size Range")),duplic
 const renamedRange = parseReferenceWorkbook([
   { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5]] },
   { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type"],
-    ["THUNDER","7X10",899,"EVA"],["THUNDER 1","11X1",949,"EVA"],
+    ["THUNDER","School shoe",899,"EVA"],["THUNDER 1","Different model",949,"EVA"],
   ]},
 ]);
 assert.ok(renamedRange.errors.some(e=>e.includes("THUNDER 1 has no BOM")&&e.includes("keep Article Code THUNDER")),renamedRange.errors.join(" | "));
+
+const oldCatalogueTemplate = parseReferenceWorkbook([
+  { name:"BOM", rows:[BOM_HEAD,
+    ["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5],
+    ["THUNDER","EVA","11X1","CUTTING","MESH","MTR",0.6],
+  ]},
+  { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type"],
+    ["THUNDER","7X10",899,"EVA"],["THUNDER 1","11X1",949,"EVA"],
+  ]},
+]);
+assert.deepEqual(oldCatalogueTemplate.errors,[],oldCatalogueTemplate.errors.join(" | "));
+assert.deepEqual(oldCatalogueTemplate.mrp,{THUNDER:{"7X10":899,"11X1":949}});
+assert.deepEqual(Object.keys(oldCatalogueTemplate.catalogue),["THUNDER"]);
+assert.ok(oldCatalogueTemplate.warnings.some(w=>w.includes("treated THUNDER 1 as THUNDER")));
 
 // Row numbers must point at the row Excel shows, counted from the real header.
 const bad = parseReferenceWorkbook([{ name:"BOM", rows:[
@@ -148,3 +163,38 @@ assert.deepEqual(withExampleTab.boms.map(b => b.article), ["THUNDER"],
 assert.ok(!withExampleTab.boms.some(b => /EXAMPLE/.test(b.article)));
 
 console.log("  pass  the Example Only tab is never imported\n");
+
+/* Generic article handling: names and range counts come only from the cells.
+   These six deliberately vary punctuation, spacing, sole family and sizes so
+   a future shortcut for a known product cannot turn them into GLAMOUR (or any
+   other seeded article). Each product remains one BOM with two ranges. */
+const varied=[
+  ["THUNDER 27","EVA","7X10","11X1"],
+  ["ORBIT-21","PVC","8X12","1X4"],
+  ["KIDS STAR","PU","3X5","6X9"],
+  ["AX/9","STUCK-ON","2X4","5X7"],
+  ["NOVA (L)","PVC","6X8","9X12"],
+  ["URBAN+","EVA","10X13","1X3"],
+];
+const variedWorkbook=parseReferenceWorkbook([
+  {name:"BOM",rows:[BOM_HEAD,...varied.flatMap(([article,sole,a,b])=>[
+    [article,sole,a,"CUTTING","MESH","MTR",0.5],
+    [article,sole,b,"STITCHING","THREAD","SPOOL",0.1],
+  ])]},
+  {name:"Packing",rows:[["Article Code","Size Range","Pairs per Carton"],
+    ...varied.flatMap(([article,,a,b])=>[[article,a,24],[article,b,18]])]},
+  {name:"Catalogue",rows:[["Article Code","Size Range","Description","MRP per Pair","Sole Type"],
+    ...varied.flatMap(([article,sole,a,b],i)=>[
+      [article,a,`${article} shoe`,700+i*10,sole],
+      [article,b,`${article} shoe`,750+i*10,sole],
+    ])]},
+]);
+assert.deepEqual(variedWorkbook.errors,[],variedWorkbook.errors.join(" | "));
+assert.deepEqual(variedWorkbook.boms.map(b=>b.article),varied.map(v=>v[0]));
+for(const [article,,a,b] of varied){
+  const bom=variedWorkbook.boms.find(row=>row.article===article);
+  assert.deepEqual(bom.combo_order,[a,b],`${article} must remain one article with two ranges`);
+  assert.deepEqual(Object.keys(variedWorkbook.packing[article]),[a,b]);
+  assert.deepEqual(Object.keys(variedWorkbook.mrp[article]),[a,b]);
+}
+console.log("  pass  six varied article names remain six BOMs with multiple size ranges\n");

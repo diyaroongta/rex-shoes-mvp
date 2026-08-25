@@ -43,11 +43,15 @@ export default function BulkOrderTab({ onImported }){
     setErr(""); setMsg(""); setResult(null);
     if(!file) return;
     try{
+      if(Number(file.size)>10*1024*1024) throw new Error("Workbook is larger than 10 MB. Remove embedded images or unused sheets and try again.");
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type:"array" });
+      if(wb.SheetNames.length>20) throw new Error("Workbook has more than 20 sheets.");
+      let totalRows=0;
       const sheets=wb.SheetNames.map(sheetName=>{
         const ws=wb.Sheets[sheetName];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+        totalRows+=rows.length;if(totalRows>25000) throw new Error("Workbook has more than 25,000 rows.");
         return {sheetName,rows};
       });
       setResult(parseOrderWorkbook(sheets,INPUTS,INPUTS.packing||{}));

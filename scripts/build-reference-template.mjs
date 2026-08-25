@@ -22,7 +22,7 @@
 */
 import ExcelJS from "exceljs";
 import { INPUTS } from "../shared/inputs.js";
-import { pairsPerCarton } from "../shared/bridge.js";
+import { pairsPerCarton, packingArticleSource } from "../shared/bridge.js";
 
 const OUT = process.argv[2] || "Factory_OS_Reference_Upload_Template.xlsx";
 
@@ -152,7 +152,7 @@ function dataSheet({ name, tabColour, title, subtitle, columns, examples, valida
   heading("THE THREE TABS");
   pair("BOM",       "One row per material, per size range, per production stage. Required — without it an article cannot be planned.");
   pair("Packing",   "One row per BOM size range or individual size: how many pairs fit in its carton. Required for carton orders.");
-  pair("Catalogue", "One row per article and size range: description, MRP, machine. Repeat the exact Article Code for every range.");
+  pair("Catalogue", "One row per article and size range: description, MRP, machine and optional Packing Source.");
 
   heading("THE THREE THINGS PEOPLE GET WRONG");
   pair("1", "Rate per Pair is for ONE PAIR. Not per carton, not per dozen, not per hundred.");
@@ -163,6 +163,7 @@ function dataSheet({ name, tabColour, title, subtitle, columns, examples, valida
   pair("Sole Type",   SOLE_TYPES.join(", ") + "   (dropdown on the BOM tab)");
   pair("Stage",       STAGES.join(", ") + "   (dropdown)");
   pair("PVC Machine", "ROTARY or VERTICAL. Only for PVC articles — leave blank for any other sole.");
+  pair("Packing Source", "Leave blank for factory defaults, use SELF for a separate chart, or enter an existing source article such as ARMOUR.");
 
   heading("WHEN YOU UPLOAD IT");
   pair("Where", "In Factory OS, open Data & BOM and choose this file.");
@@ -218,8 +219,8 @@ dataSheet({
 /* ---------------------------------------------------------------- CATALOGUE */
 dataSheet({
   name:"Catalogue", tabColour:"FF4338CA",
-  title:"Catalogue — description, MRP by range, machine",
-  subtitle:"One row per article and size range. Repeat the exact Article Code; PVC Machine is only for PVC articles.",
+  title:"Catalogue — description, MRP by range, machine and packing source",
+  subtitle:"Repeat the exact Article Code. Packing Source is optional: blank = factory rule, SELF = own chart, or an existing article code.",
   columns:[
     { header:"Article Code",  width:22 },
     { header:"Size Range",    width:15 },
@@ -227,6 +228,7 @@ dataSheet({
     { header:"MRP per Pair",  width:15, numFmt:'"₹"#,##0', align:"right" },
     { header:"Sole Type",     width:13 },
     { header:"PVC Machine",   width:15 },
+    { header:"Packing Source", width:22 },
     { header:"Photo File Name", width:22 },
   ],
   examples:[],
@@ -271,6 +273,7 @@ dataSheet({
     { header:"Size ranges",          width:42 },
     { header:"BOM rates on file",    width:19, align:"right" },
     { header:"Packing on file",      width:17, align:"center" },
+    { header:"Packing source",       width:20 },
   ];
   ws.columns = cols.map(c => ({ width:c.width }));
 
@@ -301,8 +304,9 @@ dataSheet({
       .reduce((n,c) => n + Object.values(c.rates || {}).reduce((m,st) => m + Object.keys(st).length, 0), 0);
     const withPack = ranges.filter(x => pairsPerCarton(code, x) != null).length;
     const line = ws.getRow(r);
+    const source=packingArticleSource(code);
     const values = [code, a.sole_type, ranges.join("  "), rates || "none — BOM missing",
-                    `${withPack} of ${ranges.length}`];
+                    `${withPack} of ${ranges.length}`,source===code?"SELF":source];
     values.forEach((v,i) => {
       const cell = line.getCell(i+1);
       cell.value = v;

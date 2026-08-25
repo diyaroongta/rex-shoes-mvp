@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { compute, fromDay, dayIndex } from "../shared/engine.js";
-import { PACKING as SEED_PACKING, DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
+import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards } from "../shared/intake.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
@@ -325,7 +325,9 @@ export default function App(){
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="bulk" && <BulkOrderTab onImported={async()=>{ await refresh(); setTab("schedule"); }} />}
         {tab==="parties" && <PartiesTab />}
-        {tab==="catalogue" && <CatalogueTab onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}} />}
+        {tab==="catalogue" && <CatalogueTab
+          onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
+          onAddBom={()=>setTab("data")} />}
         {tab==="rules" && <ArticleRulesTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
@@ -351,13 +353,7 @@ function downloadSheetCSV(orders){
 }
 
 /* ------------- New order: photo -> read -> match -> PI -> save ------------- */
-/* Packing chart: uploaded reference data wins, the bundled chart is the fallback. */
-const PACKING = new Proxy({}, {
-  get:(_,k)=> (INPUTS.packing && INPUTS.packing[k]) || SEED_PACKING[k],
-  has:(_,k)=> !!((INPUTS.packing && INPUTS.packing[k]) || SEED_PACKING[k]),
-});
-const packQty = (article, combo) => pairsPerCarton(article, combo)
-  ?? ((SEED_PACKING[article]||{})[combo]) ?? null;
+const packQty = (article, combo) => pairsPerCarton(article, combo);
 
 /* What to print in the article's V/L column. A shoe ordered in both rolls says
    so, rather than being split into two articles to give each one a value. */
@@ -409,11 +405,17 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                if(v.pi_terms && v.pi_terms.discount_pct!=null) setDiscountPct(v.pi_terms.discount_pct);
                setParties(partyRows||[]); })
     .catch(()=>{}); },[]);
-  const [piNo,setPiNo]=useState("PI-"+new Date().getFullYear()+"-"+String(Math.floor(Math.random()*900)+100));
+  const [piNo,setPiNo]=useState("");
   const [savedMsg,setSavedMsg]=useState("");
   const [pasteText,setPasteText]=useState("");
   const fileRef=useRef(null);
-  const ARTS=Object.keys(INPUTS.articles);
+  const allocatePiNo=async()=>{
+    try{const r=await api.nextPiNumber();setPiNo(r.pi_no);return r.pi_no;}
+    catch(e){setErr("Could not allocate a PI number: "+(e.message||e));return "";}
+  };
+  useEffect(()=>{allocatePiNo();},[]);
+  const ARTS=Object.keys(INPUTS.articles).filter(article=>
+    ((INPUTS.articles[article]||{}).combo_order||Object.keys((INPUTS.articles[article]||{}).combos||{})).length>0);
   const withArticleDetails = (card, extra={}) => ({
     party,
     customer_city:customerCity,
@@ -595,7 +597,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
 
   function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art)[0];
     return withArticleDetails({article:art, vl:type==="ALL"?"":comboType(art,c), matched:true, raw:"",
-      lines:[{combo:c,type:comboType(art,c),exact:true,raw:"",cartons:0,ppc:packQty(art,c)||24}]}); }
+      lines:[{combo:c,type:comboType(art,c),exact:true,raw:"",cartons:0,ppc:packQty(art,c)??""}]}); }
   const startBlank=()=>{ setCards([blankCard()]); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setErr(""); setSavedMsg(""); };
 
   const setCard=(i,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
@@ -609,7 +611,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     const all=articleTypeCombos(c.article);
     const cb=all.find(x=>!used.has(x))||all[0];
     return {...c,lines:[...c.lines,{combo:cb,type:comboType(c.article,cb),exact:true,raw:"",cartons:0,
-      ppc:packQty(c.article,cb)||24,size_order:comboSizesForArticle(c.article,cb)}]}; }));
+      ppc:packQty(c.article,cb)??"",size_order:comboSizesForArticle(c.article,cb)}]}; }));
   const delLine=(i,k)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
   const addCard=()=>setCards(cs=>[...(cs||[]),blankCard()]);
   const delCard=i=>setCards(cs=>cs.filter((_,j)=>j!==i));
@@ -624,7 +626,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       const foundPos=oldCombos.indexOf(l.combo);
       const oldPos=foundPos>=0?foundPos:k;
       const combo=combos[Math.min(oldPos,combos.length-1)]||combos[0];
-      const ppc=packQty(art,combo)||24;
+      const ppc=packQty(art,combo)??"";
       const sizes=comboSizesForArticle(art,combo);          // the range decides the roll
       const type=comboType(art,combo);
       if(card.fromPi){
@@ -774,6 +776,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     const source=piPreviewCards||[];
     if(!source.length){ setErr("Generate the PI from Match & Check before saving."); return; }
     if(previewStale){ setErr("Match & Check changed. Regenerate the PI with the latest edits before saving."); return; }
+    if(!piNo){ setErr("A server-issued PI number is required. Press New PI number and try again."); return; }
     const noParty=source.filter(c=>!String(c.party||"").trim());
     if(noParty.length){
       setErr("Enter the customer for: "+noParty.map(c=>c.article).join(", ")
@@ -796,6 +799,13 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       .map((l,li)=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
       .filter(Boolean));
     if(unresolved.length){ setErr("Pick a combo for: "+unresolved.join(", ")+" before saving — or set its cartons to 0 to leave it out."); return; }
+    const missingPacking=source.flatMap(c=>c.lines
+      .filter(l=>!c.fromPi&&(Number(l.cartons)||0)>0&&!(Number(l.ppc)>0))
+      .map(l=>`${c.article} ${l.combo}`));
+    if(missingPacking.length){
+      setErr("Packing is missing for: "+[...new Set(missingPacking)].join(", ")+". Add pairs/carton in Data & BOM before issuing the PI.");
+      return;
+    }
     const unpriced=source.flatMap(c=>c.lines
       .filter(l=>(c.fromPi?(Number(l.qty)||0):(Number(l.cartons)||0))>0
         && ((INPUTS.mrp||{})[c.article]||{})[l.combo]==null)
@@ -810,9 +820,11 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       lines:(c.lines||[]).filter(l=>c.fromPi?(Number(l.qty)||0)>0:(Number(l.cartons)||0)>0).map(l=>c.fromPi
         ? {combo:l.combo,qty:Number(l.qty)||0,label:l.label||l.combo,sizes:l.sizes,
            size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
+           ppc:Number(l.ppc)||undefined,
            vl:comboType(c.article,l.combo)||c.vl||""}
         : {combo:l.combo,qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0),
            label:l.raw||l.combo,sizes:l.sizes,size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
+           ppc:Number(l.ppc)||undefined,
            vl:comboType(c.article,l.combo)||c.vl||""}),
       stitching:c.stitching||"inhouse", printing:!!c.printing,
       // The FULL commercial terms are snapshotted onto the order, not just the
@@ -820,6 +832,8 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       // printed — reading today's deductions back over an old PI silently
       // restates money that has already been agreed.
       pi:{pi_no:piNumberFor(c,source), price:prices[c.article],
+          mrp:{...((INPUTS.mrp||{})[c.article]||{})},
+          catalogue_image:(CATALOGUE[c.article]||{}).image||articlePhoto(c.article)||null,
           terms:termsForParty(c.party), discount_pct:termsForParty(c.party).discount_pct,
           customer_city:c.customer_city||"",
           vl:vlSummary(c), sole_colour:c.sole_colour, upper_colour:c.upper_colour,
@@ -832,6 +846,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       const created=await onSaved(drafts);
       setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
       setCards(null); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setImg(null); setAttachment(null);
+      setPiNo(""); allocatePiNo();
     }catch(e){ setErr("Could not save: "+(e.message||e)); }
     finally{ setSaving(false); }
   }
@@ -868,7 +883,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         {(cards||piCards||piPreviewCards||img) && <button onClick={()=>{
           if(!window.confirm("Close this PI and discard the current draft?")) return;
           setCards(null);setPiCards(null);setPiPreviewCards(null);setPiPreviewSignature("");setImg(null);setAttachment(null);setRawRead("");setSavedMsg("");setErr("");
-          setPiNo("PI-"+new Date().getFullYear()+"-"+String(Math.floor(Math.random()*900)+100));
+          setPiNo("");allocatePiNo();
         }} className="text-xs font-semibold text-rose-700 border border-rose-200 rounded-lg px-3 py-1.5 bg-white">Close PI</button>}
       </div>
       {img
@@ -915,7 +930,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       <div className="serif text-lg font-semibold mb-1">2 · Match &amp; check</div>
       <p className="text-slate-500 text-xs mb-3">Each category is matched to a real factory article; each size entry to a real size range. Amber = mapped approximately, please confirm. Pairs = cartons × pairs/carton.</p>
       {sheetHeader()}
-      {cards.map((c,i)=>(
+      {cards.map((c,i)=>{
+        const missingPacking=c.lines.filter(l=>l.combo&&!(Number(l.ppc)>0)).map(l=>l.combo);
+        return (
         <div key={i} className="border border-slate-200 rounded-xl mb-3 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2.5 bg-slate-50 border-b border-slate-200 flex-wrap">
             <select value={c.article} onChange={e=>onArticleChange(i,e.target.value)}
@@ -930,11 +947,11 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
             <button onClick={()=>delCard(i)} title="Remove this article" className="text-rose-500 px-1.5 text-lg leading-none">×</button>
           </div>
           {articleDetails(c, patch=>setCard(i,patch), type=>onTypeChange(i,type))}
-          {(c.ambiguous || !c.matched || !PACKING[c.article]) && (
+          {(c.ambiguous || !c.matched || missingPacking.length>0) && (
             <div className="px-3 py-2 text-xs border-b border-amber-200 bg-amber-50 text-amber-900 space-y-1">
               {!c.matched && <div><b>Not recognised.</b> The reader could not match “{(c.raw||"").trim()}” to a product — pick the right one above.</div>}
               {c.matched && c.ambiguous && <div><b>More than one product fits</b> “{(c.raw||"").trim()}”. Confirm the selection above is right.</div>}
-              {!PACKING[c.article] && <div><b>No packing chart for {c.article}.</b> Pairs per carton falls back to 24 — check each line against the real carton size before saving.</div>}
+              {!!missingPacking.length && <div><b>Missing packing rate for {c.article}:</b> {missingPacking.join(", ")}. Add it in Data &amp; BOM before issuing the PI.</div>}
             </div>)}
           <div className="p-3">
             <div className="grid gap-2 text-xs uppercase tracking-wide text-slate-400 font-semibold px-1" style={{gridTemplateColumns:"1fr 90px 90px 90px 28px"}}>
@@ -951,7 +968,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                         that line Lace. */}
                     <select value={l.combo || ""} onChange={e=>{const combo=e.target.value;
                         setLine(i,k,{combo,single:undefined,exact:true,type:comboType(c.article,combo),
-                          ppc:packQty(c.article,combo)||24,size_order:comboSizesForArticle(c.article,combo),sizes:undefined});}}
+                          ppc:packQty(c.article,combo)??"",size_order:comboSizesForArticle(c.article,combo),sizes:undefined});}}
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
                       {!l.combo && <option value="">— pick a combo —</option>}
                       {articleTypeCombos(c.article).map(cb=>{ const t=comboType(c.article,cb);
@@ -979,7 +996,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
                 <input type="number" min="1" value={l.ppc}
                   aria-label={`${c.article} ${l.combo||l.single||k} pairs per carton`}
-                  onChange={e=>setLine(i,k,{ppc:e.target.value===""?1:Number(e.target.value)})}
+                  onChange={e=>setLine(i,k,{ppc:e.target.value===""?"":Number(e.target.value)})}
                   className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
                 <div className="mono text-sm text-right font-semibold">{fmt((Number(l.cartons)||0)*(Number(l.ppc)||0))}</div>
                 <button onClick={()=>delLine(i,k)} className="text-rose-500 text-lg leading-none">−</button>
@@ -1007,12 +1024,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   // single-carton line so the existing carton editor still works.
                   const merged=next.map(nl=>{
                     const existing=cc.lines.find(x=>x.combo===nl.combo);
-                    const ppc=(existing&&existing.ppc)||packQty(cc.article,nl.combo)||1;
+                    const ppc=(existing&&existing.ppc)||packQty(cc.article,nl.combo)||"";
                     return existing && !nl.sizes
                       ? existing
                       : {...(existing||{}), combo:nl.combo, sizes:nl.sizes,
                          raw:nl.label||nl.combo, exact:true,
-                         ppc, cartons:+(nl.qty/ppc).toFixed(4)};
+                         ppc, cartons:ppc?+(nl.qty/ppc).toFixed(4):0};
                   });
                   return {...cc, lines:merged};
                 }))} />
@@ -1022,7 +1039,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
               <div className="mt-2"><ArticleRules article={c.article} compact /></div>
             </details>
           </div>
-        </div>))}
+        </div>);})}
       <button onClick={addCard} className="text-sm font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg px-3 py-1.5">+ Add category</button>
     </div>}
 
@@ -1038,7 +1055,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
             className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700">
             {piPreviewCards?(previewStale?"Regenerate PI with latest edits":"Generate PI again"):"Generate PI from these edits"}
           </button>
-          {piPreviewCards && <button onClick={()=>{setPiNo("PI-"+new Date().getFullYear()+"-"+String(Math.floor(Math.random()*900)+100));setPiPreviewCards(structuredClone(sourceCards));setPiPreviewSignature(sourceSignature);}}
+          {piPreviewCards && <button onClick={async()=>{if(await allocatePiNo()){setPiPreviewCards(structuredClone(sourceCards));setPiPreviewSignature(sourceSignature);}}}
             className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white">New PI number</button>}
           <button onClick={printPI} disabled={!piPreviewCards||previewStale} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 disabled:opacity-40">Print / Save PDF</button>
           <button onClick={save} disabled={saving||!piPreviewCards||previewStale}
@@ -1254,8 +1271,8 @@ function PiDatabaseTab({orders=[],onScheduled}){
     vl:(o.pi||{}).vl||"", sole_colour:(o.pi||{}).sole_colour||"",
     upper_colour:(o.pi||{}).upper_colour||"", order_nature:(o.pi||{}).order_nature||"",
     printing:!!(o.pi||{}).printing, source:(o.pi||{}).order_nature||"As per catalogue",
-    image:(CATALOGUE[o.article_code]||{}).image||articlePhoto(o.article_code)||null,
-    mrp:(INPUTS.mrp||{})[o.article_code]||{}, lines:o.lines||[],
+    image:(o.pi||{}).catalogue_image||(CATALOGUE[o.article_code]||{}).image||articlePhoto(o.article_code)||null,
+    mrp:(o.pi||{}).mrp||(INPUTS.mrp||{})[o.article_code]||{}, lines:o.lines||[],
   }));
   const first=saved[0]||{};
   const firstPi=first.pi||{};
@@ -1499,10 +1516,10 @@ function EditOrder({o,onSave,onCancel}){
       setErr("Order nature, V/L, sole colour and upper colour are required before producing the revised PI."); return;
     }
     setBusy(true); setErr("");
-    try{ await onSave({article_code:article,party,order_date:date,priority:Number(prio)||2,lines:clean,
+    try{ await onSave({expected_version:o.version,article_code:article,party,order_date:date,priority:Number(prio)||2,lines:clean,
       pi:{remarks, order_nature:nature, vl:vlEdit, sole_colour:soleEdit, upper_colour:upperEdit,
           printing:printingEdit, stitching:stitchingEdit,
-          production_status:produce?"produced":((o.pi&&o.pi.production_status)||"edited"),
+          production_status:produce?"produced":"edited",
           revision:Number((o.pi&&o.pi.revision)||0)+1, revised_at:new Date().toISOString(),
           attachment:attachment||undefined}}); }
     catch(e){ setErr(String(e.message||e)); setBusy(false); }
@@ -1514,7 +1531,9 @@ function EditOrder({o,onSave,onCancel}){
       <label className="text-xs text-slate-600">Article
         <select value={article} onChange={e=>changeArticle(e.target.value)}
           className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 bg-white max-w-64">
-          {Object.keys(INPUTS.articles).map(a=><option key={a} value={a}>{a}</option>)}
+          {Object.keys(INPUTS.articles).filter(a=>
+            ((INPUTS.articles[a]||{}).combo_order||Object.keys((INPUTS.articles[a]||{}).combos||{})).length>0)
+            .map(a=><option key={a} value={a}>{a}</option>)}
         </select></label>
       <label className="text-xs text-slate-600">Party
         <input value={party} onChange={e=>setParty(e.target.value)}

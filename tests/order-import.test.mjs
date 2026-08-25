@@ -72,4 +72,31 @@ const workbook=parseOrderWorkbook([
 assert.deepEqual(workbook.errors,[],"instruction sheets must not block a valid order sheet");
 assert.equal(workbook.orders.length,1);
 
+const unitRow=[...row];unitRow[headers.indexOf("Pairs 7X10S")]="24 pairs";
+unitRow[headers.indexOf("Pairs 2X5")]="";
+const units=parseOrderSheet([headers,unitRow],INPUTS,INPUTS.packing);
+assert.deepEqual(units.errors,[],"common quantity suffixes must be accepted");
+assert.equal(units.orders[0].lines[0].qty,24);
+
+const badDate=[...row];badDate[headers.indexOf("Order Date")]="2026-02-31";
+assert.match(parseOrderSheet([headers,badDate],INPUTS,INPUTS.packing).errors[0].error,/Could not read the order date/,
+  "an impossible calendar date must not roll into March");
+const badPrint=[...row];badPrint[headers.indexOf("Print")]="Perhaps";
+assert.match(parseOrderSheet([headers,badPrint],INPUTS,INPUTS.packing).errors[0].error,/Print must be Yes or No/,
+  "unknown print text must not silently become No");
+
+const buyerTwo=[...row];buyerTwo[headers.indexOf("Party")]="Another Buyer";
+const crossSheet=parseOrderWorkbook([
+  {sheetName:"Orders A",rows:[headers,row]},
+  {sheetName:"Orders B",rows:[headers,buyerTwo]},
+],INPUTS,INPUTS.packing);
+assert.ok(crossSheet.errors.some(e=>/PI PI-WIDE-1 is assigned to more than one customer/.test(e.error)),
+  "PI/customer conflicts must be caught across workbook tabs");
+
+const skipped=parseOrderWorkbook([
+  {sheetName:"Orders",rows:[headers,row]},
+  {sheetName:"Mystery Data",rows:[["Something","Else"],[1,2]]},
+],INPUTS,INPUTS.packing);
+assert.ok(skipped.warnings.some(w=>/Mystery Data: skipped/.test(w)),"unread sheets must be surfaced, not silently ignored");
+
 console.log("\norder import: uploaded Order Book, wide and legacy formats passed\n");
