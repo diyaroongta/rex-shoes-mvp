@@ -328,7 +328,7 @@ export default function App(){
         {tab==="catalogue" && <CatalogueTab
           onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
           onAddBom={()=>setTab("data")} />}
-        {tab==="rules" && <ArticleRulesTab onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="rules" && <ArticleRulesTab onChanged={()=>setRefTick(t=>t+1)} onUploadBom={()=>setTab("data")} />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
           </div>

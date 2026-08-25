@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
-import { articleTypes, articleTypeCombos, comboSizesForArticle, pairsPerCarton, packingRuleSource, singlePackingRule } from "../shared/bridge.js";
+import { articleTypes, articleTypeCombos, comboSizesForArticle, comboType, pairsPerCarton, packingRuleSource, singlePackingRule } from "../shared/bridge.js";
 import * as api from "./lib/client.js";
 
 const rateRows = (article, combos) => {
@@ -23,27 +23,41 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
   const combos=articleTypeCombos(article,type);
   const rows=useMemo(()=>rateRows(article,combos),[article,combos.join("|")]);
   const packingSources=[...new Set(combos.map(c=>packingRuleSource(article,c).article))];
+  const sizeEntries=combos.reduce((n,combo)=>n+comboSizesForArticle(article,combo,comboType(article,combo)).length,0);
   if(!article || !INPUTS.articles[article]) return null;
   return <div className={compact?"":"bg-white border border-slate-200 rounded-2xl p-5 shadow-sm"}>
+    {!compact&&<div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+      <div>
+        <div className="text-base font-semibold text-slate-900">{article} packing chart</div>
+        <div className="text-xs text-slate-500 mt-0.5">
+          {combos.length} packing combination{combos.length===1?"":"s"} · {sizeEntries} size entries · {rows.length} BOM material/stage rules
+        </div>
+      </div>
+      <div className="text-[11px] rounded-full border border-slate-200 bg-slate-50 text-slate-600 px-3 py-1">
+        Showing {type&&type!=="ALL"?type:"all article types"}
+      </div>
+    </div>}
+    <div className="text-xs font-semibold text-slate-700 mb-1.5">Combination packing</div>
     <div className="overflow-x-auto">
       <table className="w-full text-xs mb-3">
         <thead><tr className="text-slate-500 border-b border-slate-200">
           <th className="text-left py-1.5">Article</th><th className="text-left">Type</th>
-          <th className="text-left">Size range</th><th className="text-left">PI sizes</th>
-          <th className="text-right">Pairs/carton</th>
+          <th className="text-left">Packing combination</th><th className="text-left">Sizes packed in this combination</th>
+          <th className="text-right">Pairs in one carton</th><th className="text-left px-2">Packing list used</th>
         </tr></thead>
-        <tbody>{combos.map(combo=><tr key={combo} className="border-b border-slate-100">
-          <td className="py-1.5 font-semibold">{article}</td><td>{type||"All"}</td>
-          <td className="mono">{combo}</td>
-          <td className="mono">{comboSizesForArticle(article,combo,type).join(", ")}</td>
+        <tbody>{combos.map(combo=>{const source=packingRuleSource(article,combo);const rowType=comboType(article,combo)||"ALL";return <tr key={combo} className="border-b border-slate-100">
+          <td className="py-1.5 font-semibold">{article}</td><td>{rowType}</td>
+          <td className="mono font-semibold">{combo}</td>
+          <td className="mono">{comboSizesForArticle(article,combo,rowType).join(", ")}</td>
           <td className="text-right mono font-semibold">{editable
             ? <input type="number" min="1" step="1"
                 value={packingEdits[combo]??pairsPerCarton(article,combo)??""}
                 onChange={e=>onPackingEdit&&onPackingEdit(combo,e.target.value)}
-                aria-label={`${article} ${type||"All"} ${combo} pairs per carton`}
+                aria-label={`${article} ${rowType} ${combo} pairs per carton`}
                 className="w-20 text-right mono text-sm border border-slate-300 rounded px-2 py-1" />
             : pairsPerCarton(article,combo)??"Not set"}</td>
-        </tr>)}</tbody>
+          <td className="px-2 text-slate-500">{source.article}{source.combo!==combo?` · ${source.combo}`:""}</td>
+        </tr>})}</tbody>
       </table>
     </div>
     <details open={!compact} className="mb-3">
@@ -58,8 +72,8 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
             <th className="text-left px-2 py-1.5">Range</th><th className="text-left">Individual size</th>
             <th className="text-right">Pairs/carton</th><th className="text-left px-2">Source</th>
           </tr></thead>
-          <tbody>{combos.flatMap(combo=>comboSizesForArticle(article,combo,type).map(size=>{
-            const rule=singlePackingRule(article,size,type,combo);
+          <tbody>{combos.flatMap(combo=>{const rowType=comboType(article,combo)||"ALL";return comboSizesForArticle(article,combo,rowType).map(size=>{
+            const rule=singlePackingRule(article,size,rowType,combo);
             const editKey=`${rule.article}||${String(rule.size).toUpperCase()}`;
             const hasEdit=Object.prototype.hasOwnProperty.call(singleEdits,editKey);
             const shown=hasEdit?singleEdits[editKey].raw:(rule.kind==="individual override"?rule.ppc:"");
@@ -68,7 +82,7 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
               : rule.kind==="range default"?`${rule.article} ${rule.combo} range default`
               : `${rule.article} ${rule.kind}`;
             return <tr key={`${combo}:${size}`} className="border-t border-slate-100">
-              <td className="px-2 py-1.5 mono text-slate-500">{combo}</td><td className="mono font-semibold">{size}</td>
+              <td className="px-2 py-1.5 mono text-slate-500">{combo} · {rowType}</td><td className="mono font-semibold">{size}</td>
               <td className="text-right">{editable
                 ? <input type="number" min="1" step="1" value={shown}
                     placeholder={rule.ppc??"Not set"}
@@ -78,7 +92,7 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
                 : rule.ppc??"Not set"}</td>
               <td className="px-2 text-slate-500">{sourceLabel}</td>
             </tr>;
-          }))}</tbody>
+          })})}</tbody>
         </table>
       </div>
     </details>
@@ -86,7 +100,8 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
       {article} follows {packingSources.join(" / ")}'s packing list by matching range position. Editing these values updates the source list and every article that follows it.
     </div>}
     <details open={!compact}>
-      <summary className="text-xs font-semibold text-slate-700 cursor-pointer">BOM rates used per pair ({rows.length} material/stage rules)</summary>
+      <summary className="text-xs font-semibold text-slate-700 cursor-pointer">Complete BOM used per pair ({rows.length} material/stage rules)</summary>
+      <div className="text-xs text-slate-500 mt-1">Every stored size range is shown as a column. A dash means that material is not used for that range.</div>
       <div className="overflow-x-auto max-h-80 mt-2 border border-slate-200 rounded-lg">
         <table className="w-full text-xs">
           <thead className="sticky top-0 bg-slate-50"><tr>
@@ -103,20 +118,21 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
   </div>;
 }
 
-export default function ArticleRulesTab({onChanged}){
+export default function ArticleRulesTab({onChanged,onUploadBom}){
   const articles=Object.keys(INPUTS.articles||{});
   const [article,setArticle]=useState(articles[0]||"");
   const types=articleTypes(article);
-  const [chosenType,setChosenType]=useState(types[0]||"ALL");
+  const typeOptions=["ALL",...types.filter(t=>t!=="ALL")];
+  const [chosenType,setChosenType]=useState("ALL");
   const [packingEdits,setPackingEdits]=useState({});
   const [singleEdits,setSingleEdits]=useState({});
   const [busy,setBusy]=useState(false);
   const [msg,setMsg]=useState("");
   const [err,setErr]=useState("");
-  const type=types.includes(chosenType)?chosenType:types[0];
+  const type=typeOptions.includes(chosenType)?chosenType:"ALL";
 
   function clearEdits(){setPackingEdits({});setSingleEdits({});}
-  function chooseArticle(next){setArticle(next);setChosenType(articleTypes(next)[0]);clearEdits();setMsg("");setErr("");}
+  function chooseArticle(next){setArticle(next);setChosenType("ALL");clearEdits();setMsg("");setErr("");}
   function chooseType(next){setChosenType(next);clearEdits();setMsg("");setErr("");}
 
   async function savePacking(){
@@ -174,12 +190,17 @@ export default function ArticleRulesTab({onChanged}){
       <label className="text-xs text-slate-500">Article type
         <select value={type} onChange={e=>chooseType(e.target.value)}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm">
-          {types.map(t=><option key={t}>{t}</option>)}
+          {typeOptions.map(t=><option key={t} value={t}>{t==="ALL"?"All types":t}</option>)}
         </select></label>
+      <button type="button" onClick={()=>onUploadBom&&onUploadBom(article)}
+        className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 bg-white">
+        Upload or replace BOM Excel
+      </button>
     </div>
     <div className="text-xs text-slate-600 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 mb-3">
-      This is the current rulebook for the selected article. Edit range or individual-size pairs/carton below.
-      Size-range names and BOM materials are changed safely through <b>Data &amp; BOM</b> upload.
+      This page is the current database view for the selected article. It shows every stored combination by default,
+      the effective rule for every individual size, and the complete BOM. Packing quantities can be edited here;
+      use the BOM Excel action for size-range or material changes.
     </div>
     <ArticleRules article={article} type={type} editable packingEdits={packingEdits}
       singleEdits={singleEdits}
