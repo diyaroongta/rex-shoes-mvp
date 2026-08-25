@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
 import { comboSizes } from "../shared/pi.js";
-import { singlePackQty, pairsPerCarton, packingRuleSource, matchArticle } from "../shared/bridge.js";
+import { singlePackQty, pairsPerCarton, packingRuleSource, matchArticle, setReference } from "../shared/bridge.js";
 import { INPUTS } from "../shared/inputs.js";
 
 let passed = 0, failed = 0;
@@ -57,6 +57,14 @@ test("SPIKE follows the ARMOUR packing list", () => {
   assert.deepEqual(packingRuleSource("SPIKE","6X8"), {article:"ARMOUR",combo:"6X9",inherited:true},
     "editing SPIKE must update the corresponding ARMOUR source range");
   assert.deepEqual(packingRuleSource("SPADE","6X7"), {article:"SPADE",combo:"6X7",inherited:false});
+});
+test("an uploaded exact-size packing rule overrides inherited bands", () => {
+  setReference({...INPUTS,
+    articles:{...INPUTS.articles,THUNDER:{combo_order:["7X10"],combos:{"7X10":{}}}},
+    packing_singles_exact:{THUNDER:{"7":30}},
+  });
+  assert.equal(singlePackQty("THUNDER","7s"),30);
+  setReference(INPUTS);
 });
 
 console.log("\nD — resolution reports what it cannot know");

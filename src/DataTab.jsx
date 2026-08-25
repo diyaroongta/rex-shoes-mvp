@@ -20,6 +20,7 @@ export default function DataTab({ onChanged }){
   const [confirmReplace,setConfirmReplace]=useState(false);
   const [masterPreview,setMasterPreview]=useState(null);
   const [masterConfirm,setMasterConfirm]=useState(false);
+  const [removeConfirm,setRemoveConfirm]=useState(false);   // deleting loaded size ranges
 
   async function pick(file){
     setErr(""); setMsg(""); setPreview(null); setConfirmReplace(false);
@@ -53,12 +54,12 @@ export default function DataTab({ onChanged }){
   }
 
   async function pickMaster(file){
-    setErr("");setMsg("");setMasterPreview(null);setMasterConfirm(false);
+    setErr("");setMsg("");setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);
     if(!file)return;
     try{
       const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
       const sheets=wb.SheetNames.map(name=>({name,rows:XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null})}));
-      const parsed=parseReferenceWorkbook(sheets);
+      const parsed=parseReferenceWorkbook(sheets,INPUTS);
       if(parsed.errors.length){setErr(parsed.errors.slice(0,8).join(" "));return;}
       const replacements=parsed.boms.map(b=>b.article).filter(a=>INPUTS.articles[a]);
       setMasterPreview({...parsed,replacements});
@@ -68,13 +69,15 @@ export default function DataTab({ onChanged }){
   async function commitMaster(){
     if(!masterPreview)return;
     if(masterPreview.replacements.length&&!masterConfirm){setErr("Confirm the existing BOM replacements before saving.");return;}
+    if((masterPreview.removals||[]).length&&!removeConfirm){setErr("This file deletes size ranges that are loaded today. Confirm that, or add the missing ranges to the file.");return;}
     setBusy(true);setErr("");setMsg("");
     try{
-      const {replacements,...batch}=masterPreview;
-      const r=await api.uploadBom({batch,confirm_replace:replacements.length>0});
+      const {replacements,removals,...batch}=masterPreview;
+      const r=await api.uploadBom({batch,confirm_replace:replacements.length>0,
+        confirm_remove_ranges:(removals||[]).length>0});
       await reloadReference();
-      setMasterPreview(null);setMasterConfirm(false);
-      setMsg(`Master workbook saved safely — ${r.articles.length} BOM article(s), ${r.packing_articles.length} packing article(s) and ${r.catalogue_articles.length} catalogue article(s). A database revision was recorded.`);
+      setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);
+      setMsg(`Master workbook saved safely — ${r.articles.length} BOM article(s), ${r.packing_articles.length} combo packing article(s), ${(r.single_packing_articles||[]).length} single-size packing article(s), ${(r.mrp_articles||[]).length} MRP article(s) and ${r.catalogue_articles.length} catalogue article(s). A database revision was recorded.`);
       onChanged&&onChanged();
     }catch(e){setErr(String(e.message||e));}
     finally{setBusy(false);}
@@ -83,6 +86,11 @@ export default function DataTab({ onChanged }){
   const warn = preview ? preview.warnings.reduce((a,w)=>{ (a[w.type]=a[w.type]||[]).push(w); return a; },{}) : {};
   const rateCount = preview ? Object.values(preview.combos)
     .reduce((a,c)=>a+Object.values(c.rates).reduce((b,st)=>b+Object.keys(st).length,0),0) : 0;
+  const masterArticles = masterPreview ? [...new Set([
+    ...masterPreview.boms.map(b=>b.article),
+    ...Object.keys(masterPreview.packing),
+    ...Object.keys(masterPreview.catalogue),
+  ])].sort() : [];
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
     <div className="text-sm font-semibold text-slate-700 mb-1">Upload the Factory OS article master</div>
@@ -98,17 +106,49 @@ export default function DataTab({ onChanged }){
     {masterPreview&&<div className="border border-slate-200 bg-slate-50 rounded-xl p-4 mb-5">
       <div className="text-sm font-semibold text-slate-800">Ready to save</div>
       <div className="text-xs text-slate-600 mt-1">
-        {masterPreview.boms.length} BOM article(s) · {Object.keys(masterPreview.packing).length} packing article(s) · {Object.keys(masterPreview.catalogue).length} catalogue article(s)
+        {masterPreview.boms.length} BOM article(s) · {Object.keys(masterPreview.packing).length} combo packing article(s) · {Object.keys(masterPreview.packingSingles).length} single-size packing article(s) · {Object.keys(masterPreview.mrp).length} MRP article(s) · {Object.keys(masterPreview.catalogue).length} catalogue article(s)
       </div>
+      <div className="text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 mt-3">
+        Articles read from this file: {masterArticles.join(", ")}
+      </div>
+      {masterArticles.length>1&&<div className="text-xs text-amber-800 mt-2">
+        This workbook contains more than one Article Code. Confirm that every name above is intended before saving.
+      </div>}
       {!!masterPreview.warnings.length&&<div className="text-xs text-amber-800 mt-2">{masterPreview.warnings.join(" ")}</div>}
       {!!masterPreview.replacements.length&&<label className="flex gap-2 items-start text-xs text-amber-900 mt-3">
         <input type="checkbox" checked={masterConfirm} onChange={e=>setMasterConfirm(e.target.checked)} />
         I understand this will replace the complete BOM for: {masterPreview.replacements.join(", ")}. Packing and catalogue rows are merged without deleting omitted values.
       </label>}
+
+      {/* A BOM upload replaces an article's ranges outright. Saying "replaces
+          the BOM" is not the same as showing WHICH ranges disappear, and a file
+          sent to fix one rate is exactly the file that omits the rest. */}
+      {!!(masterPreview.removals||[]).length&&<div className="mt-3 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5">
+        <div className="text-xs font-semibold text-rose-900 mb-1">
+          This file is missing size ranges that are loaded today — saving it deletes them
+        </div>
+        {masterPreview.removals.map(rm=>(
+          <div key={rm.article} className="text-xs text-rose-800">
+            <b>{rm.article}</b> loses <b className="mono">{rm.ranges.join(", ")}</b>
+            {rm.rates>0 && <> and {rm.rates} material rate{rm.rates===1?"":"s"}</>}
+          </div>
+        ))}
+        <div className="text-xs text-rose-800 mt-1.5">
+          Any order already placed on those ranges keeps its machine time but loses its material —
+          it would order nothing and still occupy the line. To correct one rate, include <b>every</b>
+          range for that article in the file, not only the one you are changing.
+        </div>
+        <label className="flex gap-2 items-start text-xs text-rose-900 mt-2">
+          <input type="checkbox" checked={removeConfirm} onChange={e=>setRemoveConfirm(e.target.checked)} />
+          I mean to delete those size ranges.
+        </label>
+      </div>}
+
       <div className="flex gap-2 mt-3">
-        <button disabled={busy||(masterPreview.replacements.length&&!masterConfirm)} onClick={commitMaster}
+        <button disabled={busy||(masterPreview.replacements.length&&!masterConfirm)
+                          ||((masterPreview.removals||[]).length&&!removeConfirm)} onClick={commitMaster}
           className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{busy?"Saving…":"Validate and save all"}</button>
-        <button disabled={busy} onClick={()=>{setMasterPreview(null);setMasterConfirm(false);}}
+        <button disabled={busy} onClick={()=>{setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);}}
           className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Discard</button>
       </div>
     </div>}

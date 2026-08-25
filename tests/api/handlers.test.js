@@ -199,6 +199,33 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
+  it("stores combo packing, individual-size packing and range MRPs in one master upload",async()=>{
+    const ref={articles:{},materials:{},packing:{},mrp:{}};
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("select value from reference_data")) return {rows:[{value:ref}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{batch:{
+      boms:[{article:"THUNDER",soleType:"EVA",combo_order:["7X10","11X1"],
+        materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},
+        combos:{"7X10":{rates:{CUTTING:{"MAT||MTR":0.5}}},"11X1":{rates:{CUTTING:{"MAT||MTR":0.6}}}}}],
+      packing:{THUNDER:{"7X10":24,"11X1":18}},
+      packingSingles:{THUNDER:{"7":24,"8":24}},
+      mrp:{THUNDER:{"7X10":899,"11X1":949}},
+      catalogue:{THUNDER:{article_code:"THUNDER",description:"School shoe",price:null,sole_type:"EVA",molding_machine:null}},
+    }}},res);
+    expect(res.statusCode).toBe(200);
+    const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const saved=JSON.parse(saveCall[1][0]);
+    expect(saved.packing.THUNDER).toEqual({"7X10":24,"11X1":18});
+    expect(saved.packing_singles_exact.THUNDER).toEqual({"7":24,"8":24});
+    expect(saved.mrp.THUNDER).toEqual({"7X10":899,"11X1":949});
+    expect(res.body.single_packing_articles).toEqual(["THUNDER"]);
+    expect(res.body.mrp_articles).toEqual(["THUNDER"]);
+  });
+
   it("requires explicit confirmation before replacing an existing BOM",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{},packing:{}};
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
@@ -247,6 +274,40 @@ describe("database API contracts",()=>{
     const written=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data"))[1];
     expect(JSON.parse(written[0]).articles.SPIKE).toBeDefined();
     expect(JSON.parse(written[0]).articles.OLD).toBeUndefined();  // replaced, not merged
+  });
+
+  /* The server must refuse a range-deleting upload on its own, not rely on the
+     browser having ticked a box — the API is reachable without the UI. */
+  it("refuses an upload that silently drops loaded size ranges",async()=>{
+    const live={articles:{SPIKE:{sole_type:"EVA",combo_order:["7X10S","11X1"],
+      combos:{"7X10S":{rates:{CUTTING:{"M||MTR":1}}},"11X1":{rates:{CUTTING:{"M||MTR":1}}}}}},materials:{}};
+    const client={query:vi.fn(async sql=>
+      String(sql).includes("select value from reference_data")?{rows:[{value:live}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const body={batch:{boms:[{article:"SPIKE",soleType:"EVA",combo_order:["7X10S"],
+      combos:{"7X10S":{rates:{CUTTING:{"M||MTR":1}}}},materials:{"M||MTR":{name:"M",uom:"MTR"}}}]},
+      confirm_replace:true};
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/REMOVES size ranges/);
+    expect(res.body.error).toMatch(/11X1/);          // names what goes
+    expect(client.query).toHaveBeenCalledWith("rollback");
+  });
+
+  it("allows the same upload once the removal is explicitly confirmed",async()=>{
+    const live={articles:{SPIKE:{sole_type:"EVA",combo_order:["7X10S","11X1"],
+      combos:{"7X10S":{rates:{CUTTING:{"M||MTR":1}}},"11X1":{rates:{CUTTING:{"M||MTR":1}}}}}},materials:{}};
+    const client={query:vi.fn(async sql=>
+      String(sql).includes("select value from reference_data")?{rows:[{value:live}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const body={batch:{boms:[{article:"SPIKE",soleType:"EVA",combo_order:["7X10S"],
+      combos:{"7X10S":{rates:{CUTTING:{"M||MTR":1}}}},materials:{"M||MTR":{name:"M",uom:"MTR"}}}]},
+      confirm_replace:true, confirm_remove_ranges:true};
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body},res);
+    expect(res.statusCode).toBe(200);
+    expect(client.query).toHaveBeenCalledWith("commit");
   });
 
   it("refuses to restore a revision that is not a reference document",async()=>{

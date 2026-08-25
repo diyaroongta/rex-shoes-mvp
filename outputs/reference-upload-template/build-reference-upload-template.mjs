@@ -1,3 +1,13 @@
+/* SUPERSEDED — do not run this to ship the template.
+   scripts/build-reference-template.mjs is the maintained builder: it uses
+   ExcelJS (a real devDependency, so it survives a clean checkout and runs from
+   the repo root), and its "Already loaded" tab is generated from live
+   reference data. This script needs @oai/artifact-tool, which is vendored only
+   inside this outputs/ scratch directory and is not in package.json.
+
+   Its UOM dropdown was the one thing it had that the other lacked; that has
+   been ported across. Kept here for reference only — the write to public/ is
+   disabled below so two builders cannot fight over the shipped file. */
 import fs from "node:fs/promises";
 import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
 
@@ -10,7 +20,7 @@ const instructions=wb.worksheets.add("Instructions");
 const bom=wb.worksheets.add("BOM");
 const packing=wb.worksheets.add("Packing");
 const catalogue=wb.worksheets.add("Catalogue");
-const example=wb.worksheets.add("Example");
+const example=wb.worksheets.add("Example Only");
 
 const headerStyle={fill:"#E5E7EB",font:{bold:true,color:"#111827",size:10},verticalAlignment:"center",
   borders:{bottom:{style:"medium",color:"#9CA3AF"}}};
@@ -24,12 +34,12 @@ instructions.getRange("A1:B1").format={fill:"#374151",font:{bold:true,color:"#FF
 instructions.getRange("A3:B10").values=[
   ["Step","What to do"],
   [1,"Fill only the BOM, Packing and Catalogue tabs. Keep the column names unchanged."],
-  [2,"For a new article, enter its BOM first. Use the exact same Article Code on all three tabs."],
-  [3,"Each BOM row is one material rate for one article, size range and production stage."],
-  [4,"Each Packing row is one size range and its pairs per carton."],
-  [5,"Catalogue photos are uploaded separately in Factory OS → Catalogue. Photo File Name is only a reminder."],
-  [6,"In Factory OS open Data & BOM → Upload the Factory OS article master → preview → confirm replacements → save."],
-  [7,"If an article already exists, the app asks for explicit confirmation before replacing its complete BOM."],
+  [2,"Those three upload tabs are intentionally blank. Example Only is for guidance and is never imported."],
+  [3,"For a new article, enter its BOM first. Use the exact same Article Code on all three tabs."],
+  [4,"Each BOM row is one material rate for one article, size range and production stage."],
+  [5,"Each Packing row is either a BOM size range or one individual size and its pairs per carton."],
+  [6,"Catalogue photos are uploaded separately in Factory OS → Catalogue. Photo File Name is only a reminder."],
+  [7,"In Factory OS open Data & BOM → Upload the Factory OS article master → preview the exact article names → save."],
 ];
 instructions.getRange("A3:B3").format=headerStyle;
 instructions.getRange("A4:B10").format=bodyStyle;
@@ -58,15 +68,16 @@ packing.getRange("C1:C51").format.columnWidth=22;
 packing.getRange("C2:C51").format.numberFormat="0";
 packing.freezePanes.freezeRows(1);packing.showGridLines=false;
 
-catalogue.getRange("A1:F1").values=[["Article Code","Description","Default Price","Sole Type","PVC Machine","Photo File Name"]];
-catalogue.getRange("A1:F1").format=headerStyle;
+catalogue.getRange("A1:G1").values=[["Article Code","Size Range","Description","MRP per Pair","Sole Type","PVC Machine","Photo File Name"]];
+catalogue.getRange("A1:G1").format=headerStyle;
 catalogue.getRange("A1:A51").format.columnWidth=26;
-catalogue.getRange("B1:B51").format.columnWidth=44;
-catalogue.getRange("C1:C51").format.columnWidth=18;
-catalogue.getRange("D1:F51").format.columnWidth=20;
-catalogue.getRange("C2:C51").format.numberFormat="#,##0";
-catalogue.getRange("D2:D51").dataValidation={rule:{type:"list",values:["EVA","PVC","PU","STUCK-ON"]}};
-catalogue.getRange("E2:E51").dataValidation={rule:{type:"list",values:["","ROTARY","VERTICAL"]}};
+catalogue.getRange("B1:B51").format.columnWidth=18;
+catalogue.getRange("C1:C51").format.columnWidth=40;
+catalogue.getRange("D1:D51").format.columnWidth=18;
+catalogue.getRange("E1:G51").format.columnWidth=20;
+catalogue.getRange("D2:D51").format.numberFormat="#,##0";
+catalogue.getRange("E2:E51").dataValidation={rule:{type:"list",values:["EVA","PVC","PU","STUCK-ON"]}};
+catalogue.getRange("F2:F51").dataValidation={rule:{type:"list",values:["","ROTARY","VERTICAL"]}};
 catalogue.freezePanes.freezeRows(1);catalogue.showGridLines=false;
 
 example.showGridLines=false;
@@ -75,25 +86,26 @@ example.getRange("A1").values=[["Example only · copy the pattern into the three
 example.getRange("A1:H1").format={fill:"#F3F4F6",font:{bold:true,color:"#374151",size:11},rowHeight:26};
 example.getRange("A3:H6").values=[
   bomHeaders,
-  ["GLAMOUR","EVA","6X8","CUTTING","Upper","Mesh 58\"","MTR",0.42],
-  ["GLAMOUR","EVA","6X8","STITCHING","Thread","Thread","MTR",1.2],
-  ["GLAMOUR","EVA","9X12","PACKING","Inner Box","Inner Box","PCS",1],
+  ["EXAMPLE ARTICLE","EVA","6X8","CUTTING","Upper","Mesh 58\"","MTR",0.42],
+  ["EXAMPLE ARTICLE","EVA","6X8","STITCHING","Thread","Thread","MTR",1.2],
+  ["EXAMPLE ARTICLE","EVA","9X12","PACKING","Inner Box","Inner Box","PCS",1],
 ];
 example.getRange("A3:H3").format=headerStyle;
 example.getRange("A4:H6").format=bodyStyle;
 example.getRange("A8:C10").values=[
   ["Article Code","Size Range","Pairs per Carton"],
-  ["GLAMOUR","6X8",24],
-  ["GLAMOUR","9X12",18],
+  ["EXAMPLE ARTICLE","6X8",24],
+  ["EXAMPLE ARTICLE","9X12",18],
 ];
 example.getRange("A8:C8").format=headerStyle;
 example.getRange("A9:C10").format=bodyStyle;
-example.getRange("A12:F13").values=[
-  ["Article Code","Description","Default Price","Sole Type","PVC Machine","Photo File Name"],
-  ["GLAMOUR","School shoe",625,"EVA","","glamour.jpg"],
+example.getRange("A12:G14").values=[
+  ["Article Code","Size Range","Description","MRP per Pair","Sole Type","PVC Machine","Photo File Name"],
+  ["EXAMPLE ARTICLE","6X8","School shoe",625,"EVA","","example.jpg"],
+  ["EXAMPLE ARTICLE","9X12","School shoe",675,"EVA","","example.jpg"],
 ];
-example.getRange("A12:F12").format=headerStyle;
-example.getRange("A13:F13").format=bodyStyle;
+example.getRange("A12:G12").format=headerStyle;
+example.getRange("A13:G14").format=bodyStyle;
 example.getRange("A1:A13").format.columnWidth=24;
 example.getRange("B1:B13").format.columnWidth=24;
 example.getRange("C1:H13").format.columnWidth=18;
@@ -103,9 +115,10 @@ await fs.mkdir("/Users/diyaroongta/Downloads/factory-os/public",{recursive:true}
 const out=await SpreadsheetFile.exportXlsx(wb);
 await out.save(outputPath);
 const publicOut=await SpreadsheetFile.exportXlsx(wb);
-await publicOut.save(publicPath);
+// Disabled: scripts/build-reference-template.mjs owns the shipped file.
+// await publicOut.save(publicPath);
 
-for(const [sheetName,range] of [["Instructions","A1:B10"],["BOM","A1:H12"],["Packing","A1:C12"],["Catalogue","A1:F12"],["Example","A1:H13"]]){
+for(const [sheetName,range] of [["Instructions","A1:B10"],["BOM","A1:H12"],["Packing","A1:C12"],["Catalogue","A1:G12"],["Example Only","A1:H14"]]){
   const image=await wb.render({sheetName,range,scale:1.1,format:"png"});
   await fs.writeFile(`${outputDir}/${sheetName}.png`,new Uint8Array(await image.arrayBuffer()));
 }

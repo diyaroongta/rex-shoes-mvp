@@ -27,6 +27,55 @@ const plain = parseReferenceWorkbook([{ name:"BOM", rows: rowsFor() }]);
 assert.deepEqual(plain.errors, [], "a header on row 1 still works");
 assert.equal(plain.boms[0].combo_order.length, 1);
 
+// Article codes are read from the cells, not inferred from a filename or from
+// catalogue defaults. A THUNDER upload must therefore remain THUNDER.
+const thunder = parseReferenceWorkbook([
+  { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","6X8","CUTTING","MESH","MTR",0.5]] },
+  { name:"Packing", rows:[["Article Code","Size Range","Pairs per Carton"],["THUNDER","6X8",18]] },
+  { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type"],["THUNDER","Demo",500,"EVA"]] },
+  { name:"Example Only", rows:[BOM_HEAD,["GLAMOUR","EVA","6X8","CUTTING","MESH","MTR",0.5]] },
+]);
+assert.deepEqual(thunder.errors, []);
+assert.deepEqual(thunder.boms.map(b=>b.article), ["THUNDER"]);
+assert.deepEqual(Object.keys(thunder.packing), ["THUNDER"]);
+assert.deepEqual(Object.keys(thunder.catalogue), ["THUNDER"]);
+assert.ok(!JSON.stringify(thunder).includes('"GLAMOUR"'), "Example Only must never be imported");
+
+const sizeAware = parseReferenceWorkbook([
+  { name:"BOM", rows:[BOM_HEAD,
+    ["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5],
+    ["THUNDER","EVA","11X1","CUTTING","MESH","MTR",0.6],
+  ]},
+  { name:"Packing", rows:[["Article Code","Size Range","Pairs per Carton"],
+    ["THUNDER","7",24],["THUNDER","8",24],["THUNDER","7X10",24],["THUNDER","11X1",18],
+  ]},
+  { name:"Catalogue", rows:[["Article Code","Size Range","Description","MRP per Pair","Sole Type","PVC Machine"],
+    ["THUNDER","7X10","School shoe",899,"EVA",""],
+    ["THUNDER","11X1","School shoe",949,"EVA",""],
+  ]},
+]);
+assert.deepEqual(sizeAware.errors, []);
+assert.deepEqual(sizeAware.packing,{THUNDER:{"7X10":24,"11X1":18}});
+assert.deepEqual(sizeAware.packingSingles,{THUNDER:{"7":24,"8":24}});
+assert.deepEqual(sizeAware.mrp,{THUNDER:{"7X10":899,"11X1":949}});
+assert.deepEqual(Object.keys(sizeAware.catalogue),["THUNDER"],"range prices remain one catalogue article");
+
+const duplicateCatalogue = parseReferenceWorkbook([
+  { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5]] },
+  { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type"],
+    ["THUNDER","A",899,"EVA"],["THUNDER","B",949,"EVA"],
+  ]},
+]);
+assert.ok(duplicateCatalogue.errors.some(e=>e.includes("add Size Range")),duplicateCatalogue.errors.join(" | "));
+
+const renamedRange = parseReferenceWorkbook([
+  { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5]] },
+  { name:"Catalogue", rows:[["Article Code","Description","Default Price","Sole Type"],
+    ["THUNDER","7X10",899,"EVA"],["THUNDER 1","11X1",949,"EVA"],
+  ]},
+]);
+assert.ok(renamedRange.errors.some(e=>e.includes("THUNDER 1 has no BOM")&&e.includes("keep Article Code THUNDER")),renamedRange.errors.join(" | "));
+
 // Row numbers must point at the row Excel shows, counted from the real header.
 const bad = parseReferenceWorkbook([{ name:"BOM", rows:[
   ["Title"], [], BOM_HEAD,
@@ -37,3 +86,65 @@ assert.ok(bad.errors.some(e => e.includes("BOM row 4")),
 
 console.log("  pass  a title block above the table does not break the upload");
 console.log("  pass  row numbers still match what Excel shows\n");
+console.log("  pass  THUNDER remains THUNDER and Example Only is ignored\n");
+console.log("  pass  combo packing, single-size packing and range MRPs are separated\n");
+
+/* A BOM upload REPLACES an article's ranges — it does not merge them. So the
+   file someone sends to correct a single rate, holding only that one range, is
+   exactly the file that deletes every other range and all its material rates.
+   A live order on a deleted range keeps its machine time and loses its
+   material: it occupies the line and buys nothing. */
+import { INPUTS } from "../shared/inputs.js";
+
+const HEAD = ["Article Code","Sole Type","Size Range","Stage","Material","UOM","Rate per Pair"];
+const partial = parseReferenceWorkbook([{ name:"BOM", rows:[
+  HEAD,
+  ["SPIKE","EVA","7X10S","CUTTING",'MESH 58"',"MTR",0.5],
+]}], INPUTS);
+
+assert.deepEqual(partial.errors, [], "the file itself is valid — that is what makes it dangerous");
+assert.equal(partial.removals.length, 1, "a partial re-upload of a loaded article must report what it deletes");
+const [gone] = partial.removals;
+assert.equal(gone.article, "SPIKE");
+assert.deepEqual(gone.ranges, ["11X1","2X5","6X8","9X12"],
+  "every range absent from the file is named, not just counted");
+assert.ok(gone.rates > 100, `the material rates lost must be counted, got ${gone.rates}`);
+
+// The complete file for the same article removes nothing.
+const complete = parseReferenceWorkbook([{ name:"BOM", rows:[
+  HEAD,
+  ...["7X10S","11X1","2X5","6X8","9X12"].map(c =>
+    ["SPIKE","EVA",c,"CUTTING",'MESH 58"',"MTR",0.5]),
+]}], INPUTS);
+assert.deepEqual(complete.removals, [], "a file holding every range deletes nothing");
+
+// A brand-new article has nothing to lose.
+const fresh = parseReferenceWorkbook([{ name:"BOM", rows:[
+  HEAD, ["THUNDER","EVA","7X10","CUTTING",'MESH 58"',"MTR",0.5],
+]}], INPUTS);
+assert.deepEqual(fresh.removals, [], "a new article reports no removals");
+
+console.log("  pass  a partial re-upload names the size ranges it would delete");
+console.log("  pass  a complete file, and a new article, remove nothing\n");
+
+/* The template carries a worked "Example Only" tab. If the importer ever read
+   it, every upload would silently create the example article — which is
+   exactly what happened when the worked rows lived inside the import tabs and
+   the factory typed their real numbers over them, leaving the Article Code
+   untouched. The tab must be inert, and a real article alongside it must load
+   on its own. */
+const withExampleTab = parseReferenceWorkbook([
+  { name:"Example Only", rows:[
+    ["EXAMPLE ONLY — not imported"],
+    HEAD,
+    ["EXAMPLE ARTICLE","EVA","6X8","CUTTING",'MESH 58"',"MTR",0.42],
+  ]},
+  { name:"BOM", rows:[HEAD, ["THUNDER","EVA","7X10","CUTTING",'MESH 58"',"MTR",0.5]] },
+], INPUTS);
+
+assert.deepEqual(withExampleTab.errors, []);
+assert.deepEqual(withExampleTab.boms.map(b => b.article), ["THUNDER"],
+  "the Example Only tab must never reach the database");
+assert.ok(!withExampleTab.boms.some(b => /EXAMPLE/.test(b.article)));
+
+console.log("  pass  the Example Only tab is never imported\n");

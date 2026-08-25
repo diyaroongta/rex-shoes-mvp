@@ -1,8 +1,9 @@
-import { articleCode, comboCode, normaliseMaterial } from "./bom-import.js";
+import { articleCode, comboCode, existingArticleCode, normaliseMaterial } from "./bom-import.js";
+import { comboSizes } from "./pi.js";
 
 export const BOM_HEADERS=["Article Code","Sole Type","Size Range","Stage","Component","Material","UOM","Rate per Pair"];
 export const PACKING_HEADERS=["Article Code","Size Range","Pairs per Carton"];
-export const CATALOGUE_HEADERS=["Article Code","Description","Default Price","Sole Type","PVC Machine","Photo File Name"];
+export const CATALOGUE_HEADERS=["Article Code","Size Range","Description","MRP per Pair","Sole Type","PVC Machine","Photo File Name"];
 
 const SOLES=new Set(["EVA","PVC","PU","STUCK-ON"]);
 const STAGES=new Set(["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","ASSEMBLY","PACKING","DISPATCH"]);
@@ -38,12 +39,12 @@ function sheet(sheets,name){
   return (sheets||[]).find(s=>key(s.name||s.sheetName)===wanted);
 }
 
-export function parseReferenceWorkbook(sheets){
+export function parseReferenceWorkbook(sheets,reference={}){
   const errors=[],warnings=[];
-  const boms={},packing={},catalogue={};
+  const boms={},packing={},packingSingles={},catalogue={},mrp={},catalogueMode={};
   const bomSheet=sheet(sheets,"BOM"), packingSheet=sheet(sheets,"Packing"), catalogueSheet=sheet(sheets,"Catalogue");
   if(!bomSheet&&!packingSheet&&!catalogueSheet)
-    return {errors:["Workbook must contain a BOM, Packing or Catalogue sheet."],warnings,boms:[],packing,catalogue};
+    return {errors:["Workbook must contain a BOM, Packing or Catalogue sheet."],warnings,boms:[],packing,packingSingles,catalogue,mrp};
 
   const seen=new Set();
   for(const r of rowObjects(bomSheet?.rows||[],["Article Code","Size Range","Stage","Material"])){
@@ -74,19 +75,37 @@ export function parseReferenceWorkbook(sheets){
   }
 
   for(const r of rowObjects(packingSheet?.rows||[],PACKING_HEADERS)){
-    const article=articleCode(r.get("Article Code"));
+    const rawArticle=articleCode(r.get("Article Code"));
+    const article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
     const combo=comboCode(r.get("Size Range"));
     const ppc=Math.round(Number(r.get("Pairs per Carton")));
     const prefix=`Packing row ${r.row}`;
     if(!article||!combo||!Number.isFinite(ppc)||ppc<1){errors.push(`${prefix}: Article Code, Size Range and pairs/carton of 1 or more are required.`);continue;}
+    const definition=boms[article]||reference.articles?.[article];
+    const combos=definition?(definition.combo_order||Object.keys(definition.combos||{})):[];
+    if(combos.length&&!combos.includes(combo)){
+      const allowedSingles=new Set(combos.flatMap(c=>comboSizes(c)).map(s=>String(s).toUpperCase().replace(/S$/,"")));
+      const single=String(combo).toUpperCase().replace(/S$/,"");
+      if(/^\d+(?:\.5)?$/.test(single)&&allowedSingles.has(single)){
+        packingSingles[article]=packingSingles[article]||{};
+        if(packingSingles[article][single]!=null){errors.push(`${prefix}: duplicate single-size packing rule for ${article} size ${single}.`);continue;}
+        packingSingles[article][single]=ppc;
+        continue;
+      }
+      errors.push(`${prefix}: ${combo} is neither a BOM size range nor an individual size inside ${article}'s ranges.`);continue;
+    }
     packing[article]=packing[article]||{};
     if(packing[article][combo]!=null){errors.push(`${prefix}: duplicate packing rule for ${article} ${combo}.`);continue;}
     packing[article][combo]=ppc;
   }
 
   for(const r of rowObjects(catalogueSheet?.rows||[],["Article Code"])){
-    const article=articleCode(r.get("Article Code"));
-    const priceRaw=r.get("Default Price"), price=priceRaw==null||text(priceRaw)===""?null:Number(priceRaw);
+    const rawArticle=articleCode(r.get("Article Code"));
+    const article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
+    const combo=comboCode(r.get("Size Range"));
+    const mrpRaw=r.get("MRP per Pair"), defaultRaw=r.get("Default Price");
+    const priceRaw=mrpRaw!=null&&text(mrpRaw)!==""?mrpRaw:defaultRaw;
+    const price=priceRaw==null||text(priceRaw)===""?null:Number(priceRaw);
     const sole=text(r.get("Sole Type")).toUpperCase();
     const machine=text(r.get("PVC Machine")).toUpperCase();
     const prefix=`Catalogue row ${r.row}`;
@@ -95,21 +114,71 @@ export function parseReferenceWorkbook(sheets){
     if(sole&&!SOLES.has(sole)){errors.push(`${prefix}: Sole Type must be EVA, PVC, PU or STUCK-ON.`);continue;}
     if(machine&&!['ROTARY','VERTICAL'].includes(machine)){errors.push(`${prefix}: PVC Machine must be ROTARY or VERTICAL.`);continue;}
     if(machine&&sole&&sole!=="PVC"){errors.push(`${prefix}: PVC Machine can only be set for a PVC article.`);continue;}
-    if(catalogue[article]){errors.push(`${prefix}: duplicate Catalogue row for ${article}.`);continue;}
-    catalogue[article]={
+    const definition=boms[article]||reference.articles?.[article];
+    if(!definition){
+      const base=article.replace(/\s+\d+$/,""), baseExists=base!==article&&(boms[base]||existingArticleCode(reference.articles,base));
+      errors.push(baseExists
+        ? `${prefix}: ${article} has no BOM. If this is another price for ${base}, keep Article Code ${base} and put its range in the Size Range column.`
+        : `${prefix}: ${article} has no BOM. Add its BOM first.`);
+      continue;
+    }
+    const ranges=definition.combo_order||Object.keys(definition.combos||{});
+    if(combo&&!ranges.includes(combo)){errors.push(`${prefix}: Size Range ${combo} is not in ${article}'s BOM (${ranges.join(", ")}).`);continue;}
+    const mode=combo?"range":"default";
+    if(catalogueMode[article]&&catalogueMode[article]!==mode){errors.push(`${prefix}: do not mix a default-price row with size-range price rows for ${article}.`);continue;}
+    if(mode==="default"&&catalogue[article]){
+      errors.push(`${prefix}: duplicate Catalogue row for ${article}. Use one row per article, or add Size Range and use one row per range.`);continue;
+    }
+    if(combo){
+      if(price==null){errors.push(`${prefix}: MRP per Pair is required when Size Range is filled.`);continue;}
+      mrp[article]=mrp[article]||{};
+      if(mrp[article][combo]!=null){errors.push(`${prefix}: duplicate Catalogue price for ${article} ${combo}.`);continue;}
+      mrp[article][combo]=price;
+    }
+    catalogueMode[article]=mode;
+    const incoming={
       article_code:article,
       description:text(r.get("Description"))||null,
-      price,
+      price:combo?null:price,
       sole_type:sole||null,
       molding_machine:machine||null,
       photo_file_name:text(r.get("Photo File Name"))||null,
     };
-    if(catalogue[article].photo_file_name)
-      warnings.push(`${article}: add ${catalogue[article].photo_file_name} separately in Catalogue; browsers cannot attach a local image from an Excel cell.`);
+    const previous=catalogue[article];
+    if(previous){
+      for(const field of ["description","sole_type","molding_machine","photo_file_name"]){
+        if(previous[field]!=null&&incoming[field]!=null&&previous[field]!==incoming[field])
+          errors.push(`${prefix}: ${field.replaceAll("_"," ")} conflicts with the earlier ${article} row.`);
+        else if(previous[field]==null&&incoming[field]!=null) previous[field]=incoming[field];
+      }
+    }else catalogue[article]=incoming;
+    if(incoming.photo_file_name)
+      warnings.push(`${article}: add ${incoming.photo_file_name} separately in Catalogue; browsers cannot attach a local image from an Excel cell.`);
   }
 
   if(!Object.keys(boms).length&&!Object.keys(packing).length&&!Object.keys(catalogue).length)
     errors.push("No data rows found. Fill at least one row in BOM, Packing or Catalogue.");
 
-  return {errors,warnings,boms:Object.values(boms),packing,catalogue};
+  /* A BOM upload REPLACES an article's ranges outright — it does not merge. So
+     a file sent to correct one rate, containing only that one range, silently
+     deletes every other range and all of its material rates. Live orders on a
+     deleted range then consume machine capacity while ordering zero material.
+     Work out exactly what would disappear so the caller can say so, and refuse
+     rather than discover it afterwards. */
+  const removals=[];
+  for(const bom of Object.values(boms)){
+    const existing=reference.articles?.[existingArticleCode(reference.articles,bom.article)||bom.article];
+    if(!existing) continue;
+    const had=existing.combo_order||Object.keys(existing.combos||{});
+    const gone=had.filter(c=>!bom.combo_order.includes(c));
+    if(!gone.length) continue;
+    removals.push({
+      article:bom.article,
+      ranges:gone,
+      rates:gone.reduce((n,c)=>n+Object.values((existing.combos||{})[c]?.rates||{})
+        .reduce((m,st)=>m+Object.keys(st).length,0),0),
+    });
+  }
+
+  return {errors,warnings,boms:Object.values(boms),packing,packingSingles,catalogue,mrp,removals};
 }
