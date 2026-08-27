@@ -251,6 +251,13 @@ export default function App(){
             <div className="mono" style={{color:"#7B8FA6",fontSize:10,marginTop:5}}>
               {fmt(t.orders)} live · {fmt(t.total_pairs)} pairs
             </div>
+            {/* Which build you are actually looking at. Without this there is
+                no way to tell a fix that is not deployed from a fix that does
+                not work — they look identical from the browser. */}
+            <div className="mono" style={{color:"#4A6076",fontSize:9,marginTop:3}}
+                 title="Build currently running. Compare with the latest commit to confirm a deploy landed.">
+              build {typeof __BUILD__==="undefined"?"dev":__BUILD__}
+            </div>
           </div>
 
           <nav style={{padding:"0 10px",overflowY:"auto",flex:1}}>
@@ -454,13 +461,17 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     ...extra,
   });
   const sourceCards=piCards||cards||[];
-  const sourceSignature=JSON.stringify(sourceCards.map(c=>({
+  /* Extracted so an edit made ON the invoice can re-stamp the signature. That
+     edit changes the cards and the preview together, so the preview is not
+     stale — without re-stamping, correcting a cell would disable Save. */
+  const signatureOf=list=>JSON.stringify((list||[]).map(c=>({
     article:c.article,party:c.party,customer_city:c.customer_city,order_date:c.order_date,
     priority:c.priority,order_nature:c.order_nature,stitching:c.stitching,
     printing:c.printing,vl:c.vl,sole_colour:c.sole_colour,upper_colour:c.upper_colour,
     dispatch_timeline:c.dispatch_timeline,
     lines:(c.lines||[]).map(l=>({combo:l.combo,cartons:l.cartons,ppc:l.ppc,qty:l.qty,sizes:l.sizes}))
   })));
+  const sourceSignature=signatureOf(sourceCards);
   const previewStale=!!piPreviewCards && piPreviewSignature!==sourceSignature;
   const termsForParty = (name, partyRows=parties, baseTerms=piTerms, fallbackDiscount=discountPct) => {
     const key=String(name||"").trim().toLowerCase();
@@ -813,6 +824,46 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     return {per,cartons,pairs,amount};
   },[cards,prices]);
 
+  /* Edit a cell on the invoice itself. The clerk is looking at the PI when they
+     spot a wrong pair count or price, so it is corrected there — the preview
+     and the order that gets saved are the same object, so what is on screen is
+     what is sent. Quantity writes back to the exact size; price writes to this
+     PI's own chart, keyed COMBO::SIZE so it never touches the article's list
+     price or any other invoice. */
+  function editPiCell(card, line, field, raw){
+    if(!card) return;
+    // Preserve null. Turning an unset list into [] makes it truthy, and
+    // sourceCards then reads as "present but empty", hiding the whole step.
+    const apply = cs => !cs ? cs : cs.map(c => {
+      if(c !== card) return c;
+      if(field === "mrp"){
+        const key = `${line.combo}::${line.size}`;
+        const next = { ...(c.mrp||{}) };
+        if(String(raw).trim() === "") delete next[key];
+        else next[key] = Math.max(0, Number(raw) || 0);
+        return { ...c, mrp: next };
+      }
+      const pairs = Math.max(0, Math.round(Number(raw) || 0));
+      return { ...c, lines: c.lines.map(l => {
+        if(l.combo !== line.combo) return l;
+        if(l.sizes){
+          const sizes = { ...l.sizes, [line.size]: pairs };
+          const total = Object.values(sizes).reduce((a,b)=>a+(Number(b)||0),0);
+          return { ...l, sizes, qty: total,
+            cartons: Number(l.ppc) ? +(total/Number(l.ppc)).toFixed(4) : l.cartons };
+        }
+        // A whole-range line has one figure; editing any of its size cells sets it.
+        return { ...l, qty: pairs,
+          cartons: Number(l.ppc) ? +(pairs/Number(l.ppc)).toFixed(4) : l.cartons };
+      }) };
+    });
+    setPiPreviewCards(apply);
+    setCards(apply);
+    setPiCards(apply);
+    // The edit was made on the preview, so the preview is not out of date.
+    setPiPreviewSignature(signatureOf(apply(sourceCards)));
+  }
+
   const piNumberFor = (card, source) => {
     const parties=[];
     for(const c of source||[]){
@@ -859,7 +910,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       if((c.fromPi?(Number(l.qty)||0):(Number(l.cartons)||0))<=0) return [];
       const sizes=(l.size_order||comboSizesForArticle(c.article,l.combo))
         .filter(size=>!l.sizes||(Number(l.sizes[size])||0)>0);
-      const chart=((INPUTS.mrp||{})[c.article]||{});
+      const chart={...((INPUTS.mrp||{})[c.article]||{}),...(c.mrp||{})};
       return sizes.filter(size=>mrpForSize(chart,l.combo,size)==null)
         .map(size=>`${c.article} ${l.combo} / ${size}`);
     }));
@@ -894,7 +945,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       // printed — reading today's deductions back over an old PI silently
       // restates money that has already been agreed.
       pi:{pi_no:piNumberFor(c,source), price:prices[c.article],
-          mrp:{...((INPUTS.mrp||{})[c.article]||{})},
+          mrp:{...((INPUTS.mrp||{})[c.article]||{}),...(c.mrp||{})},
           catalogue_image:(CATALOGUE[c.article]||{}).image||articlePhoto(c.article)||null,
           terms:commercial, discount_pct:commercial.discount_pct,
           dispatch_timeline:commercial.dispatch_timeline,
@@ -1250,13 +1301,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           {groups.map((g, gi) => {
             const num = groups.length > 1 ? `${piNo}-${gi+1}` : piNo;
             const items = g.cards.map(c => ({
+              _card: c,
               article_code: c.article,
               article_label: c.article,
               vl:c.vl, sole_colour:c.sole_colour, upper_colour:c.upper_colour,
               order_nature:c.order_nature, printing:!!c.printing,
               source:c.order_nature,
               image: (CATALOGUE[c.article]||{}).image || articlePhoto(c.article) || null,
-              mrp: (INPUTS.mrp||{})[c.article] || {},
+              mrp: {...((INPUTS.mrp||{})[c.article]||{}),...(c.mrp||{})},
               lines: c.fromPi
                 ? c.lines.map(l=>({...l,size_order:l.size_order||comboSizesForArticle(c.article,l.combo)}))
                 : c.lines.filter(l=>(Number(l.cartons)||0)>0)
@@ -1280,6 +1332,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                 )}
                 <PiDocument
                   piNo={num}
+                  onCell={(itemIndex,line,field,value)=>editPiCell(items[itemIndex]?._card,line,field,value)}
                   order={{
                     order_no: num,
                     party: g.party,

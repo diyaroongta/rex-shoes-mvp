@@ -323,3 +323,33 @@ describe("quantities sent to the server",()=>{
     expect(wholePairs([{lines:[{combo:"7X10S",qty:96,sizes:{"7s":24.5,"8s":24,"9s":24,"10s":24}}]}])).toBe(false);
   });
 });
+
+/* The clerk is looking at the invoice when they spot a wrong pair count or
+   price. Correcting it there — rather than on a different screen that has to
+   be found first — is the whole point, and the correction must survive into
+   what gets saved rather than being a display-only edit. */
+describe("the invoice itself is editable",()=>{
+  it("edits pairs and MRP on the PI and keeps Save enabled",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+    await user.type(screen.getByLabelText("Customer *"),"Test Buyer");
+    await user.type(screen.getByLabelText("Order nature *"),"MTO");
+    await user.type(screen.getByLabelText("Upper colour *"),"Navy");
+    const carton=screen.getAllByLabelText(/cartons$/)[0];
+    await user.clear(carton);await user.type(carton,"1");
+    await user.click(screen.getByRole("button",{name:"Generate PI from these edits"}));
+
+    // Cells on the rendered invoice, not on Match & Check.
+    const qty=screen.getAllByLabelText(/pairs$/).find(el=>el.closest("#pi-area"));
+    const mrp=screen.getAllByLabelText(/MRP$/).find(el=>el.closest("#pi-area"));
+    expect(qty).toBeTruthy();
+    expect(mrp).toBeTruthy();
+
+    await user.clear(mrp);await user.type(mrp,"777");
+    // Editing on the invoice must not mark its own preview stale.
+    expect(screen.queryByText(/Match & Check has changed since this PI was generated/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button",{name:/Save & send/})).toBeEnabled();
+  });
+});

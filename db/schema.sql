@@ -56,6 +56,13 @@ create table if not exists proforma_invoice_revisions (
 create index if not exists proforma_invoice_revisions_pi_idx
   on proforma_invoice_revisions (pi_no, revision, recorded_at desc);
 
+-- A PI can be archived (hidden from the working list, fully recoverable) or
+-- permanently deleted. Archiving is the safe default because a PI is a
+-- commercial record; deletion is refused while any of its orders carry a
+-- recorded dispatch, since that evidence must never be destroyed.
+alter table proforma_invoices add column if not exists archived boolean not null default false;
+create index if not exists proforma_invoices_archived_idx on proforma_invoices (archived, pi_date desc);
+
 -- Shared config: machine capacities. One row, id = 1.
 -- These are shared factory settings, not per-browser preferences.
 create table if not exists settings (

@@ -36,8 +36,16 @@ const C = { border:"1px solid #000", padding:"3px 5px", fontSize:"10px", vertica
 const H = { ...C, fontWeight:700, textAlign:"center", background:"#fff" };
 const R = { ...C, textAlign:"right" };
 const N = { ...C, textAlign:"center" };
+/* Sized to the printed cell so an editable invoice keeps the same layout as
+   the one that comes out of the printer. */
+const CELL_INPUT = { width:"56px", textAlign:"center", font:"inherit", fontSize:"10px",
+  border:"1px solid #CBD5E1", borderRadius:"3px", padding:"1px 2px", background:"#FFFDF5" };
 
-export default function PiDocument({ order, article, mrp, terms, config, image, piNo, confirmationDate }){
+/* `onCell` makes the invoice itself editable. The clerk is looking at the PI
+   when they spot a wrong quantity or price, so that is where it should be
+   corrected — not on a different screen that has to be found first. Left
+   undefined the document renders exactly as it prints. */
+export default function PiDocument({ order, article, mrp, terms, config, image, piNo, confirmationDate, onCell }){
   const t   = { ...DEFAULT_TERMS, ...(terms||{}) };
   const cfg = { ...DEFAULT_PI_CONFIG, ...(config||{}) };
   // `image` is the single-article convenience prop; multi-article orders carry
@@ -111,8 +119,16 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
                 </td>
               )}
               <td style={N}>{l.size}</td>
-              <td style={N}>{l.qty}</td>
-              <td style={N}>{l.mrp == null ? "—" : l.mrp}</td>
+              <td style={N}>{onCell
+                ? <input type="number" min={0} value={l.qty}
+                    aria-label={`${g.article_label} ${l.combo} ${l.size} pairs`}
+                    onChange={e=>onCell(g.index,l,"qty",e.target.value)} style={CELL_INPUT} />
+                : l.qty}</td>
+              <td style={N}>{onCell
+                ? <input type="number" min={0} value={l.mrp ?? ""} placeholder="—"
+                    aria-label={`${g.article_label} ${l.combo} ${l.size} MRP`}
+                    onChange={e=>onCell(g.index,l,"mrp",e.target.value)} style={CELL_INPUT} />
+                : (l.mrp == null ? "—" : l.mrp)}</td>
               <td style={N}>{l.discount_pct}%</td>
               <td style={N}>{l.rate == null ? "—" : l.rate}</td>
               <td style={R}>{l.amount == null ? "—" : inr(l.amount)}</td>

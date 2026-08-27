@@ -23,8 +23,11 @@ export default wrap(async (req,res)=>{
       if(!latest.length&&!past.length) return fail(res,404,`no such PI: ${piNo}`);
       return res.status(200).json([...past,...latest]);
     }
-    const { rows } = await q(`select pi_no, pi_date, party, status, revision, snapshot, created_at, updated_at
-      from proforma_invoices order by pi_date desc, pi_no desc`);
+    /* Archived PIs are hidden from the working list but never lost. `?archived=1`
+       shows only those, so restoring one is possible without a database query. */
+    const archived = String(req.query?.archived||"")==="1";
+    const { rows } = await q(`select pi_no, pi_date, party, status, revision, snapshot, archived, created_at, updated_at
+      from proforma_invoices where archived = $1 order by pi_date desc, pi_no desc`,[archived]);
     return res.status(200).json(rows.map(r=>({
       ...r,
       pi_date:r.pi_date instanceof Date?r.pi_date.toISOString().slice(0,10):String(r.pi_date||""),
@@ -34,6 +37,28 @@ export default wrap(async (req,res)=>{
   if(req.method==="POST"){
     const piNo=String((req.body&&req.body.pi_no)||"").trim();
     if(!piNo) return fail(res,400,"pi_no is required");
+
+    /* Archive / restore. A PI is a commercial record, so hiding it is the safe
+       operation and it takes its orders with it — an archived PI must not keep
+       occupying machine time on the schedule, and restoring it must put that
+       work back exactly as it was. */
+    const action=String((req.body&&req.body.action)||"").trim();
+    if(action==="archive"||action==="restore"){
+      const archiving=action==="archive";
+      const client=await db().connect();
+      try{
+        await client.query("begin");
+        const {rowCount}=await client.query(
+          "update proforma_invoices set archived=$2, updated_at=now() where pi_no=$1",[piNo,archiving]);
+        if(!rowCount){await client.query("rollback");return fail(res,404,`no such PI: ${piNo}`);}
+        const {rows:touched}=await client.query(
+          `update orders set active=$2, version=version+1, updated_at=now()
+             where pi->>'pi_no' = $1 returning order_no`,[piNo,!archiving]);
+        await client.query("commit");
+        return res.status(200).json({pi_no:piNo,archived:archiving,orders:touched.map(r=>r.order_no)});
+      }catch(e){try{await client.query("rollback");}catch(_){ }throw e;}
+      finally{client.release();}
+    }
     await ensurePiTable();
     const {rows}=await q("select snapshot from proforma_invoices where pi_no = $1",[piNo]);
     if(!rows.length) return fail(res,404,`no such PI: ${piNo}`);
