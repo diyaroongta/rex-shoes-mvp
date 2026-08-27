@@ -1072,6 +1072,25 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
                 <div className="mono text-sm text-right font-semibold">{fmt((Number(l.cartons)||0)*(Number(l.ppc)||0))}</div>
                 <button onClick={()=>delLine(i,k)} className="text-rose-500 text-lg leading-none">−</button>
+                {/* A line keeps the rate it was built with, so a draft opened
+                    before the packing list changed silently keeps the old one.
+                    Say so, and offer the current rule rather than leaving the
+                    clerk to notice two screens disagreeing. */}
+                {(()=>{ const rule=l.combo?packQty(c.article,l.combo):null;
+                  if(rule==null||!Number(l.ppc)||Number(l.ppc)===Number(rule)) return null;
+                  return <div className="col-span-full text-xs rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-900 flex items-center gap-2 flex-wrap">
+                    <span>This line packs at <b className="mono">{l.ppc}</b>/carton, but the packing list for
+                      <b className="mono"> {l.combo}</b> now says <b className="mono">{rule}</b>.</span>
+                    <button onClick={()=>{
+                        if(!l.sizes){setLine(i,k,{ppc:rule});return;}
+                        const nextSizes=Object.fromEntries(Object.entries(l.sizes)
+                          .map(([size,pairs])=>[size,Math.round(Number(pairs)/Number(l.ppc)*Number(rule))]));
+                        setLine(i,k,{ppc:rule,sizes:nextSizes,
+                          qty:Object.values(nextSizes).reduce((sum,pairs)=>sum+Number(pairs||0),0)});
+                      }}
+                      className="ml-auto font-semibold border border-amber-400 rounded px-2 py-0.5 bg-white">
+                      Use {rule}</button>
+                  </div>; })()}
                 {l.sizes && <div className="col-span-full flex gap-2 flex-wrap rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5">
                   <span className="text-xs text-slate-500 self-center">Cartons and calculated pairs by size:</span>
                   {Object.entries(l.sizes).map(([size,qty])=>{const sizeCartons=Number(l.ppc)?+(Number(qty)/Number(l.ppc)).toFixed(4):0;return <label key={size} className="text-xs text-slate-500">
