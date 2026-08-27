@@ -37,6 +37,7 @@ export default function App(){
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
 
   const [loadErr, setLoadErr] = useState("");
+  const [flash, setFlash] = useState("");   // survives the tab jump after a save
   const [refTick, setRefTick] = useState(0);   // bumped when reference data is re-uploaded
   const [catalogueTick, setCatalogueTick] = useState(0);
   const [targets, setTargets] = useState(null);
@@ -91,9 +92,19 @@ export default function App(){
     await refresh();
   };
   // Returns the created rows so the intake screen can show the assigned order numbers.
+  /* Saving jumps the clerk to Orders & dispatch, which meant the confirmation
+     set on the intake screen was rendered on a tab they had just been moved
+     off — the orders saved, and nothing on screen said so. The message has to
+     live ABOVE the tabs to survive the jump. */
   const addOrders = async drafts =>{
     const created = await api.createOrders(drafts);
-    await refresh(); setTab("orders"); return created;
+    await refresh();
+    setTab("orders");
+    const nos = (created||[]).map(o=>o.order_no).filter(Boolean);
+    setFlash(nos.length
+      ? `${nos.length} order${nos.length===1?"":"s"} saved and scheduled — ${nos.join(", ")}`
+      : "Orders saved and scheduled.");
+    return created;
   };
   const clearAll = async ()=>{
     if(!window.confirm(`Remove all ${(orders||[]).length} live orders? PI snapshots remain in the PI database, but the production schedule will be emptied.`)) return;
@@ -295,6 +306,17 @@ export default function App(){
                     tone={state.procurement.length?"#B45309":"#047857"} />
             </div>
           </header>
+
+          {flash && (
+            <div style={{margin:"14px 22px 0",padding:"10px 12px",borderRadius:8,fontSize:13,
+                         background:"#ECFDF5",border:"1px solid #A7F3D0",color:"#065F46",
+                         display:"flex",alignItems:"center",gap:10}}>
+              <span>✓ {flash}</span>
+              <button onClick={()=>setFlash("")} aria-label="Dismiss"
+                style={{marginLeft:"auto",border:"none",background:"transparent",color:"#065F46",
+                        cursor:"pointer",fontSize:16,lineHeight:1}}>×</button>
+            </div>
+          )}
 
           {state.schedule_problems.length>0 && (
             <div style={{margin:"14px 22px 0",padding:"9px 12px",borderRadius:8,fontSize:12.5,

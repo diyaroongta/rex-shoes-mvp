@@ -505,3 +505,27 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 });
+
+/* A missing COLUMN is the same class of problem as a missing table — the
+   schema has not been applied — but the old handler only recognised missing
+   relations, so adding a column and forgetting to run schema.sql surfaced as a
+   bare "Server error" with nothing to act on. */
+describe("setup errors are diagnosable",()=>{
+  it("names a missing column and says how to fix it",async()=>{
+    const {wrap}=await import("../../api/_lib/http.js");
+    const boom=wrap(async()=>{const e=new Error('column "active" does not exist');e.code="42703";throw e;});
+    const res=response();
+    await boom({method:"POST",url:"/api/pis"},res);
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error).toMatch(/column "active" does not exist/);
+    expect(res.body.error).toMatch(/db\/schema\.sql/);
+  });
+
+  it("still hides genuine internal faults",async()=>{
+    const {wrap}=await import("../../api/_lib/http.js");
+    const boom=wrap(async()=>{throw new TypeError("x is not a function");});
+    const res=response();
+    await boom({method:"POST",url:"/api/pis"},res);
+    expect(res.body.error).toBe("Server error");
+  });
+});
