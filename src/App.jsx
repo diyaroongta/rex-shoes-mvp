@@ -104,8 +104,12 @@ export default function App(){
      live ABOVE the tabs to survive the jump. */
   const addOrders = async drafts =>{
     const created = await api.createOrders(drafts);
-    await refresh();
+    await syncAll();
     setTab("orders");
+    /* Save sits at the bottom of a long invoice. Switching tabs does not move
+       the scroll position, so the confirmation was rendering above the fold and
+       the clerk saw nothing at all — which reads exactly like a failed save. */
+    if(typeof window!=="undefined") window.scrollTo({top:0,behavior:"smooth"});
     const nos = (created||[]).map(o=>o.order_no).filter(Boolean);
     setFlash(nos.length
       ? `${nos.length} order${nos.length===1?"":"s"} saved and scheduled — ${nos.join(", ")}`
@@ -836,12 +840,41 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
      what is sent. Quantity writes back to the exact size; price writes to this
      PI's own chart, keyed COMBO::SIZE so it never touches the article's list
      price or any other invoice. */
+  /* Same move, reached from Match & Check. Both screens edit the same cards,
+     so a correction made on either shows on the other. */
+  function renameCardSize(card, combo, from, to){
+    editPiCell(card, { combo, size:from }, "size", to);
+  }
+
   function editPiCell(card, line, field, raw){
     if(!card) return;
     // Preserve null. Turning an unset list into [] makes it truthy, and
     // sourceCards then reads as "present but empty", hiding the whole step.
+    /* The preview is a clone of the cards, so identity alone would only match
+       one of them. Matching on article + party keeps the two in step, which is
+       what makes an edit here survive a later Generate PI. */
+    const sameCard = c => c === card
+      || (c.article === card.article && (c.party||"") === (card.party||""));
     const apply = cs => !cs ? cs : cs.map(c => {
-      if(c !== card) return c;
+      if(!sameCard(c)) return c;
+      if(field === "size"){
+        /* Move the pairs onto a different size of the same range. This is what
+           "change 11s to 12s" means: the size KEY is what the invoice prints,
+           so editing the line's free-text label never changed it. Merging into
+           a size that already has pairs adds to it rather than overwriting. */
+        const to = String(raw);
+        if(!to || to === line.size) return c;
+        return { ...c, lines: c.lines.map(l => {
+          if(l.combo !== line.combo || !l.sizes) return l;
+          const sizes = { ...l.sizes };
+          const moving = Number(sizes[line.size]) || 0;
+          delete sizes[line.size];
+          sizes[to] = (Number(sizes[to]) || 0) + moving;
+          const total = Object.values(sizes).reduce((a,b)=>a+(Number(b)||0),0);
+          return { ...l, sizes, qty: total,
+            cartons: Number(l.ppc) ? +(total/Number(l.ppc)).toFixed(4) : l.cartons };
+        }) };
+      }
       if(field === "mrp"){
         const key = `${line.combo}::${line.size}`;
         const next = { ...(c.mrp||{}) };
@@ -1111,11 +1144,24 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     </div>
                   )}
                 </div>
-                <input type="number" min="0" value={l.cartons} disabled={!!l.sizes}
+                <input type="number" min="0" step="any" value={l.cartons}
                   aria-label={`${c.article} ${l.combo||l.single||k} cartons`}
-                  onChange={e=>setLine(i,k,{cartons:e.target.value===""?0:Number(e.target.value)})}
-                  title={l.sizes?"Total cartons are calculated from the per-size carton entries below":""}
-                  className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full disabled:bg-slate-50 disabled:text-slate-500"/>
+                  onChange={e=>{
+                    const cartons=e.target.value===""?0:Number(e.target.value);
+                    /* On a line with exact sizes the total was read-only, so a
+                       clerk who wanted "4 cartons of this range" had no way to
+                       say it. Setting it here spreads the pairs across the
+                       sizes already on the line, remainder to the earliest —
+                       the same rule the invoice uses to split a range. */
+                    if(!l.sizes||!Number(l.ppc)){setLine(i,k,{cartons});return;}
+                    const names=Object.keys(l.sizes);
+                    const total=Math.max(0,Math.round(cartons*Number(l.ppc)));
+                    const base=Math.floor(total/names.length), rem=total-base*names.length;
+                    const sizes=Object.fromEntries(names.map((n,idx)=>[n,base+(idx<rem?1:0)]));
+                    setLine(i,k,{cartons,sizes,qty:total});
+                  }}
+                  title={l.sizes?"Sets the whole range; the pairs are spread across its sizes below":""}
+                  className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
                 <input type="number" min="1" value={l.ppc}
                   aria-label={`${c.article} ${l.combo||l.single||k} pairs per carton`}
                   onChange={e=>{
@@ -1150,8 +1196,18 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   </div>; })()}
                 {l.sizes && <div className="col-span-full flex gap-2 flex-wrap rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5">
                   <span className="text-xs text-slate-500 self-center">Cartons and calculated pairs by size:</span>
-                  {Object.entries(l.sizes).map(([size,qty])=>{const sizeCartons=Number(l.ppc)?+(Number(qty)/Number(l.ppc)).toFixed(4):0;return <label key={size} className="text-xs text-slate-500">
-                    <span className="mono">Size {size}</span>
+                  {Object.entries(l.sizes).map(([size,qty])=>{const sizeCartons=Number(l.ppc)?+(Number(qty)/Number(l.ppc)).toFixed(4):0;
+                    const options=l.size_order||comboSizesForArticle(c.article,l.combo);
+                    return <label key={size} className="text-xs text-slate-500">
+                    {/* The size itself, not just its quantity. Correcting a
+                        misread 11s to 12s has to change the size the invoice
+                        prints — editing the line's label never did. */}
+                    <select value={size} aria-label={`${c.article} ${l.combo} size ${size}`}
+                      onChange={e=>renameCardSize(c,l.combo,size,e.target.value)}
+                      className="mono block border border-slate-300 rounded px-1 py-0.5 bg-white"
+                      style={{fontSize:11}}>
+                      {(options||[]).map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                    </select>
                     <input type="number" min="0" step="any" value={sizeCartons} aria-label={`${c.article} size ${size} cartons`}
                       onChange={e=>{
                         const cartons=Math.max(0,Number(e.target.value)||0);

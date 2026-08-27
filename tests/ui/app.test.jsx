@@ -247,7 +247,12 @@ describe("critical UI contracts",()=>{
     const sizeThree=screen.getByLabelText("REX GOLA (L) size 3 cartons");
     expect(sizeThree).toHaveValue(3);
     expect(sizeThree.closest("label")).toHaveTextContent("3 ctn × 18 = 54 pairs");
-    expect(screen.getByLabelText("REX GOLA (L) 1X3 cartons")).toBeDisabled();
+    /* The range total is editable now: a clerk asking for "4 cartons of this
+       range" had no way to say it while this was read-only. Setting it spreads
+       the pairs across the sizes already on the line. */
+    const rangeCartons=screen.getByLabelText("REX GOLA (L) 1X3 cartons");
+    expect(rangeCartons).toBeEnabled();
+    expect(rangeCartons).toHaveValue(3);
   });
 
   /* The sheet's customer is asked ONCE and stamped onto every article, because
@@ -436,5 +441,40 @@ describe("a PI can be archived or permanently deleted",()=>{
     await waitFor(()=>expect(mocks.listArchivedPis).toHaveBeenCalled());
     await user.click(await screen.findByRole("button",{name:"Restore"}));
     await waitFor(()=>expect(mocks.restorePi).toHaveBeenCalledWith("PI77"));
+  });
+});
+
+/* "I changed 11s to 12s and the PI still says 11s." The line's label was free
+   text; the SIZE KEY is what the invoice prints, and nothing could change it.
+   Both screens now edit the size itself, and they edit the same cards, so a
+   correction on either shows on the other. */
+describe("correcting a size",()=>{
+  const openDraft=async user=>{
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+    await user.type(screen.getByLabelText("Customer *"),"Test Buyer");
+    await user.type(screen.getByLabelText("Order nature *"),"MTO");
+    await user.type(screen.getByLabelText("Upper colour *"),"Navy");
+    // A line with exact sizes, which is what the per-size pickers act on.
+    await user.type(screen.getByLabelText("Size"),"8s");
+    await user.type(screen.getByLabelText("Quantity"),"24");
+    await user.click(screen.getByRole("button",{name:"Add size"}));
+  };
+
+  it("changes the size in Match & Check and the PI prints the new one",async()=>{
+    const user=userEvent.setup();
+    await openDraft(user);
+
+    const picker=screen.getAllByLabelText(/size 8s$/i)[0];
+    expect(picker).toBeTruthy();
+    await user.selectOptions(picker,"9s");
+
+    await user.click(screen.getByRole("button",{name:/Generate PI/}));
+    const invoice=document.querySelector("#pi-area");
+    expect(invoice.textContent).toContain("9s");
+    // and the old size is gone, not duplicated
+    expect([...invoice.querySelectorAll("select")]
+      .some(sel=>sel.value==="8s")).toBe(false);
   });
 });

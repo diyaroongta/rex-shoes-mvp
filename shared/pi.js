@@ -106,6 +106,9 @@ export function buildLines(order, mrp = {}, terms = DEFAULT_TERMS){
       const rate   = mrpVal == null ? null : Math.round(mrpVal * (1 - discount/100));
       out.push({
         combo: line.combo, size, qty,
+        // Which sizes this range can hold, so an editable invoice can offer
+        // them without re-deriving the roll in the renderer.
+        size_order: sizes,
         // One article can be ordered in both its Velcro and its Lace roll, so
         // V/L is printed per size range, not once for the whole article.
         vl: line.vl || null,

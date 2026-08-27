@@ -118,7 +118,14 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
                       </span>}
                 </td>
               )}
-              <td style={N}>{l.size}</td>
+              <td style={N}>{onCell && (l.size_order||[]).length
+                ? <select value={l.size}
+                    aria-label={`${g.article_label} ${l.combo} size`}
+                    onChange={e=>onCell(g.index,l,"size",e.target.value)}
+                    style={{...CELL_INPUT, width:"62px"}}>
+                    {(l.size_order||[]).map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                  </select>
+                : l.size}</td>
               <td style={N}>{onCell
                 ? <input type="number" min={0} value={l.qty}
                     aria-label={`${g.article_label} ${l.combo} ${l.size} pairs`}
