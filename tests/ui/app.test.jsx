@@ -226,6 +226,25 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByLabelText("V/L *")).not.toBeInTheDocument();
   });
 
+  it("shows handwritten exact quantities as cartons per size and derived pairs",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(screen.getByText(/AI read not working here/));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the JSON reply here/),{target:{value:JSON.stringify({
+      date:"2026-08-27",orders:[{party:"Dhanani Shoe Guwahati",category:"Rex Gola (L)",color:"Black",lines:[
+        {sizes:["3"],cartons:3,type:"LACE"},{sizes:["4"],cartons:5,type:"LACE"},
+        {sizes:["5"],cartons:3,type:"LACE"},{sizes:["6"],cartons:4,type:"LACE"},
+      ]}],
+    })}});
+    await user.click(screen.getByRole("button",{name:"Use pasted result"}));
+    expect(screen.getAllByText("Cartons and calculated pairs by size:")).toHaveLength(3);
+    const sizeThree=screen.getByLabelText("REX GOLA (L) size 3 cartons");
+    expect(sizeThree).toHaveValue(3);
+    expect(sizeThree.closest("label")).toHaveTextContent("3 ctn × 18 = 54 pairs");
+    expect(screen.getByLabelText("REX GOLA (L) 1X3 cartons")).toBeDisabled();
+  });
+
   /* The sheet's customer is asked ONCE and stamped onto every article, because
      one slip is one customer far more often than not. */
   it("asks for the customer once for the whole sheet",async()=>{

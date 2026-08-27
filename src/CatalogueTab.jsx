@@ -39,6 +39,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
   const [showAdd,setShowAdd]=useState(false);
   const [newEntry,setNewEntry]=useState({article_code:"",description:"",price:"",sole_type:"EVA"});
   const [missingBom,setMissingBom]=useState("");
+  const [deleteCandidate,setDeleteCandidate]=useState("");
   const arts=Object.keys(INPUTS.articles);
 
   useEffect(()=>{ api.getCatalogue().then(setCat).catch(e=>setErr(e.message||String(e))); },[]);
@@ -105,6 +106,21 @@ export default function CatalogueTab({onChanged,onAddBom}){
     finally{setBusy("");}
   }
 
+  async function deleteCatalogueItem(code){
+    setBusy(`${code}:delete`);setErr("");setMsg("");
+    try{
+      await api.deleteCatalogue(code);
+      await reloadReference();
+      setCat(current=>{const next={...current};delete next[code];return next;});
+      setDeleteCandidate("");
+      if(missingBom===code) setMissingBom("");
+      setVersion(v=>v+1);
+      if(onChanged) onChanged();
+      setMsg(`${code} was removed from the catalogue. The change can be restored from Data & BOM history.`);
+    }catch(e){setErr(String(e.message||e));}
+    finally{setBusy("");}
+  }
+
   return <div>
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3">{err}</div>}
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
@@ -166,6 +182,20 @@ export default function CatalogueTab({onChanged,onAddBom}){
             {!combos.length&&<button onClick={()=>onAddBom&&onAddBom(code)}
               className="mt-2 w-full text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-2 py-1.5">
               Missing BOM — add now</button>}
+            {!combos.length&&(deleteCandidate===code
+              ? <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 p-2">
+                  <div className="text-xs text-rose-900">Delete <b>{code}</b>? It has no BOM, so its empty article record and catalogue details will both be removed.</div>
+                  <div className="flex gap-2 mt-2">
+                    <button type="button" disabled={busy===`${code}:delete`} onClick={()=>deleteCatalogueItem(code)}
+                      className="text-xs font-semibold text-white bg-rose-700 rounded px-2 py-1 disabled:opacity-40">
+                      {busy===`${code}:delete`?"Deleting…":`Confirm delete ${code}`}</button>
+                    <button type="button" disabled={busy===`${code}:delete`} onClick={()=>setDeleteCandidate("")}
+                      className="text-xs font-semibold border border-slate-300 bg-white rounded px-2 py-1">Cancel</button>
+                  </div>
+                </div>
+              : <button type="button" onClick={()=>setDeleteCandidate(code)}
+                  className="mt-2 w-full text-xs font-semibold text-rose-700 border border-rose-200 bg-white rounded-lg px-2 py-1.5">
+                  Delete {code} from catalogue</button>)}
             <div className="mono text-xs text-slate-400 mt-1 truncate" title={combos.join(", ")}>{combos.join(", ")}</div>
             <input defaultValue={e.description||""} placeholder="Description"
               onBlur={ev=>saveField(code,{description:ev.target.value})}
@@ -186,7 +216,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
                 className="mt-0.5 w-full text-sm border border-slate-200 rounded-lg px-2 py-1.5 bg-white disabled:opacity-50">
                 <option value="">Choose machine</option><option value="ROTARY">PVC Rotary</option><option value="VERTICAL">PVC Vertical</option>
               </select></label>}
-            <details className="mt-3 border-t border-slate-100 pt-2">
+            {!!combos.length&&<details className="mt-3 border-t border-slate-100 pt-2">
               <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Edit MRP size by size</summary>
               <div className="text-[10px] text-slate-500 mt-1">Every size is saved separately. The grey hint is its current price.</div>
               <div className="grid grid-cols-3 gap-2 mt-2" key={`${code}:${version}`}>
@@ -206,7 +236,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
                   onClick={()=>setMrpEdits(all=>{const next={...all};delete next[code];return next;})}
                   className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-1.5 disabled:opacity-40">Discard</button>
               </div>
-            </details>
+            </details>}
           </div>
         </div>;})}
     </div>

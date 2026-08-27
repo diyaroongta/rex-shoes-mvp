@@ -61,10 +61,38 @@ export default wrap(async (req, res) => {
   }
 
   if(req.method === "DELETE"){
-    const { article_code } = req.query;
+    const { article_code } = req.query || {};
     if(!article_code) return fail(res, 400, "article_code is required");
-    await q("delete from catalogue where article_code = $1", [article_code]);
-    return res.status(200).json({ deleted: article_code });
+    const client=await db().connect();
+    try{
+      await client.query("begin");
+      const {rows}=await client.query("select value from reference_data where id=1 for update");
+      const ref=JSON.parse(JSON.stringify(rows.length?rows[0].value:INPUTS));
+      const canonical=existingArticleCode(ref.articles,article_code);
+      if(!canonical){await client.query("rollback");return fail(res,404,`unknown article: ${article_code}`);}
+      const definition=ref.articles[canonical]||{};
+      const ranges=definition.combo_order||Object.keys(definition.combos||{});
+      if(ranges.length){
+        await client.query("rollback");
+        return fail(res,409,`${canonical} already has a BOM. Remove individual BOM items in Packing & BOM rules; a complete article cannot be deleted from Catalogue.`);
+      }
+
+      const catalogueBefore=await client.query(
+        "select article_code, image, description, price from catalogue order by article_code for update");
+      const before=JSON.stringify({reference:ref,catalogue:catalogueBefore.rows});
+      delete ref.articles[canonical];
+      if(ref.packing) delete ref.packing[canonical];
+      if(ref.packing_singles_exact) delete ref.packing_singles_exact[canonical];
+      if(ref.mrp) delete ref.mrp[canonical];
+      await client.query("delete from catalogue where article_code = $1",[canonical]);
+      await client.query(`insert into reference_data (id, value) values (1, $1)
+                          on conflict (id) do update set value=$1, updated_at=now()`,[JSON.stringify(ref)]);
+      await client.query(`insert into reference_data_history (change_type, article_code, value)
+                          values ('catalogue-item-delete',$1,$2)`,[canonical,before]);
+      await client.query("commit");
+      return res.status(200).json({deleted:canonical,removed_article:true});
+    }catch(e){try{await client.query("rollback");}catch(_){ }throw e;}
+    finally{client.release();}
   }
 
   return fail(res, 405, `${req.method} not allowed`);

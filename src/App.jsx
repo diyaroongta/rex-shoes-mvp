@@ -1026,28 +1026,38 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     </div>
                   )}
                 </div>
-                <input type="number" min="0" value={l.cartons}
+                <input type="number" min="0" value={l.cartons} disabled={!!l.sizes}
                   aria-label={`${c.article} ${l.combo||l.single||k} cartons`}
                   onChange={e=>setLine(i,k,{cartons:e.target.value===""?0:Number(e.target.value)})}
-                  className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
+                  title={l.sizes?"Total cartons are calculated from the per-size carton entries below":""}
+                  className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full disabled:bg-slate-50 disabled:text-slate-500"/>
                 <input type="number" min="1" value={l.ppc}
                   aria-label={`${c.article} ${l.combo||l.single||k} pairs per carton`}
-                  onChange={e=>setLine(i,k,{ppc:e.target.value===""?"":Number(e.target.value)})}
+                  onChange={e=>{
+                    const nextPpc=e.target.value===""?"":Number(e.target.value);
+                    if(!l.sizes||!Number(l.ppc)||!Number(nextPpc)){setLine(i,k,{ppc:nextPpc});return;}
+                    const nextSizes=Object.fromEntries(Object.entries(l.sizes)
+                      .map(([size,pairs])=>[size,+(Number(pairs)/Number(l.ppc)*Number(nextPpc)).toFixed(4)]));
+                    setLine(i,k,{ppc:nextPpc,sizes:nextSizes,
+                      qty:Object.values(nextSizes).reduce((sum,pairs)=>sum+Number(pairs||0),0)});
+                  }}
                   className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
                 <div className="mono text-sm text-right font-semibold">{fmt((Number(l.cartons)||0)*(Number(l.ppc)||0))}</div>
                 <button onClick={()=>delLine(i,k)} className="text-rose-500 text-lg leading-none">−</button>
                 {l.sizes && <div className="col-span-full flex gap-2 flex-wrap rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5">
-                  <span className="text-xs text-slate-500 self-center">Exact sizes from the order:</span>
-                  {Object.entries(l.sizes).map(([size,qty])=><label key={size} className="text-xs text-slate-500">
-                    <span className="mono">{size}</span>
-                    <input type="number" min="0" value={qty} aria-label={`${c.article} size ${size} pairs`}
+                  <span className="text-xs text-slate-500 self-center">Cartons and calculated pairs by size:</span>
+                  {Object.entries(l.sizes).map(([size,qty])=>{const sizeCartons=Number(l.ppc)?+(Number(qty)/Number(l.ppc)).toFixed(4):0;return <label key={size} className="text-xs text-slate-500">
+                    <span className="mono">Size {size}</span>
+                    <input type="number" min="0" step="any" value={sizeCartons} aria-label={`${c.article} size ${size} cartons`}
                       onChange={e=>{
-                        const next={...l.sizes,[size]:Math.max(0,Number(e.target.value)||0)};
+                        const cartons=Math.max(0,Number(e.target.value)||0);
+                        const next={...l.sizes,[size]:Number(l.ppc)?cartons*Number(l.ppc):0};
                         const pairs=Object.values(next).reduce((a,b)=>a+(Number(b)||0),0);
                         setLine(i,k,{sizes:next,qty:pairs,cartons:l.ppc?+(pairs/Number(l.ppc)).toFixed(4):l.cartons});
                       }}
                       className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-0.5 mono bg-white" />
-                  </label>)}
+                    <span className="mono block mt-0.5" style={{fontSize:9}}>{sizeCartons} ctn × {l.ppc||0} = <b>{fmt(qty)} pairs</b></span>
+                  </label>})}
                 </div>}
               </div>))}
             <button onClick={()=>addLine(i)} className="text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-md px-2.5 py-1.5 mt-1">+ Add combo</button>

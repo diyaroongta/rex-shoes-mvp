@@ -239,6 +239,39 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
+  it("deletes only a catalogue-only article and records a restorable snapshot",async()=>{
+    const ref={articles:{EMPTY:{combo_order:[],combos:{},sole_type:"EVA"}},materials:{}};
+    const client={query:vi.fn(async sql=>{
+      const text=String(sql);
+      if(text.includes("select value from reference_data")) return {rows:[{value:ref}]};
+      if(text.includes("select article_code, image, description, price from catalogue order"))
+        return {rows:[{article_code:"EMPTY",description:"Mistake",image:null,price:null}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await catalogueHandler({method:"DELETE",url:"/api/catalogue?article_code=EMPTY",query:{article_code:"EMPTY"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({deleted:"EMPTY",removed_article:true});
+    const referenceWrite=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    expect(JSON.parse(referenceWrite[1][0]).articles.EMPTY).toBeUndefined();
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("catalogue-item-delete"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
+  it("blocks deleting a catalogue article that already has a BOM",async()=>{
+    const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{}};
+    const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")
+      ?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await catalogueHandler({method:"DELETE",url:"/api/catalogue?article_code=CUSTOM",query:{article_code:"CUSTOM"}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/already has a BOM/);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("delete from catalogue"))).toBe(false);
+  });
+
   it("stores validated packing edits in shared reference data",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{},packing:{}};
     const client={query:vi.fn(async sql=>{

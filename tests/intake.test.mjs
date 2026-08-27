@@ -63,7 +63,9 @@ assert.ok(pi.lines.some(l=>l.size==="13s") && pi.lines.some(l=>l.size==="11"),
 const ambiguous=buildPhotoCards({orders:[{category:"Spike",lines:[{sizes:["11"],cartons:1}]}]},INPUTS);
 assert.deepEqual(Object.keys(ambiguous.cards[0].lines[0].sizes),["11s"],
   "an unmarked opening size is Small; it is not misread as Lace");
-assert.ok(readPrompt().includes("L always means Large here; NEVER interpret L as Lace"));
+assert.ok(readPrompt().includes("A free-standing L, or L beside a size, always means Large"));
+assert.ok(readPrompt().includes("LEGACY ARTICLE-CODE EXCEPTION"),
+  "an official catalogue suffix such as REX GOLA (L) remains the legacy Lace article");
 
 /* THE TWO FAMILIES BEHAVE OPPOSITELY, and the intake has to get both right.
 

@@ -172,8 +172,11 @@ export default function DataTab({ onChanged }){
         <div className="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">Workbook validated</div>
       </div>
 
-      {!!masterPreview.replacements.length&&<div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
-        <div className="text-xs font-semibold text-slate-800 mb-2">How should existing BOMs be changed?</div>
+      {!!masterPreview.replacements.length&&<details className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+        <summary className="text-xs font-semibold text-slate-700 cursor-pointer">Advanced: replace a complete existing BOM</summary>
+        <div className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5 mt-2 mb-2">
+          Safe update is selected. Existing database rows not included in this workbook will be kept.
+        </div>
         <div className="grid gap-2 sm:grid-cols-2">
           <label className={`rounded-lg border p-3 cursor-pointer ${bomMode==="merge"?"border-emerald-400 bg-emerald-50":"border-slate-200"}`}>
             <div className="flex gap-2 items-start"><input type="radio" name="bom-mode" value="merge" checked={bomMode==="merge"}
@@ -188,7 +191,7 @@ export default function DataTab({ onChanged }){
                 <div className="text-[11px] text-slate-600 mt-0.5">The uploaded BOM becomes the whole BOM. Existing rows not in Excel are deleted after confirmation.</div></div></div>
           </label>
         </div>
-      </div>}
+      </details>}
 
       <div className="grid gap-3 mt-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))"}}>
         {masterArticles.map(article=>{
@@ -209,8 +212,25 @@ export default function DataTab({ onChanged }){
             <div className="flex items-start justify-between gap-2">
               <div className="text-sm font-semibold text-slate-900">{article}</div>
               <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${existing?"bg-amber-100 text-amber-900":"bg-emerald-100 text-emerald-900"}`}>
-                {existing?"Existing article — update":"New article — add"}</span>
+                {existing?"Will update":"Will add"}</span>
             </div>
+            <div className="mt-2 text-xs text-slate-700 leading-relaxed">
+              {review
+                ? existing
+                  ? <><b>{review.changed.length}</b> BOM rate{review.changed.length===1?"":"s"} will change{review.added.length?`, ${review.added.length} will be added`:""}. <b>No database rows will be deleted.</b></>
+                  : <>New article with <b>{review.uploadedRanges.length}</b> size range{review.uploadedRanges.length===1?"":"s"} and <b>{review.uploaded.size}</b> BOM rate{review.uploaded.size===1?"":"s"}.</>
+                : <>No BOM change.</>}
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              {Object.keys(comboPacking).length||Object.keys(singlePacking).length
+                ? `Packing: ${Object.keys(comboPacking).length} range rule(s) + ${Object.keys(singlePacking).length} individual-size rule(s).`
+                : source!==article?`Packing: uses ${source}.`:"No packing change."}
+              {catalogue?` Catalogue: ${catalogue.sole_type||catalogue.description||"details updated"}.`:""}
+            </div>
+
+            <details className="mt-3 border-t border-slate-100 pt-2">
+              <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Review details</summary>
+              <div className="mt-2">
             {review?<>
               <div className="grid grid-cols-3 gap-1.5 mt-3 text-center">
                 <div className="rounded-lg bg-slate-50 p-2"><div className="text-[10px] text-slate-500">Current BOM</div><div className="text-xs font-semibold">{review.currentRanges.length} ranges · {review.before.size} rates</div></div>
@@ -256,21 +276,23 @@ export default function DataTab({ onChanged }){
                 .filter(Boolean).join(" · ")||"Update details":"No catalogue change"}
             </div>
             {!!mrpCombos.length&&<div className="border-t border-slate-100 mt-3 pt-2">
-              <div className="text-xs font-semibold text-slate-700 mb-1">Optional MRP by size or range</div>
+              <div className="text-xs font-semibold text-slate-700 mb-1">MRP values from workbook (optional)</div>
               <div className="grid grid-cols-2 gap-1.5">{mrpCombos.map(combo=><label key={combo} className="text-[11px] text-slate-500">{combo.replace("::"," · size ")}
                 <input type="number" min={0} value={(masterPreview.mrp[article]||{})[combo]??""}
                   placeholder={(INPUTS.mrp?.[existing||article]||{})[combo]??"Leave unchanged"}
                   onChange={e=>editMrp(article,combo,e.target.value)}
                   className="block mt-0.5 w-full text-xs border border-slate-200 rounded px-1.5 py-1 mono" /></label>)}</div>
             </div>}
+              </div>
+            </details>
           </div>;
         })}
       </div>
 
-      {!!masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).length&&<div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mt-3">
-        <div className="font-semibold mb-1">Workbook information / automatic corrections</div>
-        {masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).map((warning,i)=><div key={i}>• {warning}</div>)}
-      </div>}
+      {!!masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).length&&<details className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mt-3">
+        <summary className="font-semibold cursor-pointer">View {masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).length} automatic correction{masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).length===1?"":"s"}</summary>
+        <div className="mt-2">{masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).map((warning,i)=><div key={i}>• {warning}</div>)}</div>
+      </details>}
       {!!masterPreview.warnings.filter(w=>/treated .+ as /i.test(w)).length&&<div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mt-3">
         <div className="font-semibold mb-1">Article-name mapping requires review</div>
         {masterPreview.warnings.filter(w=>/treated .+ as /i.test(w)).map((warning,i)=><div key={i}>⚠ {warning}</div>)}
@@ -315,7 +337,7 @@ export default function DataTab({ onChanged }){
           className={`text-xs font-semibold px-4 py-2 rounded-lg text-white disabled:opacity-40 ${bomMode==="replace"?"bg-rose-700":"bg-indigo-600"}`}>
           {busy?"Saving everything…":bomMode==="replace"&&masterPreview.replacements.length
             ?`Replace ${masterPreview.replacements.join(", ")} BOM and save`
-            :"Update listed rows and save"}</button>
+            :`Save ${masterArticles.length} article${masterArticles.length===1?"":"s"}`}</button>
         <button disabled={busy} onClick={()=>{setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);setMappingConfirm(false);}}
           className="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-300 bg-white">Cancel</button>
       </div>

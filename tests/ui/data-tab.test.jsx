@@ -45,11 +45,14 @@ it("shows before-versus-after and blocks complete replacement until confirmed",a
   const inputs=container.querySelectorAll('input[type="file"]');
   fireEvent.change(inputs[0],{target:{files:[file]}});
   expect(await screen.findByText("Review changes before saving")).toBeInTheDocument();
-  expect(screen.getByText("Existing article — update")).toBeInTheDocument();
+  expect(screen.getByText("Will update")).toBeInTheDocument();
+  expect(screen.getByText(/No database rows will be deleted/)).toBeInTheDocument();
+  await userEvent.click(screen.getByText("Review details"));
   expect(screen.getByText("Current BOM")).toBeInTheDocument();
   expect(screen.getByText("Uploaded BOM")).toBeInTheDocument();
   expect(screen.getByText("Result after save")).toBeInTheDocument();
-  expect(screen.getByRole("button",{name:"Update listed rows and save"})).toBeEnabled();
+  expect(screen.getByRole("button",{name:"Save 1 article"})).toBeEnabled();
+  await userEvent.click(screen.getByText("Advanced: replace a complete existing BOM"));
   await userEvent.click(screen.getByRole("radio",{name:/Replace the complete BOM/}));
   const save=screen.getByRole("button",{name:"Replace CUSTOM BOM and save"});
   expect(save).toBeDisabled();
@@ -73,9 +76,9 @@ it("downloads the supported template and discards a master preview without savin
   const {container}=render(<DataTab/>);
   expect(screen.getByRole("link",{name:"Download upload template"})).toHaveAttribute("href","/Factory_OS_Reference_Upload_Template.xlsx");
   fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
-  expect(await screen.findByText("New article — add")).toBeInTheDocument();
+  expect(await screen.findByText("Will add")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button",{name:"Cancel"}));
-  expect(screen.queryByText("New article — add")).not.toBeInTheDocument();
+  expect(screen.queryByText("Will add")).not.toBeInTheDocument();
   expect(apiMocks.uploadBom).not.toHaveBeenCalled();
 });
 
@@ -138,7 +141,7 @@ it("allows optional MRP edits in the preview and has no stock editor",async()=>{
   fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
   const mrp=await screen.findByLabelText("1X2");
   fireEvent.change(mrp,{target:{value:"650"}});
-  await userEvent.click(screen.getByRole("button",{name:"Update listed rows and save"}));
+  await userEvent.click(screen.getByRole("button",{name:"Save 1 article"}));
   await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalledWith(expect.objectContaining({
     batch:expect.objectContaining({mrp:{NEW:{"1X2":650}}}),bom_mode:"merge",
   })));

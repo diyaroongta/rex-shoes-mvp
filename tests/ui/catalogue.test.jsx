@@ -3,10 +3,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const apiMocks=vi.hoisted(()=>({getCatalogue:vi.fn(),putCatalogue:vi.fn(),patchReference:vi.fn()}));
+const apiMocks=vi.hoisted(()=>({getCatalogue:vi.fn(),putCatalogue:vi.fn(),patchReference:vi.fn(),deleteCatalogue:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>apiMocks);
 vi.mock("../../src/lib/refdata.js",()=>({
-  REF:{articles:{CUSTOM:{sole_type:"EVA",combo_order:["1X2"],combos:{"1X2":{}}}},mrp:{CUSTOM:{"1X2":699}}},
+  REF:{articles:{CUSTOM:{sole_type:"EVA",combo_order:["1X2"],combos:{"1X2":{}}},EMPTY:{sole_type:"EVA",combo_order:[],combos:{}}},mrp:{CUSTOM:{"1X2":699}}},
   reload:vi.fn(async()=>{}),
 }));
 vi.mock("../../shared/catalogue-seed.js",()=>({articlePhoto:()=>null}));
@@ -18,6 +18,18 @@ beforeEach(()=>{
   apiMocks.getCatalogue.mockResolvedValue({});
   apiMocks.putCatalogue.mockResolvedValue({article_code:"THUNDER 27",created_without_bom:true,missing_bom:true});
   apiMocks.patchReference.mockResolvedValue({ok:true});
+  apiMocks.deleteCatalogue.mockResolvedValue({deleted:"EMPTY",removed_article:true});
+});
+
+it("deletes a catalogue-only item after an explicit confirmation",async()=>{
+  const onChanged=vi.fn();
+  render(<CatalogueTab onChanged={onChanged}/>);
+  expect(screen.queryByRole("button",{name:/Delete CUSTOM/})).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button",{name:"Delete EMPTY from catalogue"}));
+  await userEvent.click(screen.getByRole("button",{name:"Confirm delete EMPTY"}));
+  await waitFor(()=>expect(apiMocks.deleteCatalogue).toHaveBeenCalledWith("EMPTY"));
+  expect(await screen.findByText(/EMPTY was removed from the catalogue/)).toBeInTheDocument();
+  expect(onChanged).toHaveBeenCalled();
 });
 
 it("edits MRP only size by size, without exposing a range-price editor",async()=>{
