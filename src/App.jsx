@@ -39,6 +39,8 @@ export default function App(){
 
   const [loadErr, setLoadErr] = useState("");
   const [flash, setFlash] = useState("");   // survives the tab jump after a save
+  const [syncedAt, setSyncedAt] = useState(null);
+  const [syncFailed, setSyncFailed] = useState(false);
   const [refTick, setRefTick] = useState(0);   // bumped when reference data is re-uploaded
   const [catalogueTick, setCatalogueTick] = useState(0);
   const [targets, setTargets] = useState(null);
@@ -63,8 +65,10 @@ export default function App(){
   // appears without requiring a full browser reload.
   useEffect(()=>{
     const timer=setInterval(()=>{
-      api.listOrders().then(setOrders).catch(()=>{});
-      api.listDispatches().then(rows=>{setDispatches(rows);setDispatchErr("");}).catch(()=>{});
+      Promise.all([api.listOrders(), api.listDispatches()])
+        .then(([o,d])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
+                         setSyncedAt(new Date()); setSyncFailed(false); })
+        .catch(()=>setSyncFailed(true));   // shown in the header, not as a banner every minute
     },60000);
     return ()=>clearInterval(timer);
   },[]);
@@ -91,7 +95,8 @@ export default function App(){
   };
   const removeOrder = async no =>{
     setOrders(os=>os.filter(o=>o.order_no!==no));                       // optimistic
-    try{ await api.deleteOrder(no); }catch(e){ setLoadErr(e.message||String(e)); }
+    try{ await api.deleteOrder(no); setFlash(`${no} removed from the schedule.`); }
+    catch(e){ setLoadErr(e.message||String(e)); }
     refresh();
   };
   const editOrder = async (no, patch) => {
@@ -119,7 +124,10 @@ export default function App(){
   };
   const clearAll = async ()=>{
     if(!window.confirm(`Remove all ${(orders||[]).length} live orders? PI snapshots remain in the PI database, but the production schedule will be emptied.`)) return;
-    try{ await api.deleteAllOrders(); }catch(e){ setLoadErr(e.message||String(e)); }
+    const count=(orders||[]).length;
+    try{ await api.deleteAllOrders();
+         setFlash(`${count} order${count===1?"":"s"} cleared. The PI snapshots remain in the PI database.`); }
+    catch(e){ setLoadErr(e.message||String(e)); }
     refresh();
   };
 
@@ -127,7 +135,10 @@ export default function App(){
   const capsLoaded = useRef(false);
   useEffect(()=>{
     if(!capsLoaded.current){ capsLoaded.current = true; return; }   // skip the initial hydrate
-    const t=setTimeout(()=>{ api.putSettings({capacities:caps}).catch(()=>{}); }, 600);
+    const t=setTimeout(()=>{ api.putSettings({capacities:caps})
+      .then(()=>setFlash("Machine capacities saved — the whole plan has been recalculated."))
+      .catch(e=>setLoadErr(`Could not save the capacity change: ${e.message||e}. The figure on screen is not stored.`));
+    }, 600);
     return ()=>clearTimeout(t);
   },[caps]);
 
@@ -228,9 +239,14 @@ export default function App(){
     ]],
   ];
 
-  const errBanner = loadErr ? <div className="text-xs rounded-xl border border-red-200 bg-red-50 text-red-800 px-3 py-2 mb-3">
-    Could not reach the server: {loadErr}. Check that <code className="mono">DATABASE_URL</code> is set and the schema has been applied.
-  </div> : null;
+  const errBanner = loadErr ? (
+    <div style={{margin:"14px 22px 0"}}
+         className="text-xs rounded-xl border border-red-200 bg-red-50 text-red-800 px-3 py-2 flex items-start gap-2">
+      <span>{loadErr}</span>
+      <button onClick={()=>setLoadErr("")} aria-label="Dismiss"
+        style={{marginLeft:"auto",border:"none",background:"transparent",color:"#B91C1C",cursor:"pointer",fontSize:15,lineHeight:1}}>×</button>
+    </div>
+  ) : null;
   return (
     <div className="min-h-screen w-full" style={{background:"var(--paper)",color:"var(--text)",fontFamily:"Inter,system-ui,sans-serif"}}>
       <style>{`
@@ -276,6 +292,16 @@ export default function App(){
             <div className="mono" style={{color:"#4A6076",fontSize:9,marginTop:3}}
                  title="Build currently running. Compare with the latest commit to confirm a deploy landed.">
               build {typeof __BUILD__==="undefined"?"dev":__BUILD__}
+            </div>
+            {/* The background refresh can fail forever without a word, leaving
+                the screen stale while it looks current. Say when it last
+                actually reached the server. */}
+            <div className="mono" style={{fontSize:9,marginTop:2,
+                 color:syncFailed?"#E08947":"#4A6076"}}
+                 title={syncFailed?"The last automatic refresh did not reach the server":"Last successful refresh"}>
+              {syncFailed ? "refresh failed — figures may be stale"
+                : syncedAt ? `synced ${syncedAt.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}`
+                : "synced on load"}
             </div>
           </div>
 
@@ -333,6 +359,8 @@ export default function App(){
             </div>
           </header>
 
+          {errBanner}
+
           {flash && (
             <div style={{margin:"14px 22px 0",padding:"10px 12px",borderRadius:8,fontSize:13,
                          background:"#ECFDF5",border:"1px solid #A7F3D0",color:"#065F46",
@@ -362,7 +390,12 @@ export default function App(){
         {tab==="orders" && <>
           <OrdersTab state={state} ledger={ledger} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
           <div className="flex gap-2 mt-3">
-            <button onClick={()=>downloadSheetCSV(orders)} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
+            <button onClick={()=>{
+                try{ downloadSheetCSV(orders);
+                     setFlash(`Order sheet downloaded — ${(orders||[]).length} order${(orders||[]).length===1?"":"s"}, saved as order_sheet.csv.`); }
+                catch(e){ setLoadErr(`Could not build the CSV: ${e.message||e}`); }
+              }}
+              className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
         {tab==="schedule" && <ScheduleTab state={state} />}
@@ -453,7 +486,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     .then(([v,partyRows])=>{ if(v.pi_terms) setPiTerms(v.pi_terms); if(v.pi_config) setPiConfig(v.pi_config);
                if(v.pi_terms && v.pi_terms.discount_pct!=null) setDiscountPct(v.pi_terms.discount_pct);
                setParties(partyRows||[]); })
-    .catch(()=>{}); },[]);
+    .catch(e=>setErr(`Could not load the commercial terms: ${e.message||e}. `
+      +`Check the discount on every article before issuing this PI — it may not be the agreed one.`));
+  },[]);
   const [piNo,setPiNo]=useState("");
   const [savedMsg,setSavedMsg]=useState("");
   const saveErrRef=useRef(null);
@@ -2243,6 +2278,7 @@ function MachinesTab({state,caps,setCaps,targets,setTargets}){
           <div className="text-sm font-semibold flex-none" style={{width:150}}>{wc.name}{wc.sole_type && <span className="mono text-xs text-slate-400 font-normal"> · {wc.sole_type}</span>}</div>
           <div className="flex items-center gap-1.5 flex-none">
             <input type="number" min="1" value={cap}
+              aria-label={`${wc.name} pairs per day`}
               onChange={e=>setCaps(c=>({...c,[code]:Math.max(1,Math.round(+e.target.value)||1)}))}
               className="mono text-xs border border-slate-200 rounded-lg px-2 py-1 text-right" style={{width:76}}/>
             <span className="mono text-xs text-slate-400">pairs/day</span>

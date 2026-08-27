@@ -7,7 +7,7 @@ const mocks=vi.hoisted(()=>({
   listOrders:vi.fn(),getSettings:vi.fn(),putSettings:vi.fn(),listPis:vi.fn(),listDispatches:vi.fn(),
   getReference:vi.fn(),getCatalogue:vi.fn(),listParties:vi.fn(),
   createOrders:vi.fn(),patchReference:vi.fn(),saveParty:vi.fn(),
-  schedulePi:vi.fn(),patchOrder:vi.fn(),
+  schedulePi:vi.fn(),patchOrder:vi.fn(),deleteAllOrders:vi.fn(),
   listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),
@@ -15,7 +15,7 @@ const mocks=vi.hoisted(()=>({
 
 vi.mock("../../src/lib/client.js",()=>({
   ...mocks,
-  setPriority:vi.fn(),deleteOrder:vi.fn(),deleteAllOrders:vi.fn(),patchOrder:mocks.patchOrder,
+  setPriority:vi.fn(),deleteOrder:vi.fn(),deleteAllOrders:mocks.deleteAllOrders,patchOrder:mocks.patchOrder,
   schedulePi:mocks.schedulePi,listDispatches:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
   readOrderPhoto:vi.fn(),readPi:vi.fn(),askCopilot:vi.fn(),
@@ -517,5 +517,33 @@ describe("live orders exclude completed work",()=>{
     render(<App/>);
     await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
     expect(await screen.findByText("Live orders · 2")).toBeInTheDocument();
+  });
+});
+
+/* A control that changes data and says nothing is indistinguishable from one
+   that failed. These are the handlers that were silent. */
+describe("actions report what they did",()=>{
+  it("confirms clearing all orders instead of just emptying the screen",async()=>{
+    mocks.listOrders.mockResolvedValue([
+      {order_no:"JO1",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"A",
+       lines:[{combo:"7X10S",qty:24}],pi:{},version:1}]);
+    mocks.deleteAllOrders.mockResolvedValue({});
+    vi.spyOn(window,"confirm").mockReturnValue(true);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+    await user.click(screen.getByRole("button",{name:"Clear all orders"}));
+    expect(await screen.findByText(/1 order cleared/)).toBeInTheDocument();
+    expect(screen.getByText(/PI snapshots remain/)).toBeInTheDocument();
+  });
+
+  it("surfaces a failed capacity save rather than swallowing it",async()=>{
+    mocks.putSettings.mockRejectedValue(new Error("500 — Server error"));
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Machine load"}));
+    const cap=(await screen.findAllByLabelText(/pairs per day/i))[0];
+    await user.clear(cap); await user.type(cap,"999");
+    expect(await screen.findByText(/is not stored/,{},{timeout:3000})).toBeInTheDocument();
   });
 });

@@ -84,7 +84,10 @@ export default function BulkOrderTab({ onImported }){
     </p>
 
     <div className="flex gap-3 items-center flex-wrap mb-4">
-      <button onClick={downloadTemplate}
+      <button onClick={()=>{
+          try{ downloadTemplate(); setMsg("Blank template downloaded as factory-os-order-template.xlsx."); }
+          catch(e){ setErr(`Could not build the template: ${e.message||e}`); }
+        }}
         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">
         Download blank template
       </button>
