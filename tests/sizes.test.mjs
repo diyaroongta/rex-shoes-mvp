@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { sizeCatalog, resolveSize, addSizeToLines } from "../shared/sizes.js";
 import { comboSizes } from "../shared/pi.js";
-import { singlePackQty, singlePackingRule, pairsPerCarton, packingRuleSource, matchArticle, setReference } from "../shared/bridge.js";
+import { singlePackQty, singlePackingRule, pairsPerCarton, packingRuleSource, matchArticle, setReference, comboSizesForArticleIn } from "../shared/bridge.js";
 import { INPUTS } from "../shared/inputs.js";
 
 let passed = 0, failed = 0;
@@ -18,6 +18,13 @@ test("a range ending in S is the small run, not an empty range", () => {
   // 7X10S used to explode to nothing, hiding the whole range.
   assert.deepEqual(comboSizes("7X10S"), ["7s","8s","9s","10s"]);
   assert.deepEqual(comboSizes("7X10S"), comboSizes("7X10"));
+});
+test("a new article's ordered ranges advance from Small to Large without a hard-coded name", () => {
+  const ref={articles:{GLAMOUR:{combo_order:["7X10","11X1","2X5","6X7","8X12"],combos:{}}}};
+  assert.deepEqual(comboSizesForArticleIn(ref,"GLAMOUR","7X10"),["7s","8s","9s","10s"]);
+  assert.deepEqual(comboSizesForArticleIn(ref,"GLAMOUR","11X1"),["11s","12s","13s","1"]);
+  assert.deepEqual(comboSizesForArticleIn(ref,"GLAMOUR","6X7"),["6","7"]);
+  assert.deepEqual(comboSizesForArticleIn(ref,"GLAMOUR","8X12"),["8","9","10","11","12"]);
 });
 
 console.log("\nA2 — a plain name must not match a longer article name");

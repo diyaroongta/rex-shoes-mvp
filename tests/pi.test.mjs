@@ -99,6 +99,17 @@ test("an unpriced size range is reported and excluded from money", () => {
   }
 });
 
+test("an individual-size MRP overrides the range without changing its neighbours", () => {
+  const pi=buildPI({article_code:"GLAMOUR",lines:[{
+    combo:"7X10",qty:40,size_order:["7S","8S","9S","10S"],
+    sizes:{"7S":10,"8S":10,"9S":10,"10S":10},
+  }]},{},{"7X10":900,"7S":950},{...DEFAULT_TERMS,discount_pct:0});
+  assert.deepEqual(pi.lines.map(l=>[l.size,l.mrp]),[
+    ["7S",950],["8S",900],["9S",900],["10S",900],
+  ]);
+  assert.deepEqual(pi.missing,[]);
+});
+
 console.log("\nH — multi-article invoices");
 test("each article prices from its OWN mrp and keeps its OWN image", () => {
   const pi = buildPI({

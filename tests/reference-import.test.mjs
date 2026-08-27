@@ -60,6 +60,62 @@ assert.deepEqual(sizeAware.packing,{THUNDER:{"7X10":24,"11X1":18}});
 assert.deepEqual(sizeAware.packingSingles,{THUNDER:{"7S":24,"8S":24}});
 assert.deepEqual(sizeAware.mrp,{THUNDER:{"7X10":899,"11X1":949}});
 assert.deepEqual(Object.keys(sizeAware.catalogue),["THUNDER"],"range prices remain one catalogue article");
+assert.ok(sizeAware.warnings.some(w=>/THUNDER 7X10: Size Run was blank and was read as Small/.test(w)),
+  "an ambiguous bare BOM range must explain its fallback instead of silently guessing");
+
+/* Regression fixture copied from the client's GLAMOUR screenshots. The same
+   numerals occur once in the Small run and again in the Large run. This used
+   to reject every Catalogue row and produced duplicate Packing errors because
+   validation compared individual sizes only with range labels. */
+const glamourRanges=["7X10","11X1","2X5","6X7","8X12"];
+const screenshotSizes=["7S","8S","9S","10S","11S","12S","13","1","2","3","4","5","6","7","8","9","10","11","12"];
+const screenshotUpload=parseReferenceWorkbook([
+  {name:"BOM",rows:[BOM_HEAD,...glamourRanges.map((range,i)=>
+    ["GLAMOUR","PVC",range,"CUTTING",`MESH ${i+1}`,"MTR",0.5+i/10])]},
+  {name:"Packing",rows:[["Article Code","Size Range","Pairs per Carton"],
+    ...screenshotSizes.map(size=>["GLAMOUR",size,24]),
+    ["GLAMOUR","7S",24], ["GLAMOUR","8S",24]]},
+  {name:"Catalogue",rows:[["Article Code","Size Range","Description","MRP per Pair","Sole Type"],
+    ...screenshotSizes.map((size,i)=>["GLAMOUR",size,"Glamour shoe",900+i,"PVC"])]},
+]);
+assert.deepEqual(screenshotUpload.errors,[],screenshotUpload.errors.join(" | "));
+assert.deepEqual(screenshotUpload.boms[0].combo_order,glamourRanges);
+assert.deepEqual(new Set(Object.keys(screenshotUpload.packingSingles.GLAMOUR)),new Set(
+  ["7S","8S","9S","10S","11S","12S","13S","1","2","3","4","5","6","7","8","9","10","11","12"]));
+assert.equal(screenshotUpload.mrp.GLAMOUR["7S"],900);
+assert.equal(screenshotUpload.mrp.GLAMOUR["7"],913,"bare 7 is the Large size once the article has both runs");
+assert.ok(screenshotUpload.warnings.some(w=>w.includes("repeated identical packing rule")));
+
+const explicitAndScoped=parseReferenceWorkbook([
+  {name:"BOM",rows:[[...BOM_HEAD,"Size Run"],
+    ["GLAMOUR","PVC","7-10","CUTTING","SMALL MESH","MTR",0.5,"Small"],
+    ["GLAMOUR","PVC","7/10L","CUTTING","LARGE MESH","MTR",0.7,"Large"]]},
+  {name:"Packing",rows:[["Article Code","Size Range","Pairs per Carton","BOM Range"],
+    ["GLAMOUR","7S",24,"7X10"],["GLAMOUR","7L",18,"7X10L"]]},
+  {name:"Catalogue",rows:[["Article Code","Size Range","MRP per Pair","Sole Type","BOM Range"],
+    ["GLAMOUR","7S",900,"PVC","7X10"],["GLAMOUR","7L",950,"PVC","7X10L"]]},
+]);
+assert.deepEqual(explicitAndScoped.errors,[],explicitAndScoped.errors.join(" | "));
+assert.deepEqual(explicitAndScoped.boms[0].combo_order,["7X10","7X10L"],"hyphen and slash range notation is normalised");
+assert.equal(explicitAndScoped.boms[0].combos["7X10"].size_run,"SMALL");
+assert.equal(explicitAndScoped.boms[0].combos["7X10L"].size_run,"LARGE");
+assert.deepEqual(explicitAndScoped.packingSingles.GLAMOUR,{"7X10::7S":24,"7X10L::7":18});
+assert.deepEqual(explicitAndScoped.mrp.GLAMOUR,{"7X10::7S":900,"7X10L::7":950});
+
+const duplicateHeaders=parseReferenceWorkbook([{name:"Packing",rows:[
+  ["Article Code","Size Range","Pairs per Carton","PPC"],
+  ["SPIKE","7X10S",24,18],
+]}],INPUTS);
+assert.ok(duplicateHeaders.errors.some(e=>e.includes("duplicate column")&&e.includes("pairspercarton")),
+  "two columns meaning the same thing must be rejected instead of reading whichever comes first");
+
+const conflictingPacking=parseReferenceWorkbook([
+  {name:"BOM",rows:[BOM_HEAD,["GLAMOUR","PVC","7X10","CUTTING","MESH","MTR",0.5]]},
+  {name:"Packing",rows:[["Article Code","Size Range","Pairs per Carton"],
+    ["GLAMOUR","7S",24],["GLAMOUR","7S",18]]},
+]);
+assert.ok(conflictingPacking.errors.some(e=>e.includes("conflicting packing rule")),
+  "same size with different carton quantities must still stop the save");
 
 const duplicateCatalogue = parseReferenceWorkbook([
   { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5]] },
@@ -67,7 +123,7 @@ const duplicateCatalogue = parseReferenceWorkbook([
     ["THUNDER","A",899,"EVA"],["THUNDER","B",949,"EVA"],
   ]},
 ]);
-assert.ok(duplicateCatalogue.errors.some(e=>e.includes("add Size Range")),duplicateCatalogue.errors.join(" | "));
+assert.ok(duplicateCatalogue.errors.some(e=>e.includes("conflicts with the earlier THUNDER row")),duplicateCatalogue.errors.join(" | "));
 
 const renamedRange = parseReferenceWorkbook([
   { name:"BOM", rows:[BOM_HEAD,["THUNDER","EVA","7X10","CUTTING","MESH","MTR",0.5]] },

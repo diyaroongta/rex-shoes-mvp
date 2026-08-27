@@ -3,7 +3,7 @@ import { fail, wrap } from "./_lib/http.js";
 import { INPUTS } from "../shared/inputs.js";
 import { articleCode, existingArticleCode, mergeBom } from "../shared/bom-import.js";
 import { SOLE_TYPES, routingForSole } from "../shared/reference-edit.js";
-import { comboSizesForArticleIn } from "../shared/bridge.js";
+import { resolveArticleSizeIn, splitScopedSizeKey, scopedSizeKey } from "../shared/bridge.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -89,16 +89,21 @@ function applySinglePacking(ref, packingSingles,{allowDelete=false}={}){
   for(const [rawArticle,chart] of Object.entries(packingSingles||{})){
     const art=existingArticleCode(ref.articles,rawArticle);
     if(!art) reject(`unknown article in single-size Packing rows: ${rawArticle} — add its BOM first`);
-    const combos=ref.articles[art].combo_order||Object.keys(ref.articles[art].combos||{});
-    const allowed=new Set(combos.flatMap(c=>comboSizesForArticleIn(ref,art,c)).map(s=>String(s).toUpperCase()));
     const clean={};
     for(const [rawSize,ppc] of Object.entries(chart||{})){
-      const size=String(rawSize).toUpperCase();
-      if(!allowed.has(size)) reject(`Packing ${art} size ${size}: size is not inside that article's BOM ranges`);
-      if(allowDelete&&(ppc==null||ppc==="")){delete ref.packing_singles_exact[art]?.[size];continue;}
+      const scoped=splitScopedSizeKey(rawSize);
+      if(!scoped.valid) reject(`Packing ${art}: invalid range/size key ${rawSize}`);
+      const allowed=new Set(ref.articles[art].combo_order||Object.keys(ref.articles[art].combos||{}));
+      if(scoped.combo&&!allowed.has(scoped.combo)) reject(`Packing ${art}: BOM range ${scoped.combo} is not in that article's BOM`);
+      const resolved=resolveArticleSizeIn(ref,art,scoped.size);
+      if(resolved.ambiguous) reject(`Packing ${art} size ${rawSize}: ambiguous; write ${resolved.candidates.join(" or ")} exactly`);
+      const size=resolved.size;
+      if(!size) reject(`Packing ${art} size ${rawSize}: size is not inside that article's BOM ranges`);
+      const storageKey=scopedSizeKey(scoped.combo,size);
+      if(allowDelete&&(ppc==null||ppc==="")){delete ref.packing_singles_exact[art]?.[storageKey];continue;}
       const n=Number(ppc);
       if(!Number.isInteger(n)||n<1) reject(`pairs/carton for ${art} size ${size} must be a whole number of 1 or more`);
-      clean[size]=n;
+      clean[storageKey]=n;
     }
     ref.packing_singles_exact[art]={...(ref.packing_singles_exact[art]||{}),...clean};
     touched.push(art);
@@ -115,8 +120,14 @@ function applyMrp(ref,mrp){
     const allowed=new Set(ref.articles[art].combo_order||Object.keys(ref.articles[art].combos||{}));
     const clean={...(ref.mrp[art]||{})};
     for(const [rawCombo,value] of Object.entries(chart||{})){
-      const combo=String(rawCombo).toUpperCase().replace(/\s+/g,"");
-      if(!allowed.has(combo)) reject(`MRP ${art} ${combo}: size range is not in that article's BOM`);
+      const raw=String(rawCombo).toUpperCase().replace(/\s+/g,"");
+      const scoped=splitScopedSizeKey(raw);
+      if(!scoped.valid) reject(`MRP ${art}: invalid range/size key ${raw}`);
+      if(scoped.combo&&!allowed.has(scoped.combo)) reject(`MRP ${art}: BOM range ${scoped.combo} is not in that article's BOM`);
+      const resolved=allowed.has(raw)?{size:raw}:resolveArticleSizeIn(ref,art,scoped.size);
+      if(resolved.ambiguous) reject(`MRP ${art} ${raw}: ambiguous; write ${resolved.candidates.join(" or ")} exactly`);
+      const combo=resolved.size&&(scoped.combo?scopedSizeKey(scoped.combo,resolved.size):resolved.size);
+      if(!combo) reject(`MRP ${art} ${raw}: value is neither a size range nor an individual size in that article's BOM`);
       const n=Number(value);
       if(!Number.isFinite(n)||n<0) reject(`MRP for ${art} ${combo} must be 0 or more`);
       clean[combo]=n;
@@ -188,14 +199,15 @@ export default wrap(async (req, res) => {
           catalogue_total: result.catalogue });
       }
 
-      const {parsed,routing,batch,confirm_replace=false,confirm_remove_ranges=false}=req.body||{};
+      const {parsed,routing,batch,confirm_replace=false,confirm_remove_ranges=false,bom_mode="replace"}=req.body||{};
+      if(!["merge","replace"].includes(bom_mode)) return fail(res,400,"bom_mode must be merge or replace");
       const incoming=batch?.boms||(parsed?[parsed]:[]);
       if(!incoming.length&&!batch) return fail(res,400,"expected a parsed BOM or master workbook batch");
       const validated=incoming.map(validateBom);
       const label=validated.length===1?validated[0].parsed.article:null;
-      const result=await mutateReference(batch?"master-upload":"bom-upload",label,async(ref,client)=>{
+      const result=await mutateReference(batch?`master-upload-${bom_mode}`:`bom-upload-${bom_mode}`,label,async(ref,client)=>{
         const replacements=validated.map(x=>existingArticleCode(ref.articles,x.parsed.article)).filter(Boolean);
-        if(replacements.length&&!confirm_replace)
+        if(bom_mode==="replace"&&replacements.length&&!confirm_replace)
           reject(`This upload would replace existing BOMs: ${[...new Set(replacements)].join(", ")}. Confirm replacement and upload again.`,409);
 
         /* A BOM upload replaces an article's ranges outright. A file sent to
@@ -211,16 +223,25 @@ export default wrap(async (req, res) => {
           const gone=had.filter(c=>!item.parsed.combo_order.includes(c));
           if(gone.length) removing.push(`${code}: ${gone.join(", ")}`);
         }
-        if(removing.length&&!confirm_remove_ranges)
+        if(bom_mode==="replace"&&removing.length&&!confirm_remove_ranges)
           reject(`This upload also REMOVES size ranges that are loaded today — ${removing.join("; ")}. `
             +`Any order already placed on those ranges would lose its material rates. `
             +`Include every range for the article, or confirm the removal and upload again.`,409);
 
         let rates=0;const newMaterials=[];const articles=[];
         for(const item of validated){
-          const merged=mergeBom(ref,item.parsed,{routing});
+          const existing=existingArticleCode(ref.articles,item.parsed.article);
+          if(bom_mode==="merge"&&existing&&ref.articles[existing].sole_type&&ref.articles[existing].sole_type!==item.parsed.soleType)
+            reject(`${existing}: update mode cannot change Sole Type from ${ref.articles[existing].sole_type} to ${item.parsed.soleType}. Use complete replacement if that change is intentional.`);
+          const merged=mergeBom(ref,item.parsed,{routing,mode:bom_mode});
           Object.assign(ref,merged.reference);
           rates+=item.rates;newMaterials.push(...merged.newMaterials);articles.push(merged.article);
+        }
+        for(const [rawArticle,sizes] of Object.entries(batch?.individualSizes||{})){
+          const art=existingArticleCode(ref.articles,rawArticle);
+          if(!art) reject(`unknown article in individual sizes: ${rawArticle} — add its BOM first`);
+          const current=ref.articles[art].individual_sizes||[];
+          ref.articles[art].individual_sizes=[...new Set([...current,...(sizes||[]).map(String)])];
         }
         const packed=applyPacking(ref,batch?.packing||{});
         const packedSingles=applySinglePacking(ref,batch?.packingSingles||{});
@@ -288,7 +309,11 @@ export default wrap(async (req, res) => {
   if(req.method === "PATCH"){
     try{
     const body=req.body||{};
-    await mutateReference("reference-edit",null,async ref=>{
+    let removedBomItems=0;
+    const directChangeType=body.bom_remove?"bom-item-remove":"reference-edit";
+    const directChangeArticle=Array.isArray(body.bom_remove)&&body.bom_remove.length===1
+      ?articleCode(body.bom_remove[0]?.article):null;
+    await mutateReference(directChangeType,directChangeArticle,async ref=>{
     const { stock, packing, sole_type } = body;   // mrp handled below
     if(stock && typeof stock === "object"){
       for(const [key, v] of Object.entries(stock)){
@@ -303,6 +328,24 @@ export default wrap(async (req, res) => {
     }
     if(body.packing_singles && typeof body.packing_singles === "object"){
       applySinglePacking(ref,body.packing_singles,{allowDelete:true});
+    }
+    if(body.bom_remove!=null){
+      if(!Array.isArray(body.bom_remove)||!body.bom_remove.length) reject("bom_remove must contain at least one BOM item");
+      for(const item of body.bom_remove){
+        const art=existingArticleCode(ref.articles,item?.article);
+        if(!art) reject(`unknown BOM article: ${item?.article||"blank"}`);
+        const combo=String(item?.combo||"").toUpperCase().replace(/\s+/g,"");
+        const stage=String(item?.stage||"").toUpperCase();
+        const material=String(item?.material||"");
+        const rates=ref.articles[art]?.combos?.[combo]?.rates?.[stage];
+        if(!rates||!Object.prototype.hasOwnProperty.call(rates,material))
+          reject(`${art} ${combo}: BOM item ${stage} / ${material} was not found`);
+        delete rates[material];removedBomItems++;
+        if(!Object.keys(rates).length) delete ref.articles[art].combos[combo].rates[stage];
+        const remaining=Object.values(ref.articles[art].combos[combo].rates||{})
+          .reduce((n,entries)=>n+Object.keys(entries||{}).length,0);
+        if(!remaining) reject(`${art} ${combo}: cannot remove its last BOM item; replace or delete the complete size range instead`);
+      }
     }
     if(body.stock_meta && typeof body.stock_meta === "object"){
       ref.stock_meta = ref.stock_meta || {};
@@ -324,19 +367,7 @@ export default wrap(async (req, res) => {
           ref.materials[key].stock = (Number(md.opening)||0) + (Number(md.rec)||0) - (Number(md.issue)||0);
       }
     }
-    if(body.mrp && typeof body.mrp === "object"){
-      ref.mrp = ref.mrp || {};
-      for(const [art, chart] of Object.entries(body.mrp)){
-        if(!ref.articles[art]) reject(`unknown article: ${art}`);
-        const clean = { ...(ref.mrp[art] || {}) };
-        for(const [combo, v] of Object.entries(chart)){
-          const n = Number(v);
-          if(!Number.isFinite(n) || n < 0) reject(`MRP for ${art} ${combo} must be 0 or more`);
-          clean[combo] = n;
-        }
-        ref.mrp[art] = clean;
-      }
-    }
+    if(body.mrp && typeof body.mrp === "object") applyMrp(ref,body.mrp);
     /* Which PVC machine an article runs on. Factory knowledge — settable here
        rather than guessed, since an unassigned article silently defaults to
        rotary and makes that machine look like a bottleneck it may not be. */
@@ -362,7 +393,7 @@ export default wrap(async (req, res) => {
       }
     }
     });
-    return res.status(200).json({ ok:true });
+    return res.status(200).json({ ok:true, removed_bom_items:removedBomItems });
     }catch(e){if(e instanceof InputError)return fail(res,e.status,e.message);throw e;}
   }
 

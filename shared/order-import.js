@@ -1,4 +1,4 @@
-import { matchArticle, articleTypeCombos, articleTypes, comboSizesForArticle, pairsPerCarton } from "./bridge.js";
+import { matchArticle, articleTypeCombos, comboSizesForArticle, pairsPerCarton } from "./bridge.js";
 
 /* Bulk order import from a spreadsheet. Pure — no xlsx dependency, no I/O.
    Takes rows already read out of a sheet (array of arrays) and returns order
@@ -23,7 +23,7 @@ export const ORDER_TEMPLATE_HEADERS = [
 ];
 
 export const ORDER_WIDE_BASE_HEADERS = [
-  "PI No","Party","Order Date","Article","Priority","Order Nature","Print","V/L","Sole Colour","Upper Colour","Remarks",
+  "PI No","Party","Order Date","Article","Priority","Order Nature","Print","Closure (Lace/Velcro)","Dispatch Timeline","Sole Colour","Upper Colour","Remarks",
 ];
 
 /* The current template is deliberately wide: one article occupies one row and
@@ -51,7 +51,8 @@ const HEADER_ALIASES = {
   priority:"priority", prio:"priority",
   ordernature:"order_nature", nature:"order_nature",
   print:"printing", printing:"printing", printrequired:"printing",
-  vl:"vl", velcrolace:"vl", lacevelcro:"vl",
+  vl:"vl", velcrolace:"vl", lacevelcro:"vl", closure:"vl", closurelacevelcro:"vl",
+  dispatchtimeline:"dispatch_timeline", deliverytimeline:"dispatch_timeline",
   solecolour:"sole_colour", solecolor:"sole_colour",
   sole:"sole_type",
   currentstatus:"current_status", currentstatuso:"current_status", status:"current_status",
@@ -69,6 +70,19 @@ function booleanCell(v, label, row, errors){
   if(FALSE_WORDS.has(raw)) return false;
   errors.push({row,error:`${label} must be Yes or No (read "${String(v).trim()}")`});
   return false;
+}
+
+function closureCell(v,row,errors){
+  const raw=String(v==null?"":v).trim();
+  if(!raw) return "";
+  const upper=raw.toUpperCase();
+  if(upper==="LACE"||upper==="VELCRO") return upper[0]+upper.slice(1).toLowerCase();
+  if(upper==="L"||upper==="V"){
+    errors.push({row,error:`Closure must say Lace or Velcro in full. "${raw}" is not accepted because L means Large size run.`});
+    return "";
+  }
+  errors.push({row,error:`Closure must be Lace or Velcro (read "${raw}")`});
+  return "";
 }
 
 function numberCell(v, units=""){
@@ -154,14 +168,29 @@ function toIsoDate(v){
 function orderBookSizeColumns(headers){
   const candidates=[];
   for(let i=0;i<headers.length;i++){
-    const raw=String(headers[i]??"").trim().toLowerCase();
-    if(/^\d+(?:\.5)?s$/.test(raw)) candidates.push({index:i,raw,kids:true,size:raw.replace(/s$/i,"")});
+    const raw=String(headers[i]??"").trim().toLowerCase().replace(/\s+/g,"");
+    const small=raw.match(/^(?:small|s)?(\d+(?:\.5)?)(?:small|s)$/)||raw.match(/^(?:small|s)(\d+(?:\.5)?)$/);
+    const large=raw.match(/^(?:large|big|l|b)?(\d+(?:\.5)?)(?:large|big|l|b)$/)||raw.match(/^(?:large|big|l|b)(\d+(?:\.5)?)$/);
+    if(small) candidates.push({index:i,raw,kids:true,size:small[1]});
+    else if(large) candidates.push({index:i,raw,kids:false,size:large[1]});
     else if(/^\d+(?:\.5)?$/.test(raw)) candidates.push({index:i,raw,kids:null,size:raw});
   }
-  const firstAdultOne=candidates.findIndex(c=>c.kids==null&&c.size==="1");
-  const hasNumericKids=firstAdultOne>0 && candidates.slice(0,firstAdultOne).some(c=>c.size==="6");
-  return candidates.map((c,n)=>({...c,kids:c.kids==null?(hasNumericKids&&n<firstAdultOne):c.kids,
-    key:(c.kids==null?(hasNumericKids&&n<firstAdultOne):c.kids)?c.size+"s":c.size}));
+  /* Explicit S/L wins. If it is omitted, follow the factory's written order:
+     Small sizes first, then the Large run. A bare 1..6 starts Large; every
+     later repeated 7..13 remains Large. This also handles 7,8,1,2,3 without
+     requiring the client to include every size in between. */
+  let largeStarted=false;
+  return candidates.map(c=>{
+    const original=c.kids;
+    let kids=original;
+    if(kids===false) largeStarted=true;
+    else if(kids===true){ /* explicit Small stays Small */ }
+    else if(["1","2","3","4","5","5.5","6"].includes(c.size)){
+      kids=false;largeStarted=true;
+    }else kids=!largeStarted;
+    return {...c,kids,key:kids?c.size+"s":c.size,
+      inferred:original==null};
+  });
 }
 
 function parseOrderBook(rows,headerRow,map,reference,opts){
@@ -183,7 +212,8 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
     const party=String(get(r,"party")||"").trim();
     const date=toIsoDate(get(r,"order_date"));
     if(!party||!date){out.errors.push({row,error:`${opts.sheetName?opts.sheetName+": ":""}${!party?"Customer is blank":"Order date is blank or unreadable"}`});continue;}
-    const vl=String(get(r,"vl")||"").trim();
+    const vl=closureCell(get(r,"vl"),row,out.errors);
+    if(out.errors.some(e=>e.row===row)) continue;
     const combos=articleTypeCombos(article,vl);
     const lines=[];
     const unsupported=[];
@@ -196,6 +226,8 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
       if(!line){line={combo,qty:0,label:combo,sizes:{},size_order:comboSizesForArticle(article,combo,vl),ppc:pairsPerCarton(article,combo)};lines.push(line);}
       line.sizes[sc.key]=(line.sizes[sc.key]||0)+qty; line.qty+=qty;
     }
+    const inferredHeaders=sizeCols.filter(sc=>sc.inferred&&(numberCell(r[sc.index],"pairs?|prs?")||0)>0);
+    if(inferredHeaders.length) out.warnings.push(`${article} row ${row}: inferred ${inferredHeaders.map(s=>s.key).join(", ")} from the ascending Small-then-Large column order.`);
     if(unsupported.length){out.errors.push({row,error:`${article}: sizes ${unsupported.join(", ")} do not match its ${vl||"selected"} packing ranges`});continue;}
     if(!lines.length){out.errors.push({row,error:`${article}: no positive supported size quantities`});continue;}
     const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
@@ -207,7 +239,9 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
       order_date:date,article_code:article,party,priority,lines,
       printing,
       pi:{pi_no:String(get(r,"pi_no")||"").trim()||undefined,customer_city:String(get(r,"city")||"").trim()||undefined,
-        order_nature:explicitNature||sheetNature||undefined,vl:vl||undefined,sole_type:String(get(r,"sole_type")||"").trim()||undefined,
+        order_nature:explicitNature||sheetNature||undefined,vl:vl||undefined,
+        dispatch_timeline:String(get(r,"dispatch_timeline")||"").trim()||undefined,
+        sole_type:String(get(r,"sole_type")||"").trim()||undefined,
         sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
         current_status:String(get(r,"current_status")||"").trim()||undefined,printing}
     });
@@ -279,13 +313,13 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
       }
       if(!lines.length){ out.errors.push({row:rowNo,error:`Enter pairs in at least one size column for ${article}`}); continue; }
       const requiredMeta=[["Order Nature","order_nature"],
-        ...(articleTypes(article).includes("ALL")?[["V/L","vl"]]:[]),
         ["Sole Colour","sole_colour"],["Upper Colour","upper_colour"]];
       const missingMeta=requiredMeta.filter(([,k])=>!String(get(r,k)||"").trim()).map(([label])=>label);
       if(missingMeta.length){ out.errors.push({row:rowNo,error:`Complete ${missingMeta.join(", ")} for ${article}`}); continue; }
       const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
       if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row:rowNo,error:"Priority must be 1, 2 or 3"});continue;}
       const printing=booleanCell(get(r,"printing"),"Print",rowNo,out.errors);
+      const closure=closureCell(get(r,"vl"),rowNo,out.errors);
       if(out.errors.some(e=>e.row===rowNo)) continue;
       const estimated=String(get(r,"estimated_dispatch_date")||"").trim();
       const estimatedIso=estimated?toIsoDate(get(r,"estimated_dispatch_date")):null;
@@ -296,7 +330,8 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
         pi:{pi_no:String(get(r,"pi_no")||"").trim()||undefined,
           customer_city:String(get(r,"city")||"").trim()||undefined,
           order_nature:String(get(r,"order_nature")||"").trim()||undefined,
-          vl:String(get(r,"vl")||"").trim()||undefined,
+          vl:closure||undefined,
+          dispatch_timeline:String(get(r,"dispatch_timeline")||"").trim()||undefined,
           sole_type:String(get(r,"sole_type")||"").trim()||undefined,
           sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,
           upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
@@ -325,7 +360,8 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
     const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
     if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row:rowNo,error:"Priority must be 1, 2 or 3"});continue;}
     const piNo=String(get(r,"pi_no")||"").trim();
-    const vl=String(get(r,"vl")||"").trim();
+    const vl=closureCell(get(r,"vl"),rowNo,out.errors);
+    if(out.errors.some(e=>e.row===rowNo)) continue;
     const soleColour=String(get(r,"sole_colour")||"").trim();
     const upperColour=String(get(r,"upper_colour")||"").trim();
     // PI identity wins. Without it, two different PIs for the same customer,
@@ -341,6 +377,7 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
         customer_city:String(get(r,"city")||"").trim() || undefined,
         order_nature: String(get(r,"order_nature")||"").trim() || undefined,
         vl:           vl || undefined,
+        dispatch_timeline:String(get(r,"dispatch_timeline")||"").trim() || undefined,
         sole_type:    String(get(r,"sole_type")||"").trim() || undefined,
         sole_colour:  soleColour || undefined,
         upper_colour: upperColour || undefined,

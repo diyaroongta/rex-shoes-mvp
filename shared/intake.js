@@ -12,14 +12,25 @@ import {
   comboType,
   matchAmbiguous,
   matchArticle,
+  parseSizeToken,
   pairsPerCarton,
   singlePackQty,
 } from "./bridge.js";
 
+/* Closure and size run are different facts. In factory notation L means the
+   Large size run; it must never be expanded to Lace. Only the full closure
+   words are accepted here. */
 const cleanType = value => {
   const text = String(value || "").trim().toUpperCase();
-  if(text.startsWith("L") || text === "BIG") return "LACE";
-  if(text.startsWith("V") || text === "SMALL") return "VELCRO";
+  if(text === "LACE") return "LACE";
+  if(text === "VELCRO") return "VELCRO";
+  return "";
+};
+
+const cleanRun = value => {
+  const text=String(value||"").trim().toUpperCase();
+  if(["S","SMALL"].includes(text)) return "SMALL";
+  if(["L","LARGE","BIG"].includes(text)) return "LARGE";
   return "";
 };
 
@@ -27,7 +38,7 @@ export function sizeForArticleType(size, type){
   const raw = String(size ?? "").trim().toLowerCase().replace(/\.0$/, "");
   if(!raw) return "";
   const bare = raw.replace(/s$/, "");
-  if(cleanType(type) === "VELCRO" && /^(?:6|7|8|9|10|11|12|13)$/.test(bare))
+  if(cleanRun(type) === "SMALL" && /^(?:6|7|8|9|10|11|12|13)$/.test(bare))
     return `${bare}s`;
   return bare;
 }
@@ -39,22 +50,20 @@ function inferredType(article, order, line){
   // GOLA (L) is a Lace article by its code; warning that its V/L "was not
   // readable" sent the clerk looking for a problem that does not exist.
   if(types.length === 1) return types[0];
-  const explicit = cleanType(line.type || line.vl || line.group || order.type || order.vl || order.group);
+  const explicit = cleanType(line.type || line.vl || order.type || order.vl);
   if(explicit && types.includes(explicit)) return explicit;
-
-  // Sizes 1..5 only exist on the Velcro/kids half of split EVA articles.
-  // Adult 6..12 is inherently ambiguous without (L), BIG or an explicit type.
-  const sizes = (line.sizes || []).map(v => String(v).replace(/s$/i, ""));
-  if(sizes.some(s => ["1","2","3","4","5","5.5"].includes(s))) return "VELCRO";
   return "";
 }
 
 /* A numeral 6-13 written on a slip can be the kids size (8s) or the adult
    repeat (8). Both genuinely exist on the same article — that is exactly why
    the B ranges exist — so a written size has two possible spellings. */
-const sizeSpellings = size => {
-  const bare = String(size).replace(/s$/i, "");
-  return /^(?:6|7|8|9|10|11|12|13)$/.test(bare) ? [bare, `${bare}s`] : [bare];
+const sizeSpellings = (size, runHint="") => {
+  const token=parseSizeToken(size);
+  const bare=token.bare||String(size).replace(/s$/i, "");
+  if(token.run==="SMALL"||runHint==="SMALL") return [`${bare}s`];
+  if(token.run==="LARGE"||runHint==="LARGE") return [bare];
+  return /^(?:6|7|8|9|10|11|12|13|13\.5)$/.test(bare) ? [bare, `${bare}s`] : [bare];
 };
 
 /* Match written sizes to one of the article's real ranges, trying both
@@ -63,21 +72,21 @@ const sizeSpellings = size => {
 
    A tie is reported, never broken: on REX GOLA (L) a bare "8" fits both 8X10
    (as 8s) and 8X10B (as 8), and picking one silently changes the BOM. */
-function exactCombo(article, type, sizes){
+function exactCombo(article, type, sizes,runHint=""){
   const combos = articleTypeCombos(article, type);
   const hits = [];
   for(const combo of combos){
     const run = comboSizesForArticle(article, combo, type);
     if(!run.length) continue;
     if(sizes.length === 1){
-      const hit = run.find(r => sizeSpellings(sizes[0]).includes(r));
+      const hit = run.find(r => sizeSpellings(sizes[0],runHint).includes(r));
       if(hit) hits.push({ combo, sizes:[hit] });
       continue;
     }
     // A side-by-side range is only accepted when its endpoints match a real
     // factory range. Choosing a merely nearby range would silently change BOM.
-    if(sizeSpellings(sizes[0]).includes(run[0])
-       && sizeSpellings(sizes[sizes.length - 1]).includes(run[run.length - 1]))
+    if(sizeSpellings(sizes[0],runHint).includes(run[0])
+       && sizeSpellings(sizes[sizes.length - 1],runHint).includes(run[run.length - 1]))
       hits.push({ combo, sizes:run });
   }
   if(hits.length === 1) return hits[0];
@@ -122,36 +131,53 @@ export function buildPhotoCards(parsed, reference){
     };
     const article = matched;
 
-    const unresolvedSizes = [];
-
     /* GROUP BY ARTICLE. A sheet writing SPIKE with a Velcro section and a Lace
        section ordered one shoe in two rolls, so the type rides on each LINE and
        the article stays whole. A sheet writing Gala (V) and Gala (L) ordered
        two different articles, so those land on two cards. Both fall out of
        grouping by the article each line resolves to. */
     const byArticle = new Map();
+    const sizeSequence = new Map();
 
     {
       for(const rawLine of order.lines || []){
         // Probe with the type AS WRITTEN, before any article constrains it —
         // on a legacy family the written (L) is what selects the other article,
         // so asking the (V) article what type it allows would always say V.
-        const written = cleanType(rawLine.type || rawLine.vl || rawLine.group
-          || order.type || order.vl || order.group);
+        const written = cleanType(rawLine.type || rawLine.vl || order.type || order.vl);
         const article = articleFor(written);
         const available = articleTypes(article);
         const inferred = inferredType(article, order, rawLine);
-        if(!inferred && !available.includes("ALL"))
-          unresolvedSizes.push(...(rawLine.sizes || []));
-        // An unmarked opening section falls to the article's first roll, and
-        // says so above rather than guessing quietly.
-        const type = inferred || (available.includes("ALL") ? "" : available[0]);
+        // With no closure written, keep all of the article's ranges available.
+        // The exact range/size run can resolve the line; silently choosing the
+        // first closure is what used to turn Large into Lace/Velcro.
+        const type = inferred || "";
         if(!byArticle.has(article)) byArticle.set(article, []);
         const lines = byArticle.get(article);
-        const sizes = (rawLine.sizes || []).map(size => sizeForArticleType(size, type)).filter(Boolean);
+        const rawSizes=(rawLine.sizes||[]).filter(v=>String(v??"").trim()!=="");
+        const explicitRuns=[...new Set(rawSizes.map(size=>parseSizeToken(size).run).filter(Boolean))];
+        let runHint=explicitRuns.length===1?explicitRuns[0]:"";
+        if(!runHint) runHint=cleanRun(rawLine.run||rawLine.group||order.run||order.group);
+        if(!runHint&&!written){
+          const state=sizeSequence.get(article)||{largeStarted:false};
+          const first=parseSizeToken(rawSizes[0]);
+          if(first.bare){
+            const low=["1","2","3","4","5","5.5","6"].includes(first.bare);
+            runHint=low||state.largeStarted?"LARGE":"SMALL";
+            if(runHint==="LARGE")state.largeStarted=true;
+          }
+          sizeSequence.set(article,state);
+        }
+        const sizes = rawSizes.map(size => {
+          const token=parseSizeToken(size);
+          if(token.run==="SMALL")return `${token.bare}s`;
+          if(token.run==="LARGE")return token.bare;
+          if(runHint==="SMALL")return `${token.bare||size}s`;
+          return token.bare||String(size);
+        }).filter(Boolean);
         const cartons = Math.max(0, Number(rawLine.cartons) || 0);
         if(!sizes.length || cartons <= 0) continue;
-        const match = exactCombo(article, type, sizes);
+        const match = exactCombo(article, type, sizes,runHint);
         const combo = match.combo;
         const raw = sizes.join("|") + (type ? ` (${type})` : "");
 
@@ -166,7 +192,7 @@ export function buildPhotoCards(parsed, reference){
           // The spelling the CHOSEN range uses, so the size map keys to
           // size_order and the packing rate is looked up on the right roll.
           const size = combo ? match.sizes[0] : sizes[0];
-          const ppc = singlePackQty(article, size, type);
+          const ppc = singlePackQty(article, size, lineType,combo);
           const qty = ppc == null ? 0 : cartons * ppc;
           const incoming = {
             combo,
@@ -202,9 +228,6 @@ export function buildPhotoCards(parsed, reference){
         });
         if(!combo) issues.push(`${article} ${type || ""}: ${sizes.join("×")} is not an exact configured size range.`);
       }
-
-      if(unresolvedSizes.length)
-        issues.push(`${matched}: V/L was not readable for sizes ${unresolvedSizes.join(", ")}; check the type on each line.`);
 
       for(const [article, lines] of byArticle){
         // The card's own V/L is a SUMMARY of its lines, never a discriminator.

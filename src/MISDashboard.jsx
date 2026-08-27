@@ -53,8 +53,8 @@ function Progress({value,color="#0B6BCB"}){
   </div>;
 }
 
-export default function MISDashboard({state,dispatches=[],dispatchLoading=false,dispatchError="",onRefresh}){
-  const snapshot=useMemo(()=>buildMisSnapshot(state,dispatches),[state,dispatches]);
+export default function MISDashboard({state,dispatches=[],dispatchLoading=false,dispatchError="",onRefresh,today}){
+  const snapshot=useMemo(()=>buildMisSnapshot(state,dispatches,{today}),[state,dispatches,today]);
   const [filter,setFilter]=useState("all");
   const [search,setSearch]=useState("");
   const visible=snapshot.orders.filter(order=>(filter==="all"||order.status===filter)
@@ -92,6 +92,19 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
       <Kpi label="Capacity utilisation" value={pct(snapshot.capacity_util_pct)} detail="Average planned utilisation across active centres" tone="#0B6BCB" pale="#EFF6FF" testId="kpi-utilisation" />
     </section>
 
+    <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <Kpi label="Order vs dispatch %" value={pct(snapshot.order_vs_dispatch_pct)}
+        detail={`${fmt(snapshot.dispatched_last_30_days)} dispatched ÷ ${fmt(snapshot.ordered_last_30_days)} ordered pairs · last 30 days`}
+        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-order-dispatch-pct" />
+      <Kpi label="Dispatch shortage %" value={pct(snapshot.dispatch_shortage_pct)}
+        detail={`${fmt(snapshot.shortage_pairs_last_30_days)} shortage ÷ ${fmt(snapshot.closed_order_pairs_last_30_days)} pairs on orders closed in 30 days`}
+        tone={snapshot.dispatch_shortage_pct?"#BE123C":"#047857"} pale={snapshot.dispatch_shortage_pct?"#FFF1F2":"#ECFDF5"}
+        testId="kpi-dispatch-shortage-pct" />
+      <Kpi label="Average dispatch days" value={fmt(snapshot.average_dispatch_days,1)}
+        detail={`${fmt(snapshot.completed_orders_used_for_dispatch_days)} completed order${snapshot.completed_orders_used_for_dispatch_days===1?"":"s"} · order date to completed dispatch`}
+        tone="#334155" pale="#F8FAFC" testId="kpi-average-dispatch-days" />
+    </section>
+
     <section className="grid grid-cols-1 lg:grid-cols-5 gap-4">
       <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -116,7 +129,7 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
         </div>
         <div className="mt-4 flex items-center gap-3">
           <div className="flex-1"><Progress value={snapshot.dispatch_coverage_pct} /></div>
-          <div className="mono text-sm font-semibold text-slate-700">{pct(snapshot.dispatch_coverage_pct)} dispatch coverage</div>
+          <div className="mono text-sm font-semibold text-slate-700">{pct(snapshot.order_vs_dispatch_pct)} order vs dispatch</div>
         </div>
       </div>
 
@@ -130,6 +143,18 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
         <TrendChart trend={snapshot.trend} />
       </div>
     </section>
+
+    <details className="bg-white border border-slate-200 rounded-xl p-4">
+      <summary className="text-sm font-semibold text-indigo-800 cursor-pointer">Show MIS calculation logic</summary>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 mt-4 text-xs text-slate-600">
+        <div><b className="text-slate-800">Order vs dispatch %</b><br/>Pairs recorded as dispatched in the last 30 days ÷ pairs on orders raised in the last 30 days × 100. Current calculation: {fmt(snapshot.dispatched_last_30_days)} ÷ {fmt(snapshot.ordered_last_30_days)} × 100 = <b>{pct(snapshot.order_vs_dispatch_pct)}</b>.</div>
+        <div><b className="text-slate-800">Dispatch shortage %</b><br/>Accepted shortage pairs on orders completed or closed in the last 30 days ÷ the original ordered pairs on those same closed orders × 100. Current calculation: {fmt(snapshot.shortage_pairs_last_30_days)} ÷ {fmt(snapshot.closed_order_pairs_last_30_days)} × 100 = <b>{pct(snapshot.dispatch_shortage_pct)}</b>.</div>
+        <div><b className="text-slate-800">Average dispatch days</b><br/>For fully dispatched or deliberately closed orders: calendar days from order date to completed dispatch date, added together ÷ completed orders. Open and partially dispatched orders are excluded.</div>
+        <div><b className="text-slate-800">Average production days</b><br/>Sum of the planner&rsquo;s scheduled release-to-dispatch lead days ÷ live scheduled orders.</div>
+        <div><b className="text-slate-800">Capacity utilisation</b><br/>Average of each active work centre&rsquo;s planned utilisation percentage. It is planned capacity until actual shop-floor output is connected.</div>
+        <div><b className="text-slate-800">On time / at risk / delayed</b><br/>Uses the current production schedule&rsquo;s SLA status for each live order. The displayed date range is the earliest to latest planned dispatch date in that status.</div>
+      </div>
+    </details>
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">

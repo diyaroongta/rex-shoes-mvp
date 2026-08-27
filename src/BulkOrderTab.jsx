@@ -15,15 +15,16 @@ export default function BulkOrderTab({ onImported }){
   const [err,setErr]=useState("");
 
   function downloadTemplate(){
-    const headers=["PI NO","ORDER DATE","CUSTOMER NAME","CITY","ARTICLE NAME","COLOUR","SOLE COLOUR","LACE /VELCRO","SOLE","CURRENT STATUS 2.0","PRINT",
+    const headers=["PI NO","ORDER DATE","CUSTOMER NAME","CITY","ARTICLE NAME","COLOUR","SOLE COLOUR","CLOSURE (LACE/VELCRO)","DISPATCH TIMELINE","SOLE","CURRENT STATUS 2.0","PRINT",
       "5s","6s","7s","8s","9s","10s","11s","12s","13s","1","2","3","4","5","6","7","8","9","10","11","12","TOTAL"];
-    const example=["","2026-08-20","Example customer","Delhi","SPIKE","Black","Black","VELCRO","EVA","PRODUCTION NOT STARTED","No",
+    const example=["","2026-08-20","Example customer","Delhi","SPIKE","Black","Black","Velcro","45 days","EVA","PRODUCTION NOT STARTED","No",
       0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,null];
     const rows=[headers,example,Array(headers.length).fill("")];
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["AG2"]={t:"n",f:"SUM(L2:AF2)"};
+    const firstSize=headers.indexOf("5s"), lastSize=headers.indexOf("12"), total=headers.indexOf("TOTAL");
+    ws[`${XLSX.utils.encode_col(total)}2`]={t:"n",f:`SUM(${XLSX.utils.encode_col(firstSize)}2:${XLSX.utils.encode_col(lastSize)}2)`};
     ws["!freeze"]={xSplit:5,ySplit:1};
-    ws["!autofilter"]={ref:`A1:AG3`};
+    ws["!autofilter"]={ref:`A1:${XLSX.utils.encode_col(headers.length-1)}3`};
     ws["!cols"]=headers.map((h,i)=>({wch:i===2?24:i===4?22:i<11?16:8}));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Orders");
@@ -31,7 +32,8 @@ export default function BulkOrderTab({ onImported }){
       ["Factory OS order template"],
       ["Use one row per article. Enter PAIRS under each individual size, just like the supplied Order Book."],
       ["Required to import a row: ORDER DATE, CUSTOMER NAME, ARTICLE NAME, and at least one supported size quantity."],
-      ["5s–13s are kids sizes. The later 1–12 columns are adult sizes. LACE / VELCRO selects the correct ranges and packing list."],
+      ["5s–13s are Small sizes. The later 1–12 columns are Large sizes. L means Large; write Lace or Velcro in full only in the separate Closure column."],
+      ["Dispatch Timeline is per order (for example, 30 days or 45 days)."],
       ["The importer also reads the existing INSTITUTIONAL ORDER BOOK and MTO ORDER BOOK sheet layouts, including .xlsm files."],
     ]);
     help["!cols"]=[{wch:110}];
@@ -50,6 +52,8 @@ export default function BulkOrderTab({ onImported }){
       let totalRows=0;
       const sheets=wb.SheetNames.map(sheetName=>{
         const ws=wb.Sheets[sheetName];
+        const unresolved=Object.entries(ws).filter(([address,cell])=>address[0]!=="!"&&cell?.f&&(cell.v==null||cell.v===""));
+        if(unresolved.length) throw new Error(`${sheetName}: ${unresolved.length} formula cell${unresolved.length===1?" has":"s have"} no saved result. Open the workbook in Excel, recalculate and save it, or paste those values before uploading.`);
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
         totalRows+=rows.length;if(totalRows>25000) throw new Error("Workbook has more than 25,000 rows.");
         return {sheetName,rows};

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import { articleTypes, articleTypeCombos, comboSizesForArticle, comboType, pairsPerCarton, packingRuleSource, singlePackingRule } from "../shared/bridge.js";
 import * as api from "./lib/client.js";
@@ -21,7 +21,7 @@ const rateRows = (article, combos) => {
 export function ArticleRules({article,type,compact=false,editable=false,packingEdits={},onPackingEdit,
   singleEdits={},onSingleEdit}){
   const combos=articleTypeCombos(article,type);
-  const rows=useMemo(()=>rateRows(article,combos),[article,combos.join("|")]);
+  const rows=rateRows(article,combos);
   const packingSources=[...new Set(combos.map(c=>packingRuleSource(article,c).article))];
   const sizeEntries=combos.reduce((n,combo)=>n+comboSizesForArticle(article,combo,comboType(article,combo)).length,0);
   if(!article || !INPUTS.articles[article]) return null;
@@ -74,7 +74,10 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
           </tr></thead>
           <tbody>{combos.flatMap(combo=>{const rowType=comboType(article,combo)||"ALL";return comboSizesForArticle(article,combo,rowType).map(size=>{
             const rule=singlePackingRule(article,size,rowType,combo);
-            const editKey=`${rule.article}||${String(rule.size).toUpperCase()}`;
+            const source=packingRuleSource(article,combo);
+            const sourceCombo=rule.combo||source.combo;
+            const storageSize=`${sourceCombo}::${String(rule.size).toUpperCase()}`;
+            const editKey=`${rule.article}||${storageSize}`;
             const hasEdit=Object.prototype.hasOwnProperty.call(singleEdits,editKey);
             const shown=hasEdit?singleEdits[editKey].raw:(rule.kind==="individual override"?rule.ppc:"");
             const sourceLabel=hasEdit
@@ -86,7 +89,7 @@ export function ArticleRules({article,type,compact=false,editable=false,packingE
               <td className="text-right">{editable
                 ? <input type="number" min="1" step="1" value={shown}
                     placeholder={rule.ppc??"Not set"}
-                    onChange={e=>onSingleEdit&&onSingleEdit(rule.article,rule.size,e.target.value)}
+                    onChange={e=>onSingleEdit&&onSingleEdit(rule.article,storageSize,e.target.value)}
                     aria-label={`${article} ${combo} size ${size} pairs per carton`}
                     className="w-20 text-right mono text-sm border border-slate-300 rounded px-2 py-1" />
                 : rule.ppc??"Not set"}</td>
@@ -129,10 +132,22 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
   const [busy,setBusy]=useState(false);
   const [msg,setMsg]=useState("");
   const [err,setErr]=useState("");
+  const [removeOpen,setRemoveOpen]=useState(false);
+  const [removeCombo,setRemoveCombo]=useState("");
+  const [removeChoice,setRemoveChoice]=useState("");
+  const [removeConfirm,setRemoveConfirm]=useState(false);
   const type=typeOptions.includes(chosenType)?chosenType:"ALL";
+  const allCombos=articleTypeCombos(article);
+  const effectiveRemoveCombo=allCombos.includes(removeCombo)?removeCombo:(allCombos[0]||"");
+  const removeItems=Object.entries(INPUTS.articles?.[article]?.combos?.[effectiveRemoveCombo]?.rates||{})
+    .flatMap(([stage,materials])=>Object.entries(materials||{}).map(([material,rate])=>({
+      id:`${stage}\u0001${material}`,stage,material,rate,
+    })));
+  const effectiveRemoveChoice=removeItems.some(item=>item.id===removeChoice)?removeChoice:(removeItems[0]?.id||"");
 
   function clearEdits(){setPackingEdits({});setSingleEdits({});}
-  function chooseArticle(next){setArticle(next);setChosenType("ALL");clearEdits();setMsg("");setErr("");}
+  function chooseArticle(next){setArticle(next);setChosenType("ALL");clearEdits();setMsg("");setErr("");
+    setRemoveOpen(false);setRemoveCombo("");setRemoveChoice("");setRemoveConfirm(false);}
   function chooseType(next){setChosenType(next);clearEdits();setMsg("");setErr("");}
 
   async function savePacking(){
@@ -180,6 +195,21 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
     finally{setBusy(false);}
   }
 
+  async function removeBomItem(){
+    const selected=removeItems.find(item=>item.id===effectiveRemoveChoice);
+    if(!selected||!removeConfirm)return;
+    setBusy(true);setErr("");setMsg("");
+    try{
+      await api.patchReference({bom_remove:[{article,combo:effectiveRemoveCombo,
+        stage:selected.stage,material:selected.material}]});
+      await reloadReference();
+      setRemoveChoice("");setRemoveConfirm(false);setRemoveOpen(false);
+      setMsg(`Removed ${selected.material} from ${article} ${effectiveRemoveCombo}. The change is in revision history and can be restored.`);
+      onChanged&&onChanged();
+    }catch(e){setErr("Could not remove BOM item: "+(e.message||e));}
+    finally{setBusy(false);}
+  }
+
   return <div>
     <div className="flex gap-3 items-end flex-wrap mb-3">
       <label className="text-xs text-slate-500">Article
@@ -196,12 +226,42 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
         className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 bg-white">
         Upload or replace BOM Excel
       </button>
+      <button type="button" onClick={()=>{setRemoveOpen(v=>!v);setRemoveConfirm(false);}}
+        className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 bg-white">
+        {removeOpen?"Cancel BOM removal":"Remove a BOM item"}
+      </button>
     </div>
     <div className="text-xs text-slate-600 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 mb-3">
       This page is the current database view for the selected article. It shows every stored combination by default,
       the effective rule for every individual size, and the complete BOM. Packing quantities can be edited here;
       use the BOM Excel action for size-range or material changes.
     </div>
+    {removeOpen&&<div className="rounded-xl border border-rose-200 bg-rose-50/50 p-3 mb-3">
+      <div className="text-sm font-semibold text-slate-800">Remove one accidental BOM item</div>
+      <div className="text-xs text-slate-600 mt-0.5 mb-3">This removes only the selected material from the selected size range. Other ranges and materials stay unchanged.</div>
+      <div className="flex gap-3 items-end flex-wrap">
+        <label className="text-xs text-slate-600">BOM size range
+          <select aria-label="BOM size range" value={effectiveRemoveCombo}
+            onChange={e=>{setRemoveCombo(e.target.value);setRemoveChoice("");setRemoveConfirm(false);}}
+            className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm">
+            {allCombos.map(combo=><option key={combo}>{combo}</option>)}
+          </select></label>
+        <label className="text-xs text-slate-600 min-w-64">BOM item
+          <select aria-label="BOM item" value={effectiveRemoveChoice}
+            onChange={e=>{setRemoveChoice(e.target.value);setRemoveConfirm(false);}}
+            className="block mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm">
+            {removeItems.map(item=><option key={item.id} value={item.id}>{item.stage} · {item.material} · {item.rate}/pair</option>)}
+          </select></label>
+      </div>
+      <label className="flex gap-2 items-start text-xs text-rose-900 mt-3">
+        <input type="checkbox" checked={removeConfirm} onChange={e=>setRemoveConfirm(e.target.checked)} />
+        I checked the article, size range and material above and want to remove this one BOM item.
+      </label>
+      <button type="button" disabled={busy||!effectiveRemoveChoice||!removeConfirm} onClick={removeBomItem}
+        className="text-xs font-semibold text-white rounded-lg px-3 py-2 bg-rose-700 disabled:opacity-40 mt-2">
+        {busy?"Removing…":"Remove selected BOM item"}
+      </button>
+    </div>}
     <ArticleRules article={article} type={type} editable packingEdits={packingEdits}
       singleEdits={singleEdits}
       onPackingEdit={(combo,value)=>setPackingEdits(e=>({...e,[combo]:value}))}

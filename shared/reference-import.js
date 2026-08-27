@@ -1,5 +1,6 @@
 import { articleCode, comboCode, existingArticleCode, normaliseMaterial } from "./bom-import.js";
-import { comboSizesForArticleIn } from "./bridge.js";
+import { comboSizesForArticleIn, resolveArticleSizeWithSequenceIn,
+  createSizeSequenceState, scopedSizeKey, parseSizeToken, sizeRunOptionsForRange } from "./bridge.js";
 
 export const BOM_HEADERS=["Article Code","Sole Type","Size Range","Stage","Component","Material","UOM","Rate per Pair"];
 export const PACKING_HEADERS=["Article Code","Size Range","Pairs per Carton"];
@@ -12,6 +13,9 @@ const text=v=>String(v==null?"":v).trim();
 const HEADER_ALIASES={
   article:"articlecode",articleno:"articlecode",articlenumber:"articlecode",articlename:"articlecode",product:"articlecode",
   size:"sizerange",sizes:"sizerange",combo:"sizerange",sizerangecombo:"sizerange",
+  sizerangeorindividualsize:"sizerange",rangeorindividualsize:"sizerange",
+  sizerun:"sizerun",run:"sizerun",smalllarge:"sizerun",
+  bomrange:"bomrange",appliestorange:"bomrange",sourcebomrange:"bomrange",bomrangeforindividualsize:"bomrange",
   process:"stage",operation:"stage",
   item:"material",itemdescription:"material",materialname:"material",
   unit:"uom",unitofmeasure:"uom",
@@ -29,6 +33,7 @@ const UOM_ALIASES={PC:"PCS","PCS.":"PCS",PIECE:"PCS",PIECES:"PCS",PAIR:"PAIR",PA
 const cleanStage=v=>{const raw=text(v).toUpperCase().replace(/[^A-Z0-9]+/g,"_").replace(/^_|_$/g,"");return STAGE_ALIASES[raw]||raw;};
 const cleanSole=v=>{const raw=text(v).toUpperCase().replace(/\s+/g,"_");return SOLE_ALIASES[raw]||raw;};
 const cleanUom=v=>{const raw=text(v).toUpperCase();return UOM_ALIASES[raw]||raw.replace(/\.$/,"");};
+const cleanRun=v=>{const raw=text(v).toUpperCase();if(!raw)return "";if(raw.startsWith("S"))return "SMALL";if(raw.startsWith("L")||raw.startsWith("B"))return "LARGE";return raw;};
 
 /* Find the header row rather than assuming it is the first one. A workbook
    people fill in by hand routinely carries a title and a note above the table,
@@ -54,6 +59,16 @@ function rowObjects(rows,required){
   })).filter(r=>!r.empty);
 }
 
+function duplicateHeaders(rows,required){
+  const at=headerRowIndex(rows,required), header=(rows||[])[at]||[];
+  const seen=new Set(),duplicates=new Set();
+  for(const cell of header){
+    const canonical=headerKey(cell);if(!canonical)continue;
+    if(seen.has(canonical))duplicates.add(canonical);else seen.add(canonical);
+  }
+  return [...duplicates];
+}
+
 function sheet(sheets,name){
   const wanted=key(name);
   const aliases={bom:new Set(["bom","bommaster","billofmaterials","billofmaterial"]),
@@ -64,16 +79,25 @@ function sheet(sheets,name){
 
 export function parseReferenceWorkbook(sheets,reference={}){
   const errors=[],warnings=[];
-  const boms={},packing={},packingSingles={},catalogue={},mrp={},catalogueMode={};
+  const boms={},packing={},packingSingles={},catalogue={},mrp={},individualSizes={};
   const bomSheet=sheet(sheets,"BOM"), packingSheet=sheet(sheets,"Packing"), catalogueSheet=sheet(sheets,"Catalogue");
   if(!bomSheet&&!packingSheet&&!catalogueSheet)
-    return {errors:["Workbook must contain a BOM, Packing or Catalogue sheet."],warnings,boms:[],packing,packingSingles,catalogue,mrp};
+    return {errors:["Workbook must contain a BOM, Packing or Catalogue sheet."],warnings,boms:[],packing,packingSingles,catalogue,mrp,individualSizes};
+
+  for(const [label,input,required] of [["BOM",bomSheet,["Article Code","Size Range","Stage","Material"]],
+    ["Packing",packingSheet,PACKING_HEADERS],["Catalogue",catalogueSheet,["Article Code"]]]){
+    if(!input)continue;
+    const duplicates=duplicateHeaders(input.rows||[],required);
+    if(duplicates.length)errors.push(`${label}: duplicate column${duplicates.length===1?"":"s"} ${duplicates.join(", ")}. Keep one column for each field.`);
+  }
 
   const seen=new Set();
   for(const r of rowObjects(bomSheet?.rows||[],["Article Code","Size Range","Stage","Material"])){
     const article=articleCode(r.get("Article Code"));
     const sole=cleanSole(r.get("Sole Type"));
-    const combo=comboCode(r.get("Size Range"));
+    const rawRange=comboCode(r.get("Size Range"));
+    const combo=rawRange;
+    const sizeRun=cleanRun(r.get("Size Run"));
     const stage=cleanStage(r.get("Stage"));
     const component=text(r.get("Component"));
     const material=normaliseMaterial(r.get("Material")||component);
@@ -85,12 +109,15 @@ export function parseReferenceWorkbook(sheets,reference={}){
     }
     if(!SOLES.has(sole)){errors.push(`${prefix}: Sole Type must be EVA, PVC, PU or STUCK-ON.`);continue;}
     if(!STAGES.has(stage)){errors.push(`${prefix}: unknown Stage ${stage}.`);continue;}
+    if(sizeRun&&!['SMALL','LARGE'].includes(sizeRun)){errors.push(`${prefix}: Size Run must be Small or Large.`);continue;}
     const duplicate=[article,combo,stage,material,uom].join("|");
     if(seen.has(duplicate)){errors.push(`${prefix}: duplicate BOM material for ${article} ${combo} ${stage}.`);continue;}
     seen.add(duplicate);
     const bom=boms[article]||(boms[article]={article,soleType:sole,combo_order:[],combos:{},materials:{},warnings:[]});
     if(bom.soleType!==sole){errors.push(`${prefix}: ${article} has more than one Sole Type.`);continue;}
-    if(!bom.combos[combo]){bom.combo_order.push(combo);bom.combos[combo]={stitching_combo:combo,rates:{}};}
+    if(!bom.combos[combo]){bom.combo_order.push(combo);bom.combos[combo]={stitching_combo:combo,rates:{},...(sizeRun?{size_run:sizeRun}:{})};}
+    else if(sizeRun&&bom.combos[combo].size_run&&bom.combos[combo].size_run!==sizeRun){errors.push(`${prefix}: ${article} ${combo} has conflicting Size Run values.`);continue;}
+    else if(sizeRun) bom.combos[combo].size_run=sizeRun;
     const materialKey=`${material}||${uom}`;
     bom.combos[combo].rates[stage]=bom.combos[combo].rates[stage]||{};
     bom.combos[combo].rates[stage][materialKey]=rate;
@@ -98,45 +125,70 @@ export function parseReferenceWorkbook(sheets,reference={}){
   }
 
   const workbookReference={...reference,articles:{...(reference.articles||{})}};
-  for(const bom of Object.values(boms)) workbookReference.articles[bom.article]={
-    ...(workbookReference.articles[bom.article]||{}),combo_order:bom.combo_order,combos:bom.combos,sole_type:bom.soleType,
-  };
+  for(const bom of Object.values(boms)){
+    workbookReference.articles[bom.article]={
+      ...(workbookReference.articles[bom.article]||{}),combo_order:bom.combo_order,combos:bom.combos,sole_type:bom.soleType,
+    };
+    for(const combo of bom.combo_order){
+      if(!bom.combos[combo].size_run&&sizeRunOptionsForRange(combo).length>1){
+        const inferred=comboSizesForArticleIn(workbookReference,bom.article,combo)[0]?.endsWith("s")?"Small":"Large";
+        warnings.push(`${bom.article} ${combo}: Size Run was blank and was read as ${inferred} from its position. Write Small/Large to make it explicit.`);
+      }
+    }
+  }
 
+  const packingSequence={};
   for(const r of rowObjects(packingSheet?.rows||[],PACKING_HEADERS)){
     const rawArticle=articleCode(r.get("Article Code"));
     const article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
-    const combo=comboCode(r.get("Size Range"));
+    const rawRange=comboCode(r.get("Size Range"));
+    const combo=rawRange;
+    const bomRange=comboCode(r.get("BOM Range"));
     const ppc=Number(r.get("Pairs per Carton"));
     const prefix=`Packing row ${r.row}`;
     if(!article||!combo||!Number.isInteger(ppc)||ppc<1){errors.push(`${prefix}: Article Code, Size Range and a whole-number pairs/carton of 1 or more are required.`);continue;}
     const definition=boms[article]||reference.articles?.[article];
     const combos=definition?(definition.combo_order||Object.keys(definition.combos||{})):[];
+    if(bomRange&&!combos.includes(bomRange)){errors.push(`${prefix}: BOM Range ${bomRange} is not in ${article}'s BOM (${combos.join(", ")}).`);continue;}
     if(combos.length&&!combos.includes(combo)){
-      const printed=combos.flatMap(c=>comboSizesForArticleIn(workbookReference,article,c)).map(s=>String(s).toUpperCase());
-      const rawSingle=String(combo).toUpperCase();
-      let single=printed.find(s=>s===rawSingle)||null;
-      if(!single){
-        const candidates=[...new Set(printed.filter(s=>s.replace(/S$/i,"")===rawSingle.replace(/S$/i,"")))];
-        if(candidates.length===1) single=candidates[0];
-        else if(candidates.length>1){errors.push(`${prefix}: size ${rawSingle} is ambiguous; write ${candidates.join(" or ")} exactly.`);continue;}
-      }
+      packingSequence[article]=packingSequence[article]||createSizeSequenceState();
+      const token=parseSizeToken(rawRange);
+      const extra=token.bare?[`${token.bare}S`,token.bare]:[];
+      const refForSize=bomRange?{...workbookReference,articles:{...workbookReference.articles,
+        [article]:{...workbookReference.articles[article],individual_sizes:[...(workbookReference.articles[article]?.individual_sizes||[]),...extra]}}}:workbookReference;
+      const resolved=resolveArticleSizeWithSequenceIn(refForSize,article,rawRange,packingSequence[article]);
+      const single=resolved.size;
+      if(resolved.error){errors.push(`${prefix}: ${resolved.error}${bomRange?"":"; write S/L explicitly or add BOM Range for a standalone size"}.`);continue;}
       if(single&&/^\d+(?:\.5)?S?$/.test(single)){
         packingSingles[article]=packingSingles[article]||{};
-        if(packingSingles[article][single]!=null){errors.push(`${prefix}: duplicate single-size packing rule for ${article} size ${single}.`);continue;}
-        packingSingles[article][single]=ppc;
+        const storageKey=scopedSizeKey(bomRange,single);
+        if(packingSingles[article][storageKey]!=null){
+          if(Number(packingSingles[article][storageKey])===ppc){warnings.push(`${prefix}: repeated identical packing rule for ${article} ${bomRange?`${bomRange} / `:""}size ${single}; kept once.`);continue;}
+          errors.push(`${prefix}: conflicting packing rule for ${article} ${bomRange?`${bomRange} / `:""}size ${single}; earlier row has ${packingSingles[article][storageKey]}, this row has ${ppc}.`);continue;
+        }
+        packingSingles[article][storageKey]=ppc;
+        individualSizes[article]=individualSizes[article]||[];
+        if(!individualSizes[article].includes(single)) individualSizes[article].push(single);
+        if(resolved.outOfOrder) warnings.push(`${prefix}: explicit Small size ${single} appears after Large sizes; kept because S/L was written explicitly.`);
+        if(resolved.inferred&&["7","8","9","10","11","12","13","13.5"].includes(token.bare)) warnings.push(`${prefix}: inferred ${single} from ascending Small-then-Large order; write S/L to make it explicit.`);
         continue;
       }
       errors.push(`${prefix}: ${combo} is neither a BOM size range nor an individual size inside ${article}'s ranges.`);continue;
     }
     packing[article]=packing[article]||{};
-    if(packing[article][combo]!=null){errors.push(`${prefix}: duplicate packing rule for ${article} ${combo}.`);continue;}
+    if(packing[article][combo]!=null){
+      if(Number(packing[article][combo])===ppc){warnings.push(`${prefix}: repeated identical packing rule for ${article} ${combo}; kept once.`);continue;}
+      errors.push(`${prefix}: conflicting packing rule for ${article} ${combo}; earlier row has ${packing[article][combo]}, this row has ${ppc}.`);continue;
+    }
     packing[article][combo]=ppc;
   }
 
+  const catalogueSequence={};
   for(const r of rowObjects(catalogueSheet?.rows||[],["Article Code"])){
     const rawArticle=articleCode(r.get("Article Code"));
     let article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
     let combo=comboCode(r.get("Size Range"));
+    const bomRange=comboCode(r.get("BOM Range"));
     const mrpRaw=r.get("MRP per Pair"), defaultRaw=r.get("Default Price");
     const priceRaw=mrpRaw!=null&&text(mrpRaw)!==""?mrpRaw:defaultRaw;
     const price=priceRaw==null||text(priceRaw)===""?null:Number(priceRaw);
@@ -178,23 +230,39 @@ export function parseReferenceWorkbook(sheets,reference={}){
       continue;
     }
     const ranges=definition.combo_order||Object.keys(definition.combos||{});
-    if(combo&&!ranges.includes(combo)){errors.push(`${prefix}: Size Range ${combo} is not in ${article}'s BOM (${ranges.join(", ")}).`);continue;}
-    const mode=combo?"range":"default";
-    if(catalogueMode[article]&&catalogueMode[article]!==mode){errors.push(`${prefix}: do not mix a default-price row with size-range price rows for ${article}.`);continue;}
-    if(mode==="default"&&catalogue[article]){
-      errors.push(`${prefix}: duplicate Catalogue row for ${article}. Use one row per article, or add Size Range and use one row per range.`);continue;
-    }
+    if(bomRange&&!ranges.includes(bomRange)){errors.push(`${prefix}: BOM Range ${bomRange} is not in ${article}'s BOM (${ranges.join(", ")}).`);continue;}
+    let priceKey=null;
     if(combo){
-      if(price==null){errors.push(`${prefix}: MRP per Pair is required when Size Range is filled.`);continue;}
-      mrp[article]=mrp[article]||{};
-      if(mrp[article][combo]!=null){errors.push(`${prefix}: duplicate Catalogue price for ${article} ${combo}.`);continue;}
-      mrp[article][combo]=price;
+      if(ranges.includes(combo)) priceKey=combo;
+      else{
+        catalogueSequence[article]=catalogueSequence[article]||createSizeSequenceState();
+        const token=parseSizeToken(combo);
+        const extra=token.bare?[`${token.bare}S`,token.bare]:[];
+        const refForSize=bomRange?{...workbookReference,articles:{...workbookReference.articles,
+          [article]:{...workbookReference.articles[article],individual_sizes:[...(workbookReference.articles[article]?.individual_sizes||[]),...extra]}}}:workbookReference;
+        const resolved=resolveArticleSizeWithSequenceIn(refForSize,article,combo,catalogueSequence[article]);
+        if(resolved.error){errors.push(`${prefix}: ${resolved.error}${bomRange?"":"; write S/L explicitly or add BOM Range for a standalone size"}.`);continue;}
+        priceKey=scopedSizeKey(bomRange,resolved.size);
+        individualSizes[article]=individualSizes[article]||[];
+        if(!individualSizes[article].includes(resolved.size)) individualSizes[article].push(resolved.size);
+        if(resolved.outOfOrder) warnings.push(`${prefix}: explicit Small size ${resolved.size} appears after Large sizes; kept because S/L was written explicitly.`);
+        if(resolved.inferred&&["7","8","9","10","11","12","13","13.5"].includes(token.bare)) warnings.push(`${prefix}: inferred ${resolved.size} from ascending Small-then-Large order; write S/L to make it explicit.`);
+      }
     }
-    catalogueMode[article]=mode;
+    if(priceKey&&price!=null){
+      mrp[article]=mrp[article]||{};
+      if(mrp[article][priceKey]!=null){
+        if(Number(mrp[article][priceKey])===price){warnings.push(`${prefix}: repeated identical MRP for ${article} ${priceKey}; kept once.`);continue;}
+        errors.push(`${prefix}: conflicting Catalogue price for ${article} ${priceKey}; earlier row has ${mrp[article][priceKey]}, this row has ${price}.`);continue;
+      }
+      mrp[article][priceKey]=price;
+    }else if(priceKey&&price==null){
+      warnings.push(`${prefix}: ${article} ${priceKey} was accepted as a size entry; no MRP was supplied.`);
+    }
     const incoming={
       article_code:article,
       description,
-      price:combo?null:price,
+      price:priceKey?null:price,
       sole_type:sole||null,
       molding_machine:machine||null,
       packing_source:packingSource||null,
@@ -202,7 +270,7 @@ export function parseReferenceWorkbook(sheets,reference={}){
     };
     const previous=catalogue[article];
     if(previous){
-      for(const field of ["description","sole_type","molding_machine","packing_source","photo_file_name"]){
+      for(const field of ["description","price","sole_type","molding_machine","packing_source","photo_file_name"]){
         if(previous[field]!=null&&incoming[field]!=null&&previous[field]!==incoming[field])
           errors.push(`${prefix}: ${field.replaceAll("_"," ")} conflicts with the earlier ${article} row.`);
         else if(previous[field]==null&&incoming[field]!=null) previous[field]=incoming[field];
@@ -236,5 +304,5 @@ export function parseReferenceWorkbook(sheets,reference={}){
     });
   }
 
-  return {errors,warnings,boms:Object.values(boms),packing,packingSingles,catalogue,mrp,removals};
+  return {errors,warnings,boms:Object.values(boms),packing,packingSingles,catalogue,mrp,individualSizes,removals};
 }

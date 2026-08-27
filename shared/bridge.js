@@ -181,13 +181,14 @@ KNOWN PRODUCTS - use one of these only when the writing genuinely identifies tha
 HOW ENTRIES ARE WRITTEN - read this part carefully, it is the single most common source of error:
 - STACKED (one number written directly ABOVE another, like a fraction, often with a bar between them): the TOP number is the SIZE and the BOTTOM number is that size's NUMBER OF CARTONS. Each stack is a SEPARATE line item. Two stacks written next to each other, e.g. 8-over-2 then 9-over-3, are TWO lines - size 8 with 2 cartons, and size 9 with 3 cartons. NEVER merge two stacks into a single size-pair, and never take one stack's bottom number as the carton count for both.
 - SIDE BY SIDE on the same baseline, joined by | or a space or a slash (e.g. '6|8', '9 11', '12/1'): this is ONE SIZE-PAIR (a combo pack), with its carton count written below or beside it.
-If a section is marked (L), Lace or Big, set "type":"LACE" on every line in that section. If it is marked (V), Velcro or Small, set "type":"VELCRO". Do not carry a type past a new marker.
-Sizes are from 6 7 8 9 10 11 12 13 1 2 3 4 5 5.5. Entries may be grouped under 'Big' (adult/gents sizes) or 'Small' (children sizes) headings - if so, set "group":"BIG" or "SMALL" on each line under that heading.
+SIZE RUN AND CLOSURE ARE SEPARATE. If a section is marked S or Small, set "group":"SMALL". If it is marked L, Large or Big, set "group":"LARGE". L always means Large here; NEVER interpret L as Lace. Only if the full word Lace is written, set "type":"LACE". Only if the full word Velcro is written, set "type":"VELCRO". Do not infer closure from S/L, and do not carry a marker past a new one.
+Sizes are from 6 7 8 9 10 11 12 13 1 2 3 4 5 5.5. Entries may be grouped under Large/Big or Small headings - set "group":"LARGE" or "SMALL" on each line under that heading.
+If S/L or Small/Large is written, preserve it. If it is not written, preserve the entries in their exact reading order: the factory writes every Small size first and every Large size after it. For example 7, 8, 1, 2, 3 means Small 7, Small 8, then Large 1, 2, 3. Do not sort or regroup the lines.
 CHECKSUM - use it, do not skip it: a category often writes its carton total at the end (e.g. '= 8 CTN'). Never return that total as a line item, but DO add up the cartons across the lines you are about to return and check they equal it. If they do not match, you have misread - go back and re-read the entries as separate stacks before answering.
 Any date is Indian DD/MM/YY format (11/6/26 = 11 June 2026); if no date, return "".
 
-WORKED EXAMPLE - a sheet that reads: "1) Jindal Mahroli" / "Gala (V) BLK  Big  8-over-2  9-over-3" / "Small  8-over-1  4-over-2  = 8 CTN" / "2) Paras Indore" / "Armour (L) BLK  1-over-1  2-over-1  3-over-1  = 3 CTN"
-{"date":"","orders":[{"party":"Jindal Mahroli","category":"Gola","color":"Black","lines":[{"sizes":["8"],"cartons":2,"group":"BIG"},{"sizes":["9"],"cartons":3,"group":"BIG"},{"sizes":["8"],"cartons":1,"group":"SMALL"},{"sizes":["4"],"cartons":2,"group":"SMALL"}]},{"party":"Paras Indore","category":"Armour","color":"Black","lines":[{"sizes":["1"],"cartons":1,"group":null},{"sizes":["2"],"cartons":1,"group":null},{"sizes":["3"],"cartons":1,"group":null}]}]}}
+WORKED EXAMPLE - a sheet that reads: "1) Jindal Mahroli" / "Gola BLK  Large  8-over-2  9-over-3" / "Small  8-over-1  4-over-2  = 8 CTN" / "2) Paras Indore" / "Armour Lace  Large  1-over-1  2-over-1  3-over-1  = 3 CTN"
+{"date":"","orders":[{"party":"Jindal Mahroli","category":"Gola","color":"Black","lines":[{"sizes":["8"],"cartons":2,"group":"LARGE"},{"sizes":["9"],"cartons":3,"group":"LARGE"},{"sizes":["8"],"cartons":1,"group":"SMALL"},{"sizes":["4"],"cartons":2,"group":"SMALL"}]},{"party":"Paras Indore","category":"Armour","color":"Black","lines":[{"sizes":["1"],"cartons":1,"group":"LARGE","type":"LACE"},{"sizes":["2"],"cartons":1,"group":"LARGE","type":"LACE"},{"sizes":["3"],"cartons":1,"group":"LARGE","type":"LACE"}]}]}}
 Two customers, each with their own order. Jindal's four lines total 2+3+1+2 = 8 and Paras's three total 3 - both match their stated totals, so the read is correct.
 
 Return ONLY valid JSON, no prose, no code fences:
@@ -203,8 +204,11 @@ export function singlePackingRule(article,size,articleType="",combo=""){
   const bare = raw.replace(/s$/i, "");
   const exact = (ref.packing_singles_exact || {})[article];
   if(exact){
-    const direct = exact[raw] ?? exact[bare] ?? exact[raw.toUpperCase()] ?? exact[bare.toUpperCase()];
-    if(direct != null) return {ppc:Number(direct),kind:"individual override",article,size:raw};
+    const scopedDirect = combo?exact[scopedSizeKey(combo,raw)]??exact[scopedSizeKey(combo,bare)]:null;
+    const direct = scopedDirect
+      ?? exact[raw] ?? exact[bare] ?? exact[raw.toUpperCase()] ?? exact[bare.toUpperCase()];
+    if(direct != null) return {ppc:Number(direct),kind:"individual override",article,size:raw,
+      ...(scopedDirect!=null?{combo}:{} )};
   }
   const sourceArticle=packingArticleSource(article);
   let sourceSize=raw;
@@ -218,8 +222,12 @@ export function singlePackingRule(article,size,articleType="",combo=""){
   const sourceBare=sourceSize.replace(/s$/i,"");
   const sourceExact=(ref.packing_singles_exact||{})[sourceArticle];
   if(sourceArticle!==article&&sourceExact){
-    const direct=sourceExact[sourceSize]??sourceExact[sourceBare]??sourceExact[sourceSize.toUpperCase()]??sourceExact[sourceBare.toUpperCase()];
-    if(direct!=null) return {ppc:Number(direct),kind:"individual override",article:sourceArticle,size:sourceSize};
+    const sourceCombo=packingRuleSource(article,combo).combo;
+    const scopedDirect=sourceCombo?sourceExact[scopedSizeKey(sourceCombo,sourceSize)]??sourceExact[scopedSizeKey(sourceCombo,sourceBare)]:null;
+    const direct=scopedDirect
+      ??sourceExact[sourceSize]??sourceExact[sourceBare]??sourceExact[sourceSize.toUpperCase()]??sourceExact[sourceBare.toUpperCase()];
+    if(direct!=null) return {ppc:Number(direct),kind:"individual override",article:sourceArticle,size:sourceSize,
+      ...(scopedDirect!=null?{combo:sourceCombo}:{} )};
   }
   const section = (ref.packing_singles_by_article || {})[sourceArticle]
     || (ref.packing_singles_by_article || {})[article];
@@ -385,23 +393,128 @@ export function articleTypeCombos(article, type){
   return [...all];                                  // no type given: the whole shoe
 }
 
-export function comboSizesForArticleIn(ref,article,combo,type){
-  /* The adult-roll relabelling belongs ONLY to the split articles, where Lace
-     genuinely means the adult roll. On a legacy code like REX GOLA (L) the
-     (V)/(L) is the CLOSURE — it names a different article with its own BOM, and
-     that article's ranges still use the ordinary roll plus its own B ranges.
-     Relabelling those turns 8s into 8, matches nothing, and strands every pair.
+/* The printed factory roll contains the numerals 6..13 twice: first as Small
+   (6S..13S), then as Large (6..13). A range label such as 7X10 therefore is
+   ambiguous in isolation. Resolve the complete combo_order in sequence, so a
+   new article with 7X10, 11X1, 2X5, 6X7, 8X12 naturally advances from the
+   small run into the large run. This is article-data driven; no product name
+   (GLAMOUR, SPIKE, etc.) is required in code. S forces Small, while B or L
+   forces Large when the workbook needs to be explicit. */
+const ARTICLE_SIZE_ROLL=["6s","7s","8s","9s","10s","11s","12s","13s","1","2","3","4","5","5.5","6","7","8","9","10","11","12","13"];
 
-     Within a split article the RANGE decides, whatever `type` claims. */
-  if(!SPLIT_ARTICLE_TYPES.has(article)) return comboSizes(combo);
+function rangeCandidates(rawCombo){
+  const raw=String(rawCombo||"").toUpperCase().replace(/\s+/g,"");
+  const force=/S$/.test(raw)?"small":/[BL]$/.test(raw)?"large":"";
+  const core=raw.replace(/[SBL]$/,"");
+  const [a,b]=core.split("X");
+  if(!a||!b) return [];
+  const bare=s=>String(s).replace(/S$/i,"");
+  const starts=ARTICLE_SIZE_ROLL.map((s,i)=>bare(s)===a?i:-1).filter(i=>i>=0);
+  const out=[];
+  for(const start of starts){
+    if(force==="small"&&!/S$/i.test(ARTICLE_SIZE_ROLL[start])) continue;
+    if(force==="large"&&/S$/i.test(ARTICLE_SIZE_ROLL[start])) continue;
+    for(let end=start;end<ARTICLE_SIZE_ROLL.length;end++){
+      if(bare(ARTICLE_SIZE_ROLL[end])===b){out.push({start,end,sizes:ARTICLE_SIZE_ROLL.slice(start,end+1)});break;}
+    }
+  }
+  return out;
+}
+
+export function sizeRunOptionsForRange(rawCombo){
+  return [...new Set(rangeCandidates(rawCombo).map(candidate=>/s$/i.test(candidate.sizes[0])?"SMALL":"LARGE"))];
+}
+
+function articleSizeMap(ref,article){
   const definition=(ref.articles||{})[article]||{};
   const all=definition.combo_order||Object.keys(definition.combos||{});
-  const position=all.indexOf(combo);
-  if(position<VELCRO_RANGE_COUNT) return comboSizes(combo);
-  const [a,b]=String(combo||"").toUpperCase().replace(/[SB]$/," ").trim().split("X");
-  const adult=["6","7","8","9","10","11","12","13"];
-  const i=adult.indexOf(a), j=adult.indexOf(b);
-  return i<0||j<0 ? comboSizes(combo) : adult.slice(i,Math.max(i,j)+1);
+  const map={};
+  let cursor=0;
+  for(const combo of all){
+    const explicit=definition.combos?.[combo]?.size_order;
+    if(Array.isArray(explicit)&&explicit.length){map[combo]=explicit.map(String);continue;}
+    const candidates=rangeCandidates(combo);
+    const declared=String(definition.combos?.[combo]?.size_run||"").toUpperCase();
+    const eligible=declared.startsWith("S")?candidates.filter(c=>/s$/i.test(c.sizes[0]))
+      :declared.startsWith("L")?candidates.filter(c=>!/s$/i.test(c.sizes[0])):candidates;
+    const chosen=eligible.find(c=>c.start>=cursor)||eligible[0]||candidates.find(c=>c.start>=cursor)||candidates[0];
+    if(chosen){map[combo]=chosen.sizes;cursor=chosen.end;}
+    else map[combo]=comboSizes(combo);
+  }
+  return map;
+}
+
+export function comboSizesForArticleIn(ref,article,combo,type){
+  return articleSizeMap(ref,article)[combo]||comboSizes(combo);
+}
+
+export function articleSizesForArticleIn(ref,article){
+  const map=articleSizeMap(ref,article), out=[];
+  for(const sizes of Object.values(map)) for(const size of sizes)
+    if(!out.includes(String(size))) out.push(String(size));
+  for(const size of ((ref.articles||{})[article]?.individual_sizes||[]))
+    if(!out.some(v=>String(v).toUpperCase()===String(size).toUpperCase())) out.push(String(size));
+  return out;
+}
+
+export const scopedSizeKey=(combo,size)=>combo?`${String(combo).toUpperCase()}::${String(size).toUpperCase()}`:String(size).toUpperCase();
+export function splitScopedSizeKey(raw){
+  const parts=String(raw||"").split("::");
+  if(parts.length===1) return {combo:null,size:parts[0].toUpperCase(),valid:true};
+  if(parts.length!==2||!parts[0]||!parts[1]) return {combo:null,size:String(raw||"").toUpperCase(),valid:false};
+  return {combo:parts[0].toUpperCase(),size:parts[1].toUpperCase(),valid:true};
+}
+
+/* Accept the notations the factory actually uses. Explicit S/L always wins;
+   the sequence fallback is only used for an unmarked numeral. */
+export function parseSizeToken(rawSize){
+  const raw=String(rawSize==null?"":rawSize).trim().toUpperCase().replace(/\s+/g,"");
+  let hit=raw.match(/^(?:SMALL|S)(\d+(?:\.5)?)$/)||raw.match(/^(\d+(?:\.5)?)(?:SMALL|S)$/);
+  if(hit) return {bare:hit[1],run:"SMALL",explicit:true,canonical:`${hit[1]}S`};
+  hit=raw.match(/^(?:LARGE|BIG|L|B)(\d+(?:\.5)?)$/)||raw.match(/^(\d+(?:\.5)?)(?:LARGE|BIG|L|B)$/);
+  if(hit) return {bare:hit[1],run:"LARGE",explicit:true,canonical:hit[1]};
+  if(/^\d+(?:\.5)?$/.test(raw)) return {bare:raw,run:"",explicit:false,canonical:raw};
+  return {bare:"",run:"",explicit:false,canonical:""};
+}
+
+export function createSizeSequenceState(){return {largeStarted:false,explicitLarge:false};}
+
+/* Factory fallback: all Small sizes are written before Large sizes. Therefore
+   unmarked 7,8,1,2,3 becomes 7S,8S,1,2,3. Once 1..6 appears, later 7..13 is
+   Large. Explicit S/L overrides the fallback, but a Small marker after the
+   Large run has begun is returned as an order error rather than silently
+   reordering the client's sheet. */
+export function resolveArticleSizeWithSequenceIn(ref,article,rawSize,state=createSizeSequenceState()){
+  const token=parseSizeToken(rawSize);
+  if(!token.bare) return {size:null,candidates:[],ambiguous:false,error:`unrecognised size ${rawSize}`};
+  let run=token.run;
+  const low=["1","2","3","4","5","5.5","6"].includes(token.bare);
+  if(!run) run=low||state.largeStarted?"LARGE":"SMALL";
+  const outOfOrder=run==="SMALL"&&state.largeStarted;
+  if(run==="LARGE"){state.largeStarted=true;if(token.explicit)state.explicitLarge=true;}
+  const wanted=run==="SMALL"?`${token.bare}S`:token.bare;
+  const sizes=articleSizesForArticleIn(ref,article).map(String);
+  const exact=sizes.find(s=>String(s).toUpperCase()===wanted.toUpperCase());
+  if(exact) return {size:/s$/i.test(exact)?exact.replace(/s$/i,"")+"S":exact,candidates:[exact],ambiguous:false,run,inferred:!token.explicit,outOfOrder};
+  return {size:null,candidates:[],ambiguous:false,run,inferred:!token.explicit,
+    error:`size ${wanted} is not in ${article}'s configured ranges`};
+}
+
+/* Canonicalise a workbook size without guessing between Small and Large.
+   7S is Small; bare 7 is Large when that article has a Large 7; 7L/7B are
+   accepted aliases for Large. If an old article only has Small 7, a bare 7 is
+   accepted for backwards compatibility because there is only one candidate. */
+export function resolveArticleSizeIn(ref,article,rawSize){
+  const parsed=parseSizeToken(rawSize);
+  const raw=parsed.canonical||String(rawSize==null?"":rawSize).trim().toUpperCase().replace(/\s+/g,"");
+  const sizes=articleSizesForArticleIn(ref,article).map(String);
+  const canonical=s=>/S$/i.test(String(s))?String(s).replace(/S$/i,"")+"S":String(s);
+  const largeAlias=/^[0-9]+(?:\.5)?[LB]$/.test(raw)?raw.slice(0,-1):raw;
+  const exact=sizes.find(s=>s.toUpperCase()===largeAlias);
+  if(exact) return {size:canonical(exact),candidates:[canonical(exact)],ambiguous:false};
+  if(/S$/.test(raw)||/[LB]$/.test(raw)) return {size:null,candidates:[],ambiguous:false};
+  const candidates=sizes.filter(s=>s.replace(/S$/i,"").toUpperCase()===raw).map(canonical);
+  return {size:candidates.length===1?candidates[0]:null,candidates,ambiguous:candidates.length>1};
 }
 
 export function comboSizesForArticle(article,combo,type){

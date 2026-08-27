@@ -46,12 +46,14 @@ function dispatchByOrder(dispatches) {
     const orderNo = String(event.order_no || "");
     if (!orderNo) continue;
     const rec = out[orderNo] || (out[orderNo] = {
-      dispatched: 0, closesOrder: false, latestDate: null,
+      dispatched: 0, closesOrder: false, latestDate: null, closedDate: null,
     });
     rec.dispatched += sumObject(event.dispatched);
     rec.closesOrder ||= !!event.closes_order;
     const date = isoDay(event.dispatched_on);
     if (date && (!rec.latestDate || date > rec.latestDate)) rec.latestDate = date;
+    if (date && (event.closes_order || event.kind === "full") && (!rec.closedDate || date > rec.closedDate))
+      rec.closedDate = date;
   }
   return out;
 }
@@ -81,13 +83,17 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
 
   const orderRows = orders.map(order => {
     const qty = orderQuantity(order);
-    const shipment = byDispatch[order.order_no] || { dispatched: 0, closesOrder: false, latestDate: null };
+    const shipment = byDispatch[order.order_no] || { dispatched: 0, closesOrder: false, latestDate: null, closedDate:null };
     const dispatched = Math.min(qty, shipment.dispatched);
     const rawBalance = Math.max(0, qty - dispatched);
     const pending = shipment.closesOrder ? 0 : rawBalance;
     const shortage = shipment.closesOrder ? rawBalance : 0;
     const health = STATUS[order.sla] || STATUS.on_track;
     const bottleneck = worstStage(order);
+    const completed=shipment.closesOrder||dispatched>=qty;
+    const completedOn=completed?(shipment.closedDate||shipment.latestDate):null;
+    const orderedOn=dayNumber(order.order_date),completedDay=dayNumber(completedOn);
+    const dispatchDays=orderedOn!=null&&completedDay!=null?Math.max(0,completedDay-orderedOn):null;
     return {
       order_no: order.order_no,
       pi_no: order.pi && order.pi.pi_no || "",
@@ -101,6 +107,8 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
       order_date: isoDay(order.order_date),
       dispatch_date: isoDay(order.dispatch_date),
       actual_dispatch_date: shipment.latestDate,
+      completed_dispatch_date: completedOn,
+      dispatch_days: dispatchDays,
       lead_days: Number(order.lead_days) || 0,
       status: health.key,
       status_label: health.label,
@@ -124,6 +132,15 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     const day = dayNumber(event.dispatched_on);
     return sum + (day != null && day >= monthStart && day <= todayDay ? sumObject(event.dispatched) : 0);
   }, 0);
+  const completedLast30=orderRows.filter(order=>{
+    const day=dayNumber(order.completed_dispatch_date);
+    return day!=null&&day>=monthStart&&day<=todayDay;
+  });
+  const closedOrderPairs=completedLast30.reduce((sum,order)=>sum+order.qty,0);
+  const shortagePairs=completedLast30.reduce((sum,order)=>sum+order.shortage,0);
+  const dispatchedOrders=orderRows.filter(order=>order.dispatch_days!=null);
+  const averageDispatchDays=dispatchedOrders.length
+    ?dispatchedOrders.reduce((sum,order)=>sum+order.dispatch_days,0)/dispatchedOrders.length:0;
 
   const machineRows = (state && state.machine_load || []).map(machine => {
     const values = Object.values((state.daily_load || {})[machine.work_center] || {})
@@ -154,11 +171,17 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     total_pairs: orderRows.reduce((sum, order) => sum + order.qty, 0),
     status,
     average_production_days: averageLeadDays,
+    average_dispatch_days: averageDispatchDays,
     capacity_util_pct: overallUtil,
     ordered_last_30_days: orderedLast30,
     dispatched_last_30_days: dispatchedLast30,
     shortfall_last_30_days: Math.max(0, orderedLast30 - dispatchedLast30),
     dispatch_coverage_pct: orderedLast30 ? 100 * dispatchedLast30 / orderedLast30 : 0,
+    order_vs_dispatch_pct: orderedLast30 ? 100 * dispatchedLast30 / orderedLast30 : 0,
+    shortage_pairs_last_30_days: shortagePairs,
+    closed_order_pairs_last_30_days: closedOrderPairs,
+    dispatch_shortage_pct: closedOrderPairs ? 100 * shortagePairs / closedOrderPairs : 0,
+    completed_orders_used_for_dispatch_days: dispatchedOrders.length,
     month_from: fromDayNumber(monthStart),
     month_to: today,
     trend: fiveDayBuckets(todayDay, orders, dispatches),
@@ -171,4 +194,3 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     }),
   };
 }
-

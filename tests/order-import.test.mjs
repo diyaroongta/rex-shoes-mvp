@@ -7,7 +7,8 @@ const row=Array(headers.length).fill("");
 const put=(name,value)=>{row[headers.indexOf(name)]=value;};
 put("Party","Test Traders"); put("Order Date","2026-08-19"); put("Article","SPIKE");
 put("PI No","PI-WIDE-1");
-put("Priority",2); put("Order Nature","MTO"); put("Print","Yes"); put("V/L","Velcro");
+put("Priority",2); put("Order Nature","MTO"); put("Print","Yes"); put("Closure (Lace/Velcro)","Velcro");
+put("Dispatch Timeline","30 days");
 put("Sole Colour","Black"); put("Upper Colour","Blue"); put("Pairs 7X10S",240); put("Pairs 2X5",180);
 
 const wide=parseOrderSheet([headers,row],INPUTS,INPUTS.packing);
@@ -17,6 +18,11 @@ assert.deepEqual(wide.orders[0].lines.map(l=>[l.combo,l.qty]).sort(),[["2X5",180
 assert.equal(wide.orders[0].printing,true);
 assert.equal(wide.orders[0].pi.upper_colour,"Blue");
 assert.equal(wide.orders[0].pi.pi_no,"PI-WIDE-1","wide imports must retain the PI link");
+assert.equal(wide.orders[0].pi.dispatch_timeline,"30 days");
+
+const badClosure=[...row];badClosure[headers.indexOf("Closure (Lace/Velcro)")]="L";
+assert.match(parseOrderSheet([headers,badClosure],INPUTS,INPUTS.packing).errors[0].error,/L means Large size run/,
+  "L is a size-run marker and must never silently become Lace");
 
 const legacy=parseOrderSheet([
   ["Party","Order Date","Article","Size Range","Pairs"],
@@ -59,6 +65,15 @@ const mto=parseOrderSheet([mtoHeaders,mtoRow],INPUTS,INPUTS.packing,{sheetName:"
 assert.deepEqual(mto.errors,[]);
 assert.deepEqual(mto.orders[0].lines.map(l=>[l.combo,l.qty]),[["6X8",36],["9X12",18]]);
 assert.deepEqual(mto.orders[0].lines[0].size_order,["6","7","8"]);
+
+/* Client fallback: S/L is normally written, but if it is omitted the columns
+   still keep their factory order — all Small sizes first, then Large. */
+const ascendingHeaders=["Party","Order Date","Article","7","8","1","2","3"];
+const ascending=parseOrderSheet([ascendingHeaders,["Sequence Buyer","2026-08-26","SPIKE",24,24,24,18,18]],INPUTS,INPUTS.packing);
+assert.deepEqual(ascending.errors,[],ascending.errors.map(e=>e.error));
+assert.deepEqual(ascending.orders[0].lines.flatMap(line=>Object.keys(line.sizes)),["7s","8s","1","2","3"],
+  "7,8 before the reset to 1 are Small; 1,2,3 start the Large run");
+assert.ok(ascending.warnings.some(w=>/inferred 7s, 8s/.test(w)),"fallback inference must be visible for review");
 
 const unknown=[...institutionalRow];unknown[institutionalHeaders.indexOf("ARTICLE NAME")]="NOT IN CATALOGUE";
 const mixed=parseOrderSheet([institutionalHeaders,institutionalRow,unknown],INPUTS,INPUTS.packing,{sheetName:"INSTITUTIONAL ORDER BOOK"});

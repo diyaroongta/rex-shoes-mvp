@@ -175,13 +175,18 @@ function dataSheet({ name, tabColour, title, subtitle, columns, examples, valida
   heading("TWO LAST THINGS");
   pair("Examples", "BOM, Packing and Catalogue start blank. See Example Only for a worked example; never upload by typing into that tab.");
   pair("Photos", "Not part of this file — add them in Factory OS under Catalogue.");
+
+  heading("HOW S / L SIZES ARE READ");
+  pair("Preferred", "Write S or Small for the Small run and L or Large for the Large run. Accepted examples: 7S, S7, 7L, L7.");
+  pair("If omitted", "Keep the factory order: all Small sizes first, then all Large sizes. Factory OS shows a warning whenever it uses this fallback.");
+  pair("Example", "7, 8, 1, 2, 3 is read as Small 7, Small 8, then Large 1, 2, 3. After the Large run starts, later 7–13 are Large.");
 }
 
 /* ---------------------------------------------------------------------- BOM */
 dataSheet({
   name:"BOM", tabColour:"FF047857",
   title:"BOM — what one pair consumes",
-  subtitle:"One row per material, per size range, per stage. Start on row 5; this import tab is intentionally blank.",
+  subtitle:"Preferred: write Small or Large when a range repeats. If blank, Factory OS follows the uploaded range order: all Small ranges first, then Large.",
   columns:[
     { header:"Article Code",  width:22 },
     { header:"Sole Type",     width:13 },
@@ -190,6 +195,7 @@ dataSheet({
     { header:"Material",      width:28 },
     { header:"UOM",           width:9,  align:"center" },
     { header:"Rate per Pair", width:15, numFmt:"0.0000", align:"right" },
+    { header:"Size Run (optional)", width:22 },
   ],
   examples:[],
   validations:[
@@ -199,6 +205,8 @@ dataSheet({
       message:`Choose one of: ${STAGES.join(", ")}` },
     { col:6, values:UOMS, title:"UOM",
       message:`Choose one of: ${UOMS.join(", ")}. Keep the same unit for a material everywhere.` },
+    { col:8, values:["Small","Large"], title:"Size Run",
+      message:"Use Small or Large when the same numeral exists in both runs. Leave blank only when rows remain in Small-then-Large order." },
   ],
 });
 
@@ -206,11 +214,12 @@ dataSheet({
 dataSheet({
   name:"Packing", tabColour:"FFB45309",
   title:"Packing — pairs per carton",
-  subtitle:"Use one row for every BOM size range and, if required, one row for each individual size. Whole numbers only.",
+  subtitle:"Size Range may be a combo or one size. Write S/L where available. For a standalone size, BOM Range tells Factory OS which BOM and carton context it uses.",
   columns:[
     { header:"Article Code",     width:22 },
     { header:"Size Range",       width:15 },
     { header:"Pairs per Carton", width:19, numFmt:"0", align:"right" },
+    { header:"BOM Range (optional)", width:22 },
   ],
   examples:[],
   rows:120,
@@ -220,7 +229,7 @@ dataSheet({
 dataSheet({
   name:"Catalogue", tabColour:"FF4338CA",
   title:"Catalogue — description, MRP by range, machine and packing source",
-  subtitle:"Repeat the exact Article Code. Packing Source is optional: blank = factory rule, SELF = own chart, or an existing article code.",
+  subtitle:"Repeat the exact Article Code. Size entries accept 7S/7L (also S7/L7). BOM Range is only needed when an individual size must borrow a particular range.",
   columns:[
     { header:"Article Code",  width:22 },
     { header:"Size Range",    width:15 },
@@ -230,6 +239,7 @@ dataSheet({
     { header:"PVC Machine",   width:15 },
     { header:"Packing Source", width:22 },
     { header:"Photo File Name", width:22 },
+    { header:"BOM Range (optional)", width:22 },
   ],
   examples:[],
   validations:[
@@ -253,10 +263,11 @@ dataSheet({
     { header:"Material",      width:28 },
     { header:"UOM",           width:9,  align:"center" },
     { header:"Rate per Pair", width:15, numFmt:"0.0000", align:"right" },
+    { header:"Size Run (optional)", width:22 },
   ],
   examples:[
-    ["EXAMPLE ARTICLE","EVA","6X8","CUTTING",'MESH 58"',"MTR",0.42],
-    ["EXAMPLE ARTICLE","EVA","6X8","STITCHING","THREAD","MTR",1.2],
+    ["EXAMPLE ARTICLE","EVA","6X8","CUTTING",'MESH 58"',"MTR",0.42,"Small"],
+    ["EXAMPLE ARTICLE","EVA","6X8","STITCHING","THREAD","MTR",1.2,"Small"],
   ],
   rows:0,
 });

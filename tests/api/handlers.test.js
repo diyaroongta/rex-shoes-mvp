@@ -289,16 +289,18 @@ describe("database API contracts",()=>{
         materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},
         combos:{"7X10":{rates:{CUTTING:{"MAT||MTR":0.5}}},"11X1":{rates:{CUTTING:{"MAT||MTR":0.6}}}}}],
       packing:{THUNDER:{"7X10":24,"11X1":18}},
-      packingSingles:{THUNDER:{"7S":24,"8S":24}},
-      mrp:{THUNDER:{"7X10":899,"11X1":949}},
+      packingSingles:{THUNDER:{"7X10::7S":24,"7X10::8S":24}},
+      mrp:{THUNDER:{"7X10":899,"11X1":949,"7X10::7S":925}},
+      individualSizes:{THUNDER:["7S","8S"]},
       catalogue:{THUNDER:{article_code:"THUNDER",description:"School shoe",price:null,sole_type:"EVA",molding_machine:null}},
     }}},res);
     expect(res.statusCode).toBe(200);
     const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
     const saved=JSON.parse(saveCall[1][0]);
     expect(saved.packing.THUNDER).toEqual({"7X10":24,"11X1":18});
-    expect(saved.packing_singles_exact.THUNDER).toEqual({"7S":24,"8S":24});
-    expect(saved.mrp.THUNDER).toEqual({"7X10":899,"11X1":949});
+    expect(saved.packing_singles_exact.THUNDER).toEqual({"7X10::7S":24,"7X10::8S":24});
+    expect(saved.mrp.THUNDER).toEqual({"7X10":899,"11X1":949,"7X10::7S":925});
+    expect(saved.articles.THUNDER.individual_sizes).toEqual(["7S","8S"]);
     expect(saved.articles.THUNDER.packing_source).toBe("SELF");
     expect(res.body.single_packing_articles).toEqual(["THUNDER"]);
     expect(res.body.mrp_articles).toEqual(["THUNDER"]);
@@ -317,6 +319,49 @@ describe("database API contracts",()=>{
     expect(res.body.error).toMatch(/replace existing BOMs: CUSTOM/);
     expect(client.query).toHaveBeenCalledWith("rollback");
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("insert into reference_data (id, value)"))).toBe(false);
+  });
+
+  it("merges a partial BOM update without deleting omitted ranges or materials",async()=>{
+    const ref={articles:{CUSTOM:{sole_type:"EVA",routing:["CUTTING","PACKING"],combo_order:["1X2","3X4"],combos:{
+      "1X2":{rates:{CUTTING:{"OLD||MTR":1,"CHANGE||MTR":1}}},
+      "3X4":{rates:{CUTTING:{"KEEP||MTR":2}}},
+    }}},materials:{"OLD||MTR":{name:"OLD",uom:"MTR"},"CHANGE||MTR":{name:"CHANGE",uom:"MTR"},"KEEP||MTR":{name:"KEEP",uom:"MTR"}},packing:{}};
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("select value from reference_data")) return {rows:[{value:ref}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{bom_mode:"merge",parsed:{
+      article:"CUSTOM",soleType:"EVA",combo_order:["1X2"],
+      materials:{"CHANGE||MTR":{name:"CHANGE",uom:"MTR"},"NEW||PCS":{name:"NEW",uom:"PCS"}},
+      combos:{"1X2":{rates:{CUTTING:{"CHANGE||MTR":1.5,"NEW||PCS":1}}}},
+    }}},res);
+    expect(res.statusCode).toBe(200);
+    const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const saved=JSON.parse(saveCall[1][0]);
+    expect(saved.articles.CUSTOM.combo_order).toEqual(["1X2","3X4"]);
+    expect(saved.articles.CUSTOM.combos["3X4"].rates.CUTTING["KEEP||MTR"]).toBe(2);
+    expect(saved.articles.CUSTOM.combos["1X2"].rates.CUTTING).toMatchObject({
+      "OLD||MTR":1,"CHANGE||MTR":1.5,"NEW||PCS":1,
+    });
+    expect(saved.articles.CUSTOM.routing).toEqual(["CUTTING","PACKING"]);
+  });
+
+  it("removes only the selected BOM item and records the change",async()=>{
+    const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{rates:{CUTTING:{"WRONG||MTR":1,"KEEP||MTR":2}}}}}},materials:{},packing:{}};
+    const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"PATCH",url:"/api/reference",body:{bom_remove:[{
+      article:"CUSTOM",combo:"1X2",stage:"CUTTING",material:"WRONG||MTR",
+    }]}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.removed_bom_items).toBe(1);
+    const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const saved=JSON.parse(saveCall[1][0]);
+    expect(saved.articles.CUSTOM.combos["1X2"].rates.CUTTING).toEqual({"KEEP||MTR":2});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("reference_data_history"))).toBe(true);
   });
 
   /* A snapshot nobody can restore is not a safety net. A wrong BOM upload

@@ -15,7 +15,7 @@ import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
-import { comboSizes } from "../shared/pi.js";
+import { comboSizes, mrpForSize } from "../shared/pi.js";
 
 /* ------------- UI helpers (shared) ------------- */
 const SOLE_COLOR = {PVC:"#4f46e5",PU:"#0f9d6b",EVA:"#c2410c","STUCK-ON":"#7c3aed"};
@@ -380,6 +380,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [prices,setPrices]=useState(()=>({...DEFAULT_PRICES,...cataloguePrices()}));
   useEffect(()=>{setPrices(current=>({...current,...cataloguePrices()}));},[catalogueVersion]);
   const [saving,setSaving]=useState(false);
+  const [generatingPi,setGeneratingPi]=useState(false);
   const [readingPi,setReadingPi]=useState(false);
   const [piCards,setPiCards]=useState(null);
   const [piPreviewCards,setPiPreviewCards]=useState(null);
@@ -435,16 +436,46 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     article:c.article,party:c.party,customer_city:c.customer_city,order_date:c.order_date,
     priority:c.priority,order_nature:c.order_nature,stitching:c.stitching,
     printing:c.printing,vl:c.vl,sole_colour:c.sole_colour,upper_colour:c.upper_colour,
+    dispatch_timeline:c.dispatch_timeline,
     lines:(c.lines||[]).map(l=>({combo:l.combo,cartons:l.cartons,ppc:l.ppc,qty:l.qty,sizes:l.sizes}))
   })));
   const previewStale=!!piPreviewCards && piPreviewSignature!==sourceSignature;
-  const termsForParty = name => {
+  const termsForParty = (name, partyRows=parties, baseTerms=piTerms, fallbackDiscount=discountPct) => {
     const key=String(name||"").trim().toLowerCase();
-    const master=parties.find(p=>String(p.name||"").trim().toLowerCase()===key);
-    if(!master) return {...(piTerms||{}),discount_pct:Number(discountPct)||0};
-    return {...(piTerms||{}),discount_pct:Number(master.discount_pct)||0,
-      deductions:Array.isArray(master.deductions)?master.deductions:(piTerms||{}).deductions,
-      gst_pct:Number(master.gst_pct),payment_split_pct:Number(master.payment_split_pct)};
+    const base=baseTerms||{};
+    const master=(partyRows||[]).find(p=>String(p.name||"").trim().toLowerCase()===key);
+    if(!master) return {...base,
+      discount_pct:Number(base.discount_pct??fallbackDiscount)||0,
+      dispatch_timeline:String(base.dispatch_timeline||"45 days")};
+    return {...base,
+      discount_pct:Number(master.discount_pct??base.discount_pct??fallbackDiscount)||0,
+      deductions:Array.isArray(master.deductions)?master.deductions:base.deductions,
+      gst_pct:Number(master.gst_pct??base.gst_pct??0),
+      payment_split_pct:Number(master.payment_split_pct??base.payment_split_pct??0),
+      dispatch_timeline:String(master.dispatch_timeline||base.dispatch_timeline||"45 days")};
+  };
+
+  /* Commercial terms are deliberately re-read at the moment Generate is
+     pressed. The preview is then a stable snapshot: a party-master change made
+     after the page was opened cannot leave the new PI on an old discount. */
+  const generatePiPreview=async()=>{
+    setGeneratingPi(true); setErr("");
+    try{
+      const [latestSettings,latestParties]=await Promise.all([api.getSettings(),api.listParties()]);
+      const base=latestSettings.pi_terms||piTerms||{};
+      const snapshot=structuredClone(sourceCards).map(card=>{
+        const commercial=termsForParty(card.party,latestParties,base,base.discount_pct);
+        const timeline=String(card.dispatch_timeline||commercial.dispatch_timeline||"45 days").trim();
+        return {...card,dispatch_timeline:timeline,
+          commercial_terms:{...commercial,dispatch_timeline:timeline}};
+      });
+      setPiTerms(base); setPiConfig(latestSettings.pi_config||piConfig);
+      setParties(latestParties||[]);
+      if(base.discount_pct!=null) setDiscountPct(base.discount_pct);
+      setPiPreviewCards(snapshot); setPiPreviewSignature(sourceSignature);
+    }catch(e){
+      setErr("Could not reload the latest party and discount terms. PI was not generated: "+(e.message||e));
+    }finally{setGeneratingPi(false);}
   };
 
   function handleFile(file){
@@ -543,6 +574,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           vl:item.vl||vl, sole_colour:item.sole_colour||soleColour,
           upper_colour:item.upper_colour||upperColour,
           order_nature:item.order_nature||orderNature,
+          dispatch_timeline:d.dispatch_timeline||d.terms?.dispatch_timeline||"",
           printing:item.printing==null?printing:!!item.printing,
         }));
       }
@@ -729,11 +761,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           <input value={c.customer_city||""} onChange={e=>change({customer_city:e.target.value})}
             className={FIELD} /></label>
       </>}
-      {articleTypes(c.article).includes("ALL") && (
-        <label className={LABEL}>V/L *
-          <input value={c.vl||""} onChange={e=>changeType?changeType(e.target.value):change({vl:e.target.value})}
-            placeholder="Velcro / Lace" className={FIELD} /></label>
-      )}
+      <label className={LABEL}>Dispatch timeline *
+        <input value={c.dispatch_timeline||""} onChange={e=>change({dispatch_timeline:e.target.value})}
+          placeholder={termsForParty(c.party).dispatch_timeline||"45 days"} className={FIELD} /></label>
       <label className={LABEL}>Sole colour *
         <input value={c.sole_colour||""} onChange={e=>change({sole_colour:e.target.value})}
           className={FIELD} /></label>
@@ -783,15 +813,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         +". One sheet can list several customers, so each order needs its own.");
       return;
     }
-    // V/L is only asked for on articles whose code does not already fix it and
-    // whose size ranges do not imply it — a split article gets it per line.
-    const needsVl=c=>articleTypes(c.article).includes("ALL");
     const incomplete=source.filter(c=>
-      !String(c.order_nature||"").trim() || (needsVl(c) && !String(c.vl||"").trim())
+      !String(c.order_nature||"").trim() || !String(c.dispatch_timeline||"").trim()
       || !String(c.sole_colour||"").trim() || !String(c.upper_colour||"").trim()
       || !String(c.order_date||"").trim());
     if(incomplete.length){
-      setErr("Complete order nature, sole colour and upper colour for every article before issuing the PI: "
+      setErr("Complete order nature, dispatch timeline, sole colour and upper colour for every article before issuing the PI: "
         +incomplete.map(c=>c.article).join(", "));
       return;
     }
@@ -806,15 +833,22 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       setErr("Packing is missing for: "+[...new Set(missingPacking)].join(", ")+". Add pairs/carton in Data & BOM before issuing the PI.");
       return;
     }
-    const unpriced=source.flatMap(c=>c.lines
-      .filter(l=>(c.fromPi?(Number(l.qty)||0):(Number(l.cartons)||0))>0
-        && ((INPUTS.mrp||{})[c.article]||{})[l.combo]==null)
-      .map(l=>`${c.article} ${l.combo}`));
+    const unpriced=source.flatMap(c=>c.lines.flatMap(l=>{
+      if((c.fromPi?(Number(l.qty)||0):(Number(l.cartons)||0))<=0) return [];
+      const sizes=(l.size_order||comboSizesForArticle(c.article,l.combo))
+        .filter(size=>!l.sizes||(Number(l.sizes[size])||0)>0);
+      const chart=((INPUTS.mrp||{})[c.article]||{});
+      return sizes.filter(size=>mrpForSize(chart,l.combo,size)==null)
+        .map(size=>`${c.article} ${l.combo} / ${size}`);
+    }));
     if(unpriced.length){
-      setErr("Set MRP before issuing this PI: "+[...new Set(unpriced)].join(", ")+". Use Catalogue → Edit MRP by size range.");
+      setErr("Set MRP before issuing this PI: "+[...new Set(unpriced)].join(", ")+". Use Catalogue → Edit MRP size by size.");
       return;
     }
-    const drafts=source.map(c=>({
+    const drafts=source.map(c=>{
+      const commercial={...(c.commercial_terms||termsForParty(c.party)),
+        dispatch_timeline:String(c.dispatch_timeline||c.commercial_terms?.dispatch_timeline||"45 days")};
+      return ({
       order_date:c.order_date, article_code:c.article,
       priority:Number(c.priority)||2, party:String(c.party||"").trim(),
       lines:(c.lines||[]).filter(l=>c.fromPi?(Number(l.qty)||0)>0:(Number(l.cartons)||0)>0).map(l=>c.fromPi
@@ -834,12 +868,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       pi:{pi_no:piNumberFor(c,source), price:prices[c.article],
           mrp:{...((INPUTS.mrp||{})[c.article]||{})},
           catalogue_image:(CATALOGUE[c.article]||{}).image||articlePhoto(c.article)||null,
-          terms:termsForParty(c.party), discount_pct:termsForParty(c.party).discount_pct,
+          terms:commercial, discount_pct:commercial.discount_pct,
+          dispatch_timeline:commercial.dispatch_timeline,
           customer_city:c.customer_city||"",
           vl:vlSummary(c), sole_colour:c.sole_colour, upper_colour:c.upper_colour,
           remarks, order_nature:c.order_nature, printing:!!c.printing,
           production_status:"produced", attachment:attachment||undefined},
-    })).filter(d=>d.lines.length);
+      });
+    }).filter(d=>d.lines.length);
     if(!drafts.length){ setErr("Add a quantity to at least one checked line before saving."); return; }
     setSaving(true); setErr("");
     try{
@@ -1051,11 +1087,11 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           <div className="text-xs text-slate-500">The PI is created from the current Match &amp; Check values only when you press Generate.</div>
         </div>
         <div className="flex gap-2">
-          <button onClick={()=>{setPiPreviewCards(structuredClone(sourceCards));setPiPreviewSignature(sourceSignature);setErr("");}}
-            className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700">
-            {piPreviewCards?(previewStale?"Regenerate PI with latest edits":"Generate PI again"):"Generate PI from these edits"}
+          <button onClick={generatePiPreview} disabled={generatingPi}
+            className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+            {generatingPi?"Reloading latest terms…":piPreviewCards?(previewStale?"Regenerate PI with latest edits":"Generate PI again"):"Generate PI from these edits"}
           </button>
-          {piPreviewCards && <button onClick={async()=>{if(await allocatePiNo()){setPiPreviewCards(structuredClone(sourceCards));setPiPreviewSignature(sourceSignature);}}}
+          {piPreviewCards && <button onClick={async()=>{if(await allocatePiNo()) await generatePiPreview();}}
             className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white">New PI number</button>}
           <button onClick={printPI} disabled={!piPreviewCards||previewStale} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 disabled:opacity-40">Print / Save PDF</button>
           <button onClick={save} disabled={saving||!piPreviewCards||previewStale}
@@ -1195,7 +1231,8 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     items,
                   }}
                   article={{}}
-                  terms={termsForParty(g.party)}
+                  terms={{...(g.cards[0]?.commercial_terms||termsForParty(g.party)),
+                    dispatch_timeline:g.cards[0]?.dispatch_timeline||g.cards[0]?.commercial_terms?.dispatch_timeline}}
                   config={piConfig}
                 />
               </div>
@@ -1401,7 +1438,7 @@ function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
                 {o.pi.order_nature && <div className="text-xs text-slate-600 mb-1">Nature: <b>{o.pi.order_nature}</b></div>}
                 <div className="text-xs text-slate-600 mb-1">Print: <b>{o.pi.printing?"Yes":"No"}</b></div>
                 {(o.pi.vl||o.pi.sole_colour||o.pi.upper_colour) && <div className="text-xs text-slate-600 mb-1">
-                  {[o.pi.vl&&`V/L ${o.pi.vl}`,o.pi.sole_colour&&`Sole ${o.pi.sole_colour}`,o.pi.upper_colour&&`Upper ${o.pi.upper_colour}`].filter(Boolean).join(" · ")}
+                  {[o.pi.vl&&`Closure ${o.pi.vl}`,o.pi.sole_colour&&`Sole ${o.pi.sole_colour}`,o.pi.upper_colour&&`Upper ${o.pi.upper_colour}`].filter(Boolean).join(" · ")}
                 </div>}
                 {o.pi.remarks && <div className="text-xs text-slate-600 mb-1 max-w-xs">{o.pi.remarks}</div>}
                 {o.pi.attachment && <img src={o.pi.attachment} alt="" className="max-h-20 rounded border border-slate-200" />}
@@ -1456,6 +1493,8 @@ function EditOrder({o,onSave,onCancel}){
   const [remarks,setRemarks]=useState((o.pi&&o.pi.remarks)||"");
   const [nature,setNature]=useState((o.pi&&o.pi.order_nature)||"");
   const [vlEdit,setVlEdit]=useState((o.pi&&o.pi.vl)||"");
+  const [dispatchTimeline,setDispatchTimeline]=useState(
+    (o.pi&&o.pi.dispatch_timeline)||(o.pi&&o.pi.terms&&o.pi.terms.dispatch_timeline)||"45 days");
   const [soleEdit,setSoleEdit]=useState((o.pi&&o.pi.sole_colour)||"");
   const [upperEdit,setUpperEdit]=useState((o.pi&&o.pi.upper_colour)||"");
   const [printingEdit,setPrintingEdit]=useState(!!((o.pi&&o.pi.printing)||o.printing));
@@ -1512,12 +1551,15 @@ function EditOrder({o,onSave,onCancel}){
         ...(Number(l.ppc)>0?{ppc:Number(l.ppc)}:{})};
     }).filter(l=>l.qty>0);
     if(!clean.length){ setErr("Keep at least one line with a quantity above zero."); return; }
-    if(produce&&(!nature.trim()||!vlEdit.trim()||!soleEdit.trim()||!upperEdit.trim())){
-      setErr("Order nature, V/L, sole colour and upper colour are required before producing the revised PI."); return;
+    if(produce&&(!nature.trim()||!dispatchTimeline.trim()||!soleEdit.trim()||!upperEdit.trim())){
+      setErr("Order nature, dispatch timeline, sole colour and upper colour are required before producing the revised PI."); return;
     }
     setBusy(true); setErr("");
     try{ await onSave({expected_version:o.version,article_code:article,party,order_date:date,priority:Number(prio)||2,lines:clean,
-      pi:{remarks, order_nature:nature, vl:vlEdit, sole_colour:soleEdit, upper_colour:upperEdit,
+      pi:{...(o.pi||{}),remarks, order_nature:nature, vl:vlEdit,
+          dispatch_timeline:dispatchTimeline,
+          terms:{...((o.pi&&o.pi.terms)||{}),dispatch_timeline:dispatchTimeline},
+          sole_colour:soleEdit, upper_colour:upperEdit,
           printing:printingEdit, stitching:stitchingEdit,
           production_status:produce?"produced":"edited",
           revision:Number((o.pi&&o.pi.revision)||0)+1, revised_at:new Date().toISOString(),
@@ -1551,9 +1593,13 @@ function EditOrder({o,onSave,onCancel}){
         <datalist id="order-nature-options">
           <option value="MTS" /><option value="Institutional" /><option value="MTO" />
         </datalist></label>
-      <label className="text-xs text-slate-600">V/L
+      <label className="text-xs text-slate-600">Closure (Lace / Velcro)
         <input value={vlEdit} onChange={e=>setVlEdit(e.target.value)}
           className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-28" /></label>
+      <label className="text-xs text-slate-600">Dispatch timeline
+        <input value={dispatchTimeline} onChange={e=>setDispatchTimeline(e.target.value)}
+          placeholder="e.g. 45 days"
+          className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-32" /></label>
       <label className="text-xs text-slate-600">Sole colour
         <input value={soleEdit} onChange={e=>setSoleEdit(e.target.value)}
           className="block mt-1 text-sm border border-slate-300 rounded-lg px-2 py-1.5 w-32" /></label>

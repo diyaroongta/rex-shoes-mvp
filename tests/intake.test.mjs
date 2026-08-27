@@ -24,7 +24,7 @@ const parsed={date:"2026-08-19",orders:[{
 }]};
 
 const built=buildPhotoCards(parsed,INPUTS);
-assert.ok(built.issues.some(issue=>issue.includes("V/L was not readable for sizes 10, 12, 13")));
+assert.deepEqual(built.issues,[],"an omitted S/L marker follows the written Small-then-Large sequence");
 
 /* SPIKE IS ONE SHOE. A slip that writes a Velcro section and a Lace section
    under one heading ordered one article in two rolls — not two articles. The
@@ -61,7 +61,9 @@ assert.ok(pi.lines.some(l=>l.size==="13s") && pi.lines.some(l=>l.size==="11"),
   "both rolls keep their own size labels on the one invoice");
 
 const ambiguous=buildPhotoCards({orders:[{category:"Spike",lines:[{sizes:["11"],cartons:1}]}]},INPUTS);
-assert.ok(ambiguous.issues.some(issue=>issue.includes("V/L was not readable")));
+assert.deepEqual(Object.keys(ambiguous.cards[0].lines[0].sizes),["11s"],
+  "an unmarked opening size is Small; it is not misread as Lace");
+assert.ok(readPrompt().includes("L always means Large here; NEVER interpret L as Lace"));
 
 /* THE TWO FAMILIES BEHAVE OPPOSITELY, and the intake has to get both right.
 
@@ -104,6 +106,23 @@ assert.equal(unknown.cards.length,0,"an unknown handwritten article must not fal
 assert.ok(unknown.issues.some(issue=>issue.includes("GLAMOUR: no configured article match")));
 assert.ok(readPrompt().includes("NEVER force an unknown product onto the closest catalogue name"),
   "the AI reader must preserve an unknown heading so intake can block it safely");
+
+/* Screenshot fallback: the client normally writes S/L. If the marks are absent,
+   preserve the written sequence instead of treating every repeated numeral as
+   the same run. */
+const glamourRef={...INPUTS,articles:{...INPUTS.articles,GLAMOUR:{sole_type:"PVC",packing_source:"SELF",
+  combo_order:["7X10","11X1","2X5","6X7","8X12"],combos:{
+    "7X10":{},"11X1":{},"2X5":{},"6X7":{},"8X12":{},
+  }}},packing:{...INPUTS.packing,GLAMOUR:{"7X10":24,"11X1":24,"2X5":18,"6X7":18,"8X12":18}}};
+setReference(glamourRef);
+const ascending=buildPhotoCards({orders:[{category:"GLAMOUR",lines:[
+  {sizes:["7"],cartons:1},{sizes:["8"],cartons:1},{sizes:["1"],cartons:1},
+  {sizes:["2"],cartons:1},{sizes:["3"],cartons:1},
+]}]},glamourRef);
+assert.deepEqual(ascending.issues,[],ascending.issues.join(" | "));
+assert.deepEqual(ascending.cards[0].lines.flatMap(line=>Object.keys(line.sizes)),["7s","8s","1","2","3"],
+  "unmarked 7,8,1,2,3 must retain the Small-then-Large sequence from the slip");
+setReference(INPUTS);
 
 /* A customer is frequently just a town — Belgaum, Indore. The reader must read
    the heading as written rather than deciding a name is "only a place", and it

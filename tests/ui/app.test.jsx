@@ -104,7 +104,33 @@ describe("critical UI contracts",()=>{
     await user.click(screen.getByRole("button",{name:"Save packing changes"}));
     await waitFor(()=>expect(mocks.patchReference).toHaveBeenCalled());
     const payload=mocks.patchReference.mock.calls[0][0];
-    expect(payload.packing_singles.ARMOUR["7S"]).toBe(30);
+    expect(payload.packing_singles.ARMOUR["7X10S::7S"]).toBe(30);
+    expect(payload.packing_singles.ARMOUR["7S"]).toBeUndefined();
+  });
+
+  it("shows every JILL packing combination and the complete BOM by default",async()=>{
+    const user=userEvent.setup();
+    const onUploadBom=vi.fn();
+    render(<ArticleRulesTab onUploadBom={onUploadBom}/>);
+    await user.selectOptions(screen.getByLabelText("Article"),"JILL");
+    expect(screen.getByLabelText("Article type")).toHaveValue("ALL");
+    for(const [type,combo] of [["VELCRO","7X10S"],["VELCRO","11X1"],["VELCRO","2X5"],["LACE","6X8"],["LACE","9X12"]])
+      expect(screen.getByLabelText(`JILL ${type} ${combo} pairs per carton`)).toBeInTheDocument();
+    expect(screen.getByText(/Complete BOM used per pair/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button",{name:"Upload or replace BOM Excel"}));
+    expect(onUploadBom).toHaveBeenCalledWith("JILL");
+  });
+
+  it("removes one selected BOM item without replacing the full BOM",async()=>{
+    const user=userEvent.setup();
+    render(<ArticleRulesTab/>);
+    await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
+    await user.click(screen.getByRole("button",{name:"Remove a BOM item"}));
+    await user.click(screen.getByRole("checkbox",{name:/I checked the article, size range and material/}));
+    await user.click(screen.getByRole("button",{name:"Remove selected BOM item"}));
+    await waitFor(()=>expect(mocks.patchReference).toHaveBeenCalledWith(expect.objectContaining({
+      bom_remove:[expect.objectContaining({article:"SPIKE",combo:"7X10S"})],
+    })));
   });
 
   it("adds a party without exposing dispatch-timeline editing",async()=>{
@@ -117,8 +143,10 @@ describe("critical UI contracts",()=>{
     await waitFor(()=>expect(mocks.saveParty).toHaveBeenCalledWith(expect.objectContaining({name:"Test Buyer"})));
   });
 
-  it("uses locked party-master terms on the PI instead of an editable discount",async()=>{
-    mocks.listParties.mockResolvedValue([{name:"Test Buyer",discount_pct:35,deductions:[],gst_pct:5,payment_split_pct:50}]);
+  it("reloads the latest party discount and per-order dispatch timeline when Generate PI is pressed",async()=>{
+    mocks.listParties
+      .mockResolvedValueOnce([{name:"Test Buyer",discount_pct:35,dispatch_timeline:"45 days",deductions:[],gst_pct:5,payment_split_pct:50}])
+      .mockResolvedValue([{name:"Test Buyer",discount_pct:27,dispatch_timeline:"30 days",deductions:[],gst_pct:5,payment_split_pct:50}]);
     const user=userEvent.setup();
     render(<App/>);
     await user.click(await screen.findByRole("button",{name:"PI generation"}));
@@ -130,8 +158,11 @@ describe("critical UI contracts",()=>{
     await user.clear(carton);await user.type(carton,"1");
     await waitFor(()=>expect(screen.getByText(/Test Buyer 35%/)).toBeInTheDocument());
     expect(screen.queryByLabelText("Discount %")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Dispatch timeline *")).toHaveAttribute("placeholder","45 days");
     await user.click(screen.getByRole("button",{name:"Generate PI from these edits"}));
-    expect(screen.getAllByText("35%").length).toBeGreaterThan(0);
+    await waitFor(()=>expect(screen.getAllByText("27%").length).toBeGreaterThan(0));
+    expect(screen.getByText("30 days")).toBeInTheDocument();
+    expect(mocks.listParties.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("links a PI database snapshot to the schedule only through the explicit action",async()=>{
@@ -223,7 +254,7 @@ describe("critical UI contracts",()=>{
       order_no:"JO5001",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"Buyer",
       lines:[{combo:"7X10S",qty:240,label:"7X10S",size_order:["7s","8s","9s","10s"],
               sizes:{"7s":60,"8s":60,"9s":60,"10s":60}}],
-      pi:{pi_no:"PI-5001"},
+      pi:{pi_no:"PI-5001",terms:{dispatch_timeline:"45 days"}},
     }]);
     const user=userEvent.setup();
     render(<App/>);
@@ -234,6 +265,8 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByLabelText("7X10S pairs")).not.toBeInTheDocument();
     const size8=screen.getByLabelText("7X10S size 8s pairs");
     await user.clear(size8);await user.type(size8,"100");
+    const timeline=screen.getByLabelText("Dispatch timeline");
+    await user.clear(timeline);await user.type(timeline,"30 days");
 
     await user.click(screen.getByRole("button",{name:"Save edits"}));
     await waitFor(()=>expect(mocks.patchOrder).toHaveBeenCalled());
@@ -243,5 +276,7 @@ describe("critical UI contracts",()=>{
     expect(line.qty).toBe(280);
     expect(line.qty).toBe(Object.values(line.sizes).reduce((a,b)=>a+b,0));
     expect(line.size_order).toEqual(["7s","8s","9s","10s"]);
+    expect(patch.pi.dispatch_timeline).toBe("30 days");
+    expect(patch.pi.terms.dispatch_timeline).toBe("30 days");
   });
 });

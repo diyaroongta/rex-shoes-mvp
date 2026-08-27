@@ -20,8 +20,9 @@ const state = {
 };
 
 const dispatches = [
-  {order_no:"O1",dispatched:{A:80},dispatched_on:"2026-08-12",closes_order:false},
+  {order_no:"O1",dispatched:{A:80},dispatched_on:"2026-08-12",closes_order:true,kind:"shortage"},
   {order_no:"O2",dispatched:{A:50},dispatched_on:"2026-07-30",closes_order:false},
+  {order_no:"O2",dispatched:{A:150},dispatched_on:"2026-08-20",closes_order:false,kind:"full"},
   {order_no:"O3",dispatched:{A:250},dispatched_on:"2026-07-20",closes_order:true},
 ];
 
@@ -37,11 +38,17 @@ assert.equal(mis.average_production_days, 15);
 assert.equal(mis.capacity_util_pct, 62.5);
 
 assert.equal(mis.ordered_last_30_days, 300);
-assert.equal(mis.dispatched_last_30_days, 130);
-assert.equal(mis.shortfall_last_30_days, 170);
-assert.equal(Math.round(mis.dispatch_coverage_pct), 43);
+assert.equal(mis.dispatched_last_30_days, 280);
+assert.equal(mis.shortfall_last_30_days, 20);
+assert.equal(Math.round(mis.dispatch_coverage_pct), 93);
+assert.equal(Math.round(mis.order_vs_dispatch_pct),93);
+assert.equal(Math.round(mis.dispatch_shortage_pct*10)/10,6.7);
+assert.equal(mis.shortage_pairs_last_30_days,20);
+assert.equal(mis.closed_order_pairs_last_30_days,300);
+assert.equal(Math.round(mis.average_dispatch_days*10)/10,8.7);
+assert.equal(mis.completed_orders_used_for_dispatch_days,3);
 assert.equal(mis.trend.reduce((sum,b)=>sum+b.ordered,0),300);
-assert.equal(mis.trend.reduce((sum,b)=>sum+b.dispatched,0),130);
+assert.equal(mis.trend.reduce((sum,b)=>sum+b.dispatched,0),280);
 
 assert.equal(mis.machines[0].work_center,"CUTTING");
 assert.equal(mis.machines[0].average_output,75);
@@ -49,7 +56,8 @@ assert.equal(mis.machines[1].average_output,100);
 
 const o1=mis.orders.find(o=>o.order_no==="O1");
 assert.equal(o1.dispatched,80);
-assert.equal(o1.pending,20);
+assert.equal(o1.pending,0);
+assert.equal(o1.shortage,20);
 assert.equal(o1.completion_pct,80);
 const o3=mis.orders.find(o=>o.order_no==="O3");
 assert.equal(o3.pending,0,"an order closed short must not remain pending");
@@ -60,9 +68,10 @@ const empty=buildMisSnapshot({orders:[],machine_load:[],daily_load:{}},[],{today
 assert.equal(empty.total_orders,0);
 assert.equal(empty.capacity_util_pct,0);
 assert.equal(empty.dispatch_coverage_pct,0);
+assert.equal(empty.dispatch_shortage_pct,0);
+assert.equal(empty.average_dispatch_days,0);
 
 console.log("  pass  order-health counts and date ranges");
 console.log("  pass  30-day order versus dispatch shortfall");
 console.log("  pass  planned production days, output and utilisation");
 console.log("  pass  pending and closed-short order reconciliation\n");
-

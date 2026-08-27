@@ -85,7 +85,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
       <table style={{ width:"100%", borderCollapse:"collapse", marginTop:"-1px" }}>
         <thead>
           <tr>
-            {["Article","V/L","Sole","Upper Colour","Order Nature","Print","Article Image",
+            {["Article","Closure","Sole","Upper Colour","Order Nature","Print","Article Image",
               "Size","Qty","MRP","Discount","Rate","Amount"].map(h=>(
               <th key={h} style={H}>{h}</th>
             ))}

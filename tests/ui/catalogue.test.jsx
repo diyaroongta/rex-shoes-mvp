@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 const apiMocks=vi.hoisted(()=>({getCatalogue:vi.fn(),putCatalogue:vi.fn(),patchReference:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>apiMocks);
 vi.mock("../../src/lib/refdata.js",()=>({
-  REF:{articles:{CUSTOM:{sole_type:"EVA",combo_order:["1X2"],combos:{"1X2":{}}}},mrp:{}},
+  REF:{articles:{CUSTOM:{sole_type:"EVA",combo_order:["1X2"],combos:{"1X2":{}}}},mrp:{CUSTOM:{"1X2":699}}},
   reload:vi.fn(async()=>{}),
 }));
 vi.mock("../../shared/catalogue-seed.js",()=>({articlePhoto:()=>null}));
@@ -17,6 +17,18 @@ beforeEach(()=>{
   vi.clearAllMocks();
   apiMocks.getCatalogue.mockResolvedValue({});
   apiMocks.putCatalogue.mockResolvedValue({article_code:"THUNDER 27",created_without_bom:true,missing_bom:true});
+  apiMocks.patchReference.mockResolvedValue({ok:true});
+});
+
+it("edits MRP only size by size, without exposing a range-price editor",async()=>{
+  render(<CatalogueTab/>);
+  await userEvent.click(screen.getByText("Edit MRP size by size"));
+  expect(screen.queryByText("Range defaults")).not.toBeInTheDocument();
+  const sizeOne=screen.getByLabelText("1X2 · 1");
+  expect(sizeOne).toHaveAttribute("placeholder","699");
+  await userEvent.type(sizeOne,"749");
+  await userEvent.click(screen.getByRole("button",{name:"Save MRP changes"}));
+  await waitFor(()=>expect(apiMocks.patchReference).toHaveBeenCalledWith({mrp:{CUSTOM:{"1X2::1":749}}}));
 });
 
 it("adds a catalogue-only article, warns about its missing BOM and opens the master upload",async()=>{

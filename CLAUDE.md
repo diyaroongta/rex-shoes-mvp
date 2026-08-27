@@ -146,6 +146,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | Unresized image uploads | Phone photos exceeded the serverless request limit and failed silently. Always resize client-side. |
 | Sharing catalogue photos | Gola Plus inherited Gola's photo and pictured the wrong shoe on invoices. |
 | Guessing a combo for a lone size | `mapToCombo` used to snap any size to the nearest range. It must return `{combo:null, single:size}` and let the user resolve it. |
+| Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---
 

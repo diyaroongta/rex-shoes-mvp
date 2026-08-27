@@ -50,6 +50,20 @@ export const DEFAULT_TERMS = {
   dispatch_timeline: "45 days",
 };
 
+/* An individual-size MRP overrides its range MRP. Workbook keys are stored in
+   canonical form (7S for Small, 7 for Large), while PI labels may use 7s, so
+   lookup is deliberately case-insensitive. */
+export function mrpForSize(chart={},combo,size){
+  const wanted=String(size||"").toUpperCase();
+  const scopedWanted=`${String(combo||"").toUpperCase()}::${wanted}`;
+  const scopedKey=Object.keys(chart||{}).find(k=>String(k).toUpperCase()===scopedWanted);
+  if(scopedKey!=null&&chart[scopedKey]!=null) return Number(chart[scopedKey]);
+  const sizeKey=Object.keys(chart||{}).find(k=>String(k).toUpperCase()===wanted);
+  if(sizeKey!=null&&chart[sizeKey]!=null) return Number(chart[sizeKey]);
+  const comboKey=Object.keys(chart||{}).find(k=>String(k).toUpperCase()===String(combo||"").toUpperCase());
+  return comboKey!=null&&chart[comboKey]!=null ? Number(chart[comboKey]) : null;
+}
+
 /* Build every line of a PI from an order.
    order  : { order_no, order_date, party, article_code, lines:[{combo, qty, sizes?}] }
    article: reference-data entry (sole_type etc.)
@@ -65,9 +79,6 @@ export function buildLines(order, mrp = {}, terms = DEFAULT_TERMS){
       ? line.size_order.map(String)
       : comboSizes(line.combo);
     if(!sizes.length){ missing.push({ combo: line.combo, why: "unknown size range" }); continue; }
-
-    const m = mrp[line.combo];
-    if(m == null) missing.push({ combo: line.combo, why: "no MRP on file" });
 
     const qtys = line.sizes
       ? sizes.map(s => Math.max(0, Math.round(Number(line.sizes[s]) || 0)))
@@ -90,7 +101,8 @@ export function buildLines(order, mrp = {}, terms = DEFAULT_TERMS){
     sizes.forEach((size, i) => {
       const qty = qtys[i] || 0;
       if(!qty) return;
-      const mrpVal = m == null ? null : Number(m);
+      const mrpVal = mrpForSize(mrp,line.combo,size);
+      if(mrpVal==null) missing.push({combo:line.combo,size,why:"no MRP on file"});
       const rate   = mrpVal == null ? null : Math.round(mrpVal * (1 - discount/100));
       out.push({
         combo: line.combo, size, qty,

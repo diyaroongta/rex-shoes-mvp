@@ -24,7 +24,7 @@ beforeEach(()=>{
   apiMocks.restoreReference.mockResolvedValue({});
 });
 
-it("previews a master workbook and blocks an existing BOM replacement until confirmed",async()=>{
+it("shows before-versus-after and blocks complete replacement until confirmed",async()=>{
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
     ["Article Code","Sole Type","Size Range","Stage","Component","Material","UOM","Rate per Pair"],
@@ -46,13 +46,19 @@ it("previews a master workbook and blocks an existing BOM replacement until conf
   fireEvent.change(inputs[0],{target:{files:[file]}});
   expect(await screen.findByText("Review changes before saving")).toBeInTheDocument();
   expect(screen.getByText("Existing article — update")).toBeInTheDocument();
-  expect(screen.getByText(/1 size ranges, 1 material rates/)).toBeInTheDocument();
-  const save=screen.getByRole("button",{name:"Confirm and save to database"});
+  expect(screen.getByText("Current BOM")).toBeInTheDocument();
+  expect(screen.getByText("Uploaded BOM")).toBeInTheDocument();
+  expect(screen.getByText("Result after save")).toBeInTheDocument();
+  expect(screen.getByRole("button",{name:"Update listed rows and save"})).toBeEnabled();
+  await userEvent.click(screen.getByRole("radio",{name:/Replace the complete BOM/}));
+  const save=screen.getByRole("button",{name:"Replace CUSTOM BOM and save"});
   expect(save).toBeDisabled();
-  await userEvent.click(screen.getByRole("checkbox"));
+  await userEvent.click(screen.getByRole("checkbox",{name:/I approve replacing the complete BOM/}));
   expect(save).toBeEnabled();
   await userEvent.click(save);
-  await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalledWith(expect.objectContaining({confirm_replace:true})));
+  await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalledWith(expect.objectContaining({
+    bom_mode:"replace",confirm_replace:true,
+  })));
   expect(onChanged).toHaveBeenCalled();
 });
 
@@ -87,7 +93,7 @@ it("reports duplicate catalogue rows before any database request",async()=>{
   const file=new File([bytes],"duplicate.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
   const {container}=render(<DataTab/>);
   fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
-  expect(await screen.findByText(/duplicate Catalogue row for NEW.*add Size Range/)).toBeInTheDocument();
+  expect(await screen.findByText(/Catalogue row 3: description conflicts with the earlier NEW row/)).toBeInTheDocument();
   expect(apiMocks.uploadBom).not.toHaveBeenCalled();
 });
 
@@ -132,9 +138,9 @@ it("allows optional MRP edits in the preview and has no stock editor",async()=>{
   fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
   const mrp=await screen.findByLabelText("1X2");
   fireEvent.change(mrp,{target:{value:"650"}});
-  await userEvent.click(screen.getByRole("button",{name:"Confirm and save to database"}));
+  await userEvent.click(screen.getByRole("button",{name:"Update listed rows and save"}));
   await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalledWith(expect.objectContaining({
-    batch:expect.objectContaining({mrp:{NEW:{"1X2":650}}}),
+    batch:expect.objectContaining({mrp:{NEW:{"1X2":650}}}),bom_mode:"merge",
   })));
   expect(screen.queryByText(/Stock still to fill/)).not.toBeInTheDocument();
 });

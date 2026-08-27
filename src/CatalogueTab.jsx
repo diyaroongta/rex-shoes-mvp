@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import { articlePhoto } from "../shared/catalogue-seed.js";
+import { comboSizesForArticleIn } from "../shared/bridge.js";
+import { mrpForSize } from "../shared/pi.js";
 import * as api from "./lib/client.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
@@ -83,7 +85,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
       clean[combo]=n;
     }
     if(!Object.keys(clean).length) return;
-    if(await saveReference(code,{mrp:{[code]:clean}},"range MRPs"))
+    if(await saveReference(code,{mrp:{[code]:clean}},"size-by-size MRPs"))
       setMrpEdits(all=>{const next={...all};delete next[code];return next;});
   }
 
@@ -143,6 +145,8 @@ export default function CatalogueTab({onChanged,onAddBom}){
       {arts.map(code=>{
         const e=cat[code]||{}; const a=INPUTS.articles[code];
         const combos=a.combo_order||Object.keys(a.combos||{});
+        const sizeEntries=combos.flatMap(combo=>comboSizesForArticleIn(INPUTS,code,combo)
+          .map(size=>({combo,size,key:`${combo}::${String(size).toUpperCase()}`})));
         return <div key={code} className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="h-40 bg-slate-100 flex items-center justify-center relative">
             {(e.image || articlePhoto(code))
@@ -183,12 +187,15 @@ export default function CatalogueTab({onChanged,onAddBom}){
                 <option value="">Choose machine</option><option value="ROTARY">PVC Rotary</option><option value="VERTICAL">PVC Vertical</option>
               </select></label>}
             <details className="mt-3 border-t border-slate-100 pt-2">
-              <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Edit MRP by size range</summary>
-              <div className="grid grid-cols-2 gap-2 mt-2" key={`${code}:${version}`}>
-                {combos.map(combo=><label key={combo} className="text-xs text-slate-500">{combo}
+              <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Edit MRP size by size</summary>
+              <div className="text-[10px] text-slate-500 mt-1">Every size is saved separately. The grey hint is its current price.</div>
+              <div className="grid grid-cols-3 gap-2 mt-2" key={`${code}:${version}`}>
+                {sizeEntries.map(({combo,size,key})=><label key={key} className="text-xs text-slate-500">{combo} · {size}
                   <input type="number" min={0}
-                    value={(mrpEdits[code]&&mrpEdits[code][combo])??(INPUTS.mrp&&INPUTS.mrp[code]&&INPUTS.mrp[code][combo])??""}
-                    onChange={ev=>setMrpEdits(all=>({...all,[code]:{...(all[code]||{}),[combo]:ev.target.value}}))}
+                    value={(mrpEdits[code]&&mrpEdits[code][key])??(INPUTS.mrp&&INPUTS.mrp[code]&&
+                      (INPUTS.mrp[code][key]??INPUTS.mrp[code][size]))??""}
+                    placeholder={String(mrpForSize((INPUTS.mrp&&INPUTS.mrp[code])||{},combo,size)??"Not set")}
+                    onChange={ev=>setMrpEdits(all=>({...all,[code]:{...(all[code]||{}),[key]:ev.target.value}}))}
                     className="mt-0.5 w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 mono" />
                 </label>)}
               </div>

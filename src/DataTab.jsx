@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { existingArticleCode } from "../shared/bom-import.js";
-import { packingArticleSourceFor } from "../shared/bridge.js";
+import { packingArticleSourceFor, pairsPerCarton } from "../shared/bridge.js";
 import { parseReferenceWorkbook } from "../shared/reference-import.js";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
@@ -14,16 +14,46 @@ function workbookSheets(wb){
   if(wb.SheetNames.length>MAX_SHEETS) throw new Error(`Workbook has more than ${MAX_SHEETS} sheets.`);
   let total=0;
   return wb.SheetNames.map(name=>{
-    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+    const sheet=wb.Sheets[name];
+    const unresolved=Object.entries(sheet).filter(([address,cell])=>address[0]!=="!"&&cell?.f&&(cell.v==null||cell.v===""));
+    if(unresolved.length) throw new Error(`${name}: ${unresolved.length} formula cell${unresolved.length===1?" has":"s have"} no saved result. Open the workbook in Excel, recalculate and save it, or paste those values before uploading.`);
+    const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:true,defval:null});
     total+=rows.length;if(total>MAX_ROWS) throw new Error(`Workbook has more than ${MAX_ROWS.toLocaleString()} rows.`);
     return {name,rows};
   });
 }
 
-function rateCount(bom){
-  return Object.values(bom?.combos||{}).reduce((total,combo)=>total+
-    Object.values(combo.rates||{}).reduce((n,stage)=>n+Object.keys(stage||{}).length,0),0);
+function flatBom(definition){
+  const rows=new Map();
+  for(const combo of definition?.combo_order||Object.keys(definition?.combos||{})){
+    for(const [stage,materials] of Object.entries(definition?.combos?.[combo]?.rates||{})){
+      for(const [material,rate] of Object.entries(materials||{})){
+        const id=JSON.stringify([combo,stage,material]);
+        rows.set(id,{id,combo,stage,material,rate:Number(rate)});
+      }
+    }
+  }
+  return rows;
 }
+
+function bomReview(current,incoming,mode){
+  const before=flatBom(current), uploaded=flatBom(incoming);
+  const added=[],changed=[],unchanged=[],removed=[];
+  for(const row of uploaded.values()){
+    const old=before.get(row.id);
+    if(!old) added.push(row);
+    else if(Number(old.rate)!==Number(row.rate)) changed.push({...row,oldRate:old.rate});
+    else unchanged.push(row);
+  }
+  if(mode==="replace") for(const row of before.values()) if(!uploaded.has(row.id)) removed.push(row);
+  const currentRanges=current?.combo_order||Object.keys(current?.combos||{});
+  const uploadedRanges=incoming?.combo_order||Object.keys(incoming?.combos||{});
+  const resultRanges=mode==="merge"?[...new Set([...currentRanges,...uploadedRanges])]:uploadedRanges;
+  const resultRates=mode==="merge"?before.size+added.length:uploaded.size;
+  return {before,uploaded,added,changed,unchanged,removed,currentRanges,uploadedRanges,resultRanges,resultRates};
+}
+
+const changeLabel=row=>`${row.combo} · ${row.stage} · ${row.material}`;
 
 /* One upload path for every article-master change. A workbook may contain BOM,
    packing and catalogue sheets together, or only the sheet being changed; it
@@ -35,9 +65,12 @@ export default function DataTab({ onChanged }){
   const [masterPreview,setMasterPreview]=useState(null);
   const [masterConfirm,setMasterConfirm]=useState(false);
   const [removeConfirm,setRemoveConfirm]=useState(false);   // deleting loaded size ranges
+  const [mappingConfirm,setMappingConfirm]=useState(false);
+  const [bomMode,setBomMode]=useState("merge");
 
   async function pickMaster(file){
     setErr("");setMsg("");setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);
+    setMappingConfirm(false);setBomMode("merge");
     if(!file)return;
     try{
       checkWorkbookFile(file);
@@ -58,8 +91,10 @@ export default function DataTab({ onChanged }){
 
   async function commitMaster(){
     if(!masterPreview)return;
-    if(masterPreview.replacements.length&&!masterConfirm){setErr("Confirm the existing BOM replacements before saving.");return;}
-    if((masterPreview.removals||[]).length&&!removeConfirm){setErr("This file deletes size ranges that are loaded today. Confirm that, or add the missing ranges to the file.");return;}
+    const mappingWarnings=masterPreview.warnings.filter(w=>/treated .+ as /i.test(w));
+    if(mappingWarnings.length&&!mappingConfirm){setErr("Confirm the article-name mappings before saving.");return;}
+    if(bomMode==="replace"&&masterPreview.replacements.length&&!masterConfirm){setErr("Confirm the existing BOM replacements before saving.");return;}
+    if(bomMode==="replace"&&(masterPreview.removals||[]).length&&!removeConfirm){setErr("This file deletes size ranges that are loaded today. Confirm that, or add the missing ranges to the file.");return;}
     setBusy(true);setErr("");setMsg("");
     try{
       const {replacements,removals,fileName,...batch}=masterPreview;
@@ -67,11 +102,12 @@ export default function DataTab({ onChanged }){
         batch.mrp[article]=Object.fromEntries(Object.entries(chart).filter(([,value])=>value!=null&&value!==""));
         if(!Object.keys(batch.mrp[article]).length) delete batch.mrp[article];
       }
-      const r=await api.uploadBom({batch,confirm_replace:replacements.length>0,
-        confirm_remove_ranges:(removals||[]).length>0});
+      const r=await api.uploadBom({batch,bom_mode:bomMode,
+        confirm_replace:bomMode==="replace"&&replacements.length>0,
+        confirm_remove_ranges:bomMode==="replace"&&(removals||[]).length>0});
       await reloadReference();
-      setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);
-      setMsg(`Master workbook saved safely — ${r.articles.length} BOM article(s), ${r.packing_articles.length} combo packing article(s), ${(r.single_packing_articles||[]).length} single-size packing article(s), ${(r.mrp_articles||[]).length} MRP article(s) and ${r.catalogue_articles.length} catalogue article(s). A database revision was recorded.`);
+      setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);setMappingConfirm(false);
+      setMsg(`Master workbook saved safely in ${bomMode==="merge"?"update-only":"complete-replacement"} mode — ${r.articles.length} BOM article(s), ${r.packing_articles.length} combo packing article(s), ${(r.single_packing_articles||[]).length} single-size packing article(s), ${(r.mrp_articles||[]).length} MRP article(s) and ${r.catalogue_articles.length} catalogue article(s). A database revision was recorded.`);
       onChanged&&onChanged();
     }catch(e){setErr(String(e.message||e));}
     finally{setBusy(false);}
@@ -82,6 +118,7 @@ export default function DataTab({ onChanged }){
     ...Object.keys(masterPreview.packing),
     ...Object.keys(masterPreview.packingSingles),
     ...Object.keys(masterPreview.mrp),
+    ...Object.keys(masterPreview.individualSizes||{}),
     ...Object.keys(masterPreview.catalogue),
   ])].sort() : [];
 
@@ -91,6 +128,10 @@ export default function DataTab({ onChanged }){
       ...(ref.articles[bom.article]||{}),sole_type:bom.soleType,
       combo_order:bom.combo_order,combos:bom.combos,
     };
+    for(const [article,sizes] of Object.entries(masterPreview.individualSizes||{})) if(ref.articles[article])
+      ref.articles[article]={...ref.articles[article],individual_sizes:[...new Set([
+        ...(ref.articles[article].individual_sizes||[]),...(sizes||[]),
+      ])]};
     for(const article of new Set([
       ...Object.keys(masterPreview.packing||{}),...Object.keys(masterPreview.packingSingles||{}),
     ])) if(ref.articles[article]) ref.articles[article]={...ref.articles[article],packing_source:"SELF"};
@@ -131,6 +172,24 @@ export default function DataTab({ onChanged }){
         <div className="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">Workbook validated</div>
       </div>
 
+      {!!masterPreview.replacements.length&&<div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+        <div className="text-xs font-semibold text-slate-800 mb-2">How should existing BOMs be changed?</div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className={`rounded-lg border p-3 cursor-pointer ${bomMode==="merge"?"border-emerald-400 bg-emerald-50":"border-slate-200"}`}>
+            <div className="flex gap-2 items-start"><input type="radio" name="bom-mode" value="merge" checked={bomMode==="merge"}
+              onChange={()=>{setBomMode("merge");setMasterConfirm(false);setRemoveConfirm(false);}} />
+              <div><div className="text-xs font-semibold text-slate-900">Update only rows in this file</div>
+                <div className="text-[11px] text-slate-600 mt-0.5">Adds new rows and updates matching rates. Existing rows omitted from Excel stay in the database.</div></div></div>
+          </label>
+          <label className={`rounded-lg border p-3 cursor-pointer ${bomMode==="replace"?"border-rose-400 bg-rose-50":"border-slate-200"}`}>
+            <div className="flex gap-2 items-start"><input type="radio" name="bom-mode" value="replace" checked={bomMode==="replace"}
+              onChange={()=>setBomMode("replace")} />
+              <div><div className="text-xs font-semibold text-slate-900">Replace the complete BOM</div>
+                <div className="text-[11px] text-slate-600 mt-0.5">The uploaded BOM becomes the whole BOM. Existing rows not in Excel are deleted after confirmation.</div></div></div>
+          </label>
+        </div>
+      </div>}
+
       <div className="grid gap-3 mt-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))"}}>
         {masterArticles.map(article=>{
           const existing=existingArticleCode(INPUTS.articles,article);
@@ -139,34 +198,66 @@ export default function DataTab({ onChanged }){
           const definition=bom||current||{};
           const ranges=definition.combo_order||Object.keys(definition.combos||{});
           const oldRanges=current?(current.combo_order||Object.keys(current.combos||{})):[];
-          const added=bom?ranges.filter(c=>!oldRanges.includes(c)):[];
-          const removed=bom?oldRanges.filter(c=>!ranges.includes(c)):[];
+          const review=bom?bomReview(current,bom,bomMode):null;
           const comboPacking=masterPreview.packing[article]||{};
           const singlePacking=masterPreview.packingSingles[article]||{};
           const catalogue=masterPreview.catalogue[article];
           const source=packingArticleSourceFor(provisionalReference,article);
-          const mrpCombos=ranges.length?ranges:Object.keys(masterPreview.mrp[article]||{});
+          const mrpCombos=[...new Set([...ranges,...Object.keys(masterPreview.mrp[article]||{})])];
+          const packingRanges=[...new Set([...oldRanges,...ranges,...Object.keys(comboPacking)])];
           return <div key={article} className="bg-white border border-slate-200 rounded-xl p-3">
             <div className="flex items-start justify-between gap-2">
               <div className="text-sm font-semibold text-slate-900">{article}</div>
               <span className={`text-[10px] font-semibold rounded-full px-2 py-0.5 ${existing?"bg-amber-100 text-amber-900":"bg-emerald-100 text-emerald-900"}`}>
                 {existing?"Existing article — update":"New article — add"}</span>
             </div>
-            <div className="mt-2 space-y-1.5 text-xs text-slate-600">
-              <div><b>BOM:</b> {bom?`${ranges.length} size ranges, ${rateCount(bom)} material rates`:"No BOM change"}</div>
-              <div><b>Sizes:</b> {ranges.length?<span className="mono">{ranges.join(", ")}</span>:"None"}</div>
-              {!!added.length&&<div className="text-emerald-700"><b>Add sizes:</b> {added.join(", ")}</div>}
-              {!!removed.length&&<div className="text-rose-700"><b>Remove sizes:</b> {removed.join(", ")}</div>}
-              <div><b>Packing:</b> {source!==article?`Link to ${source}`:
-                Object.keys(comboPacking).length?Object.entries(comboPacking).map(([c,n])=>`${c}: ${n}`).join(" · "):
-                Object.keys(singlePacking).length?`${Object.keys(singlePacking).length} individual-size rules`:"No packing change"}</div>
-              <div><b>Catalogue:</b> {catalogue?[catalogue.description,catalogue.sole_type,
+            {review?<>
+              <div className="grid grid-cols-3 gap-1.5 mt-3 text-center">
+                <div className="rounded-lg bg-slate-50 p-2"><div className="text-[10px] text-slate-500">Current BOM</div><div className="text-xs font-semibold">{review.currentRanges.length} ranges · {review.before.size} rates</div></div>
+                <div className="rounded-lg bg-indigo-50 p-2"><div className="text-[10px] text-slate-500">Uploaded BOM</div><div className="text-xs font-semibold">{review.uploadedRanges.length} ranges · {review.uploaded.size} rates</div></div>
+                <div className={`rounded-lg p-2 ${review.removed.length?"bg-rose-50":"bg-emerald-50"}`}><div className="text-[10px] text-slate-500">Result after save</div><div className="text-xs font-semibold">{review.resultRanges.length} ranges · {review.resultRates} rates</div></div>
+              </div>
+              <div className="flex gap-1.5 flex-wrap mt-2 text-[10px] font-semibold">
+                <span className="rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5">{review.added.length} added</span>
+                <span className="rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">{review.changed.length} changed</span>
+                <span className="rounded-full bg-rose-100 text-rose-800 px-2 py-0.5">{review.removed.length} removed</span>
+                <span className="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5">{review.unchanged.length} unchanged</span>
+              </div>
+              <details className="mt-2 border-t border-slate-100 pt-2">
+                <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Show exact BOM changes</summary>
+                <div className="mt-2 max-h-56 overflow-auto text-[11px] space-y-1">
+                  {review.added.map(row=><div key={`a${row.id}`} className="text-emerald-800">+ {changeLabel(row)} = {row.rate}/pair</div>)}
+                  {review.changed.map(row=><div key={`c${row.id}`} className="text-amber-800">~ {changeLabel(row)}: {row.oldRate} → {row.rate}/pair</div>)}
+                  {review.removed.map(row=><div key={`r${row.id}`} className="text-rose-800">− {changeLabel(row)} ({row.rate}/pair)</div>)}
+                  {!review.added.length&&!review.changed.length&&!review.removed.length&&<div className="text-slate-500">No BOM values change.</div>}
+                </div>
+              </details>
+              <details className="mt-2">
+                <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Preview full imported BOM ({review.uploaded.size} rates)</summary>
+                <div className="overflow-auto max-h-64 mt-2 border border-slate-200 rounded-lg"><table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-slate-50"><tr><th className="text-left px-2 py-1">Range</th><th className="text-left">Stage</th><th className="text-left">Material</th><th className="text-right px-2">Rate/pair</th></tr></thead>
+                  <tbody>{[...review.uploaded.values()].map(row=><tr key={row.id} className="border-t border-slate-100"><td className="px-2 py-1 mono">{row.combo}</td><td>{row.stage}</td><td>{row.material}</td><td className="text-right px-2 mono">{row.rate}</td></tr>)}</tbody>
+                </table></div>
+              </details>
+            </>:<div className="mt-2 text-xs text-slate-500">No BOM change</div>}
+
+            <div className="border-t border-slate-100 mt-3 pt-2">
+              <div className="text-xs font-semibold text-slate-700 mb-1">Packing changes</div>
+              {source!==article&&!Object.keys(comboPacking).length?<div className="text-xs text-slate-600">Uses {source} packing list. No packing change in this file.</div>
+              :<div className="overflow-x-auto"><table className="w-full text-[11px]"><thead><tr className="text-slate-500"><th className="text-left">Range</th><th className="text-right">Current</th><th className="text-right">Uploaded</th><th className="text-right">Result</th></tr></thead>
+                <tbody>{packingRanges.map(combo=>{const currentPpc=existing?pairsPerCarton(existing,combo):null;const uploaded=comboPacking[combo];return <tr key={combo} className="border-t border-slate-100"><td className="py-1 mono">{combo}</td><td className="text-right mono">{currentPpc??"—"}</td><td className="text-right mono">{uploaded??"—"}</td><td className="text-right mono font-semibold">{uploaded??currentPpc??"Not set"}</td></tr>;})}</tbody>
+              </table></div>}
+              {!!Object.keys(singlePacking).length&&<div className="text-[11px] text-slate-600 mt-1">Plus {Object.keys(singlePacking).length} uploaded individual-size packing rule(s).</div>}
+            </div>
+
+            <div className="border-t border-slate-100 mt-3 pt-2 text-xs text-slate-600">
+              <b>Catalogue:</b> {catalogue?[catalogue.description,catalogue.sole_type,
                 catalogue.price!=null?`Default ₹${catalogue.price}`:null,catalogue.photo_file_name?`Photo: ${catalogue.photo_file_name}`:null]
-                .filter(Boolean).join(" · ")||"Update details":"No catalogue change"}</div>
+                .filter(Boolean).join(" · ")||"Update details":"No catalogue change"}
             </div>
             {!!mrpCombos.length&&<div className="border-t border-slate-100 mt-3 pt-2">
-              <div className="text-xs font-semibold text-slate-700 mb-1">Optional MRP by size range</div>
-              <div className="grid grid-cols-2 gap-1.5">{mrpCombos.map(combo=><label key={combo} className="text-[11px] text-slate-500">{combo}
+              <div className="text-xs font-semibold text-slate-700 mb-1">Optional MRP by size or range</div>
+              <div className="grid grid-cols-2 gap-1.5">{mrpCombos.map(combo=><label key={combo} className="text-[11px] text-slate-500">{combo.replace("::"," · size ")}
                 <input type="number" min={0} value={(masterPreview.mrp[article]||{})[combo]??""}
                   placeholder={(INPUTS.mrp?.[existing||article]||{})[combo]??"Leave unchanged"}
                   onChange={e=>editMrp(article,combo,e.target.value)}
@@ -176,17 +267,27 @@ export default function DataTab({ onChanged }){
         })}
       </div>
 
-      {!!masterPreview.warnings.length&&<div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3 whitespace-pre-line">
-        <b>Workbook notes</b>{"\n"}{masterPreview.warnings.join("\n")}</div>}
-      {!!masterPreview.replacements.length&&<label className="flex gap-2 items-start text-xs text-amber-900 mt-3">
+      {!!masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).length&&<div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mt-3">
+        <div className="font-semibold mb-1">Workbook information / automatic corrections</div>
+        {masterPreview.warnings.filter(w=>!/treated .+ as /i.test(w)).map((warning,i)=><div key={i}>• {warning}</div>)}
+      </div>}
+      {!!masterPreview.warnings.filter(w=>/treated .+ as /i.test(w)).length&&<div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mt-3">
+        <div className="font-semibold mb-1">Article-name mapping requires review</div>
+        {masterPreview.warnings.filter(w=>/treated .+ as /i.test(w)).map((warning,i)=><div key={i}>⚠ {warning}</div>)}
+        <label className="flex gap-2 items-start mt-2">
+          <input type="checkbox" checked={mappingConfirm} onChange={e=>setMappingConfirm(e.target.checked)} />
+          I checked these mappings and confirm the workbook rows belong to the article shown.
+        </label>
+      </div>}
+      {bomMode==="replace"&&!!masterPreview.replacements.length&&<label className="flex gap-2 items-start text-xs text-amber-900 mt-3">
         <input type="checkbox" checked={masterConfirm} onChange={e=>setMasterConfirm(e.target.checked)} />
-        I approve replacing the complete BOM for: {masterPreview.replacements.join(", ")}.
+        I approve replacing the complete BOM for {masterPreview.replacements.join(", ")}. Existing BOM rows not present in this file will be deleted.
       </label>}
 
       {/* A BOM upload replaces an article's ranges outright. Saying "replaces
           the BOM" is not the same as showing WHICH ranges disappear, and a file
           sent to fix one rate is exactly the file that omits the rest. */}
-      {!!(masterPreview.removals||[]).length&&<div className="mt-3 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5">
+      {bomMode==="replace"&&!!(masterPreview.removals||[]).length&&<div className="mt-3 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5">
         <div className="text-xs font-semibold text-rose-900 mb-1">
           This file is missing size ranges that are loaded today — saving it deletes them
         </div>
@@ -197,9 +298,8 @@ export default function DataTab({ onChanged }){
           </div>
         ))}
         <div className="text-xs text-rose-800 mt-1.5">
-          Any order already placed on those ranges keeps its machine time but loses its material —
-          it would order nothing and still occupy the line. To correct one rate, include <b>every</b>
-          range for that article in the file, not only the one you are changing.
+          Any order already placed on those ranges keeps its machine time but loses its material. If you only intend
+          to correct or add rows, switch to <b>Update only rows in this file</b> above.
         </div>
         <label className="flex gap-2 items-start text-xs text-rose-900 mt-2">
           <input type="checkbox" checked={removeConfirm} onChange={e=>setRemoveConfirm(e.target.checked)} />
@@ -208,10 +308,15 @@ export default function DataTab({ onChanged }){
       </div>}
 
       <div className="flex gap-2 mt-3">
-        <button disabled={busy||(masterPreview.replacements.length&&!masterConfirm)
-                          ||((masterPreview.removals||[]).length&&!removeConfirm)} onClick={commitMaster}
-          className="text-xs font-semibold px-4 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{busy?"Saving everything…":"Confirm and save to database"}</button>
-        <button disabled={busy} onClick={()=>{setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);}}
+        <button disabled={busy
+                          ||(masterPreview.warnings.some(w=>/treated .+ as /i.test(w))&&!mappingConfirm)
+                          ||(bomMode==="replace"&&masterPreview.replacements.length&&!masterConfirm)
+                          ||(bomMode==="replace"&&(masterPreview.removals||[]).length&&!removeConfirm)} onClick={commitMaster}
+          className={`text-xs font-semibold px-4 py-2 rounded-lg text-white disabled:opacity-40 ${bomMode==="replace"?"bg-rose-700":"bg-indigo-600"}`}>
+          {busy?"Saving everything…":bomMode==="replace"&&masterPreview.replacements.length
+            ?`Replace ${masterPreview.replacements.join(", ")} BOM and save`
+            :"Update listed rows and save"}</button>
+        <button disabled={busy} onClick={()=>{setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);setMappingConfirm(false);}}
           className="text-xs font-semibold px-4 py-2 rounded-lg border border-slate-300 bg-white">Cancel</button>
       </div>
     </div>}

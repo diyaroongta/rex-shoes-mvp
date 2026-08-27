@@ -35,7 +35,12 @@ export function stageFor(component, materialCategory){
   return "CUTTING";
 }
 
-export const comboCode = s => String(s || "").toUpperCase().replace(/\s+/g, "");
+/* People write the same range as 7X10, 7×10, 7-10 or 7/10. Normalise only
+   when BOTH sides are numeric sizes, so article punctuation and free text are
+   untouched. S/L/B suffixes remain explicit run markers. */
+export const comboCode = s => String(s || "").toUpperCase().trim()
+  .replace(/\s+/g, "")
+  .replace(/^(\d+(?:\.5)?)[X×*\/\-–—](\d+(?:\.5)?)([SBL])?$/, "$1X$2$3");
 export const articleCode = s => String(s || "").toUpperCase().replace(/[^A-Z0-9()+&./ -]+/g, "")
   .replace(/\s+/g, " ").trim();
 
@@ -119,7 +124,6 @@ export function mergeBom(reference, parsed, opts = {}){
   const ref = JSON.parse(JSON.stringify(reference));
   const canonical=existingArticleCode(ref.articles,parsed.article)||articleCode(parsed.article);
   const process=parsed.soleType==="STUCK-ON"?"ASSEMBLY":"MOLDING";
-  const routing = opts.routing || ["CUTTING","PREPARATION","STITCHING","UPPER_QC",process,"PACKING","DISPATCH"];
   const replaced = !!ref.articles[canonical];
   const newMaterials = [];
 
@@ -127,13 +131,26 @@ export function mergeBom(reference, parsed, opts = {}){
     if(!ref.materials[key]){ ref.materials[key] = { ...m, stock:0 }; newMaterials.push(key); }
   }
   const previous=ref.articles[canonical]||{};
+  const updateOnly=opts.mode==="merge"&&replaced;
+  const routing = opts.routing || (updateOnly&&previous.routing)
+    || ["CUTTING","PREPARATION","STITCHING","UPPER_QC",process,"PACKING","DISPATCH"];
+  const combos=updateOnly?JSON.parse(JSON.stringify(previous.combos||{})):{};
+  const comboOrder=updateOnly?[...(previous.combo_order||Object.keys(previous.combos||{}))]:[];
+  for(const combo of parsed.combo_order){
+    if(!comboOrder.includes(combo)) comboOrder.push(combo);
+    if(!updateOnly||!combos[combo]){combos[combo]=parsed.combos[combo];continue;}
+    const incoming=parsed.combos[combo];
+    combos[combo]={...combos[combo],...incoming,rates:{...(combos[combo].rates||{})}};
+    for(const [stage,rates] of Object.entries(incoming.rates||{}))
+      combos[combo].rates[stage]={...(combos[combo].rates[stage]||{}),...rates};
+  }
   ref.articles[canonical] = {
     ...previous,
     sole_type: parsed.soleType,
     sole_assumed: false,
-    combo_order: parsed.combo_order,
+    combo_order: comboOrder,
     routing,
-    combos: parsed.combos,
+    combos,
   };
   if(parsed.soleType!=="PVC") ref.articles[canonical].molding_machine=null;
   return { reference:ref, replaced, newMaterials, article:canonical };
