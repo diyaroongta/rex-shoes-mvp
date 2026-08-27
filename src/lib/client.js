@@ -53,6 +53,9 @@ export const applyPartyTerms   = name => post("/api/parties", { name });
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);
+/* Removing a dispatch puts those pairs back into the order's pending balance,
+   so it is a correction of a mis-keyed report, not a way to hide a shipment. */
+export const deleteDispatch  = id      => j(`/api/dispatches?id=${id}`, { method:"DELETE" });
 
 /* ---- reference data (articles, BOM rates, materials, packing) ---- */
 export const getReference   = ()        => j("/api/reference");

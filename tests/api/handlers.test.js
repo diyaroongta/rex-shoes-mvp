@@ -680,3 +680,35 @@ describe("PI archive and permanent delete",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 });
+
+/* Work centres live in the reference document, not the bundled seed. A centre
+   added or renamed through Data & BOM was rejected as "unknown work centre",
+   so its capacity could not be saved at all — the seed-validation trap, reached
+   through settings rather than through orders. */
+describe("capacities validate against live reference data",()=>{
+  it("accepts a work centre that exists in the database but not the seed",async()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from settings")) return {rows:[]};
+      if(t.includes("reference_data")) return {rows:[{value:{workcenters:{MOLDING:{capacity_per_day:900}}}}]};
+      return {rows:[]};
+    });
+    const res=response();
+    await settingsHandler({method:"PUT",url:"/api/settings",body:{capacities:{MOLDING:1200}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.capacities.MOLDING).toBe(1200);
+  });
+
+  it("still refuses a centre that exists nowhere, and names the real ones",async()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from settings")) return {rows:[]};
+      if(t.includes("reference_data")) return {rows:[{value:{workcenters:{MOLDING:{capacity_per_day:900}}}}]};
+      return {rows:[]};
+    });
+    const res=response();
+    await settingsHandler({method:"PUT",url:"/api/settings",body:{capacities:{NONSENSE:5}}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/Known centres are MOLDING/);
+  });
+});

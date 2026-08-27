@@ -21,6 +21,20 @@ const DEFAULTS = () => {
   return { capacities, sla_targets: DEFAULT_TARGETS, pi_terms: DEFAULT_PI_TERMS };
 };
 
+/* Work centres come from the reference document in the database, not from the
+   bundled seed. A centre added or renamed through Data & BOM — MOLDING, say —
+   is absent from the seed, so validating against it rejected the capacity for
+   a line the factory actually runs. This is the seed-validation trap that
+   CLAUDE.md records, reached through settings rather than orders. */
+async function workCentres(){
+  try{
+    const { rows } = await q("select value from reference_data where id = 1");
+    const live = rows.length && rows[0].value && rows[0].value.workcenters;
+    if(live && Object.keys(live).length) return live;
+  }catch(e){ /* fall through to the seed */ }
+  return INPUTS.workcenters;
+}
+
 export default wrap(async (req, res) => {
   if(req.method === "GET"){
     const { rows } = await q("select value from settings where id = 1");
@@ -33,9 +47,11 @@ export default wrap(async (req, res) => {
     const prev = existing.rows.length ? existing.rows[0].value : {};
     const caps = patch.capacities || {};
     // Only accept known work centres, and only sane positive integers.
+    const centres = await workCentres();
     const clean = {};
     for(const [k, v] of Object.entries(caps)){
-      if(!INPUTS.workcenters[k]) return fail(res, 400, `unknown work centre: ${k}`);
+      if(!centres[k]) return fail(res, 400,
+        `unknown work centre: ${k}. Known centres are ${Object.keys(centres).join(", ")}.`);
       const n = Math.round(Number(v));
       if(!Number.isFinite(n) || n < 1) return fail(res, 400, `capacity for ${k} must be >= 1`);
       clean[k] = n;

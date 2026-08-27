@@ -22,6 +22,22 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
+  const [confirmDel,setConfirmDel]=useState(null);
+
+  /* A packing report can be mis-keyed. Removing one returns its pairs to the
+     order's pending balance, so this is a correction — not a way to make a
+     shipment disappear, which is why it is confirmed and says what it does. */
+  async function removeDispatch(d){
+    setBusy(true); setErr(""); setMsg("");
+    try{
+      await api.deleteDispatch(d.id);
+      const pairs=Object.values(d.dispatched||{}).reduce((a,b)=>a+(Number(b)||0),0);
+      setMsg(`Packing report removed. ${fmt(pairs)} pair(s) are pending again on ${d.order_no}.`);
+      setConfirmDel(null);
+      if(onChanged) await onChanged();
+    }catch(e){ setErr(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
 
 
   /* ordered − dispatched, per combo, per order. The arithmetic — including what
@@ -192,7 +208,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
           <thead><tr className="text-slate-500">
             <th className="text-left py-1">Date</th><th className="text-left">Order</th>
             <th className="text-left">Type</th><th className="text-left">Sent</th>
-            <th className="text-left">Note</th></tr></thead>
+            <th className="text-left">Note</th><th></th></tr></thead>
           <tbody>
             {dispatches.map(d=>(
               <tr key={d.id} className="border-t border-slate-100">
@@ -201,6 +217,21 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                 <td>{d.closes_order ? <span className="text-rose-700 font-semibold">closed short</span> : d.kind}</td>
                 <td className="mono">{Object.entries(d.dispatched).map(([c,v])=>`${c}:${fmt(v)}`).join("  ")}</td>
                 <td className="text-slate-500">{d.note||""}</td>
+                <td className="text-right">
+                  {confirmDel===d.id
+                    ? <span className="inline-flex gap-1.5 items-center">
+                        <span className="text-rose-800">Put these pairs back?</span>
+                        <button disabled={busy} onClick={()=>removeDispatch(d)}
+                          aria-label={`Confirm removing the ${d.order_no} packing report`}
+                          className="font-semibold text-white bg-rose-700 rounded px-2 py-0.5 disabled:opacity-50">Remove report</button>
+                        <button onClick={()=>setConfirmDel(null)}
+                          className="font-semibold border border-slate-300 bg-white rounded px-2 py-0.5">Keep</button>
+                      </span>
+                    : <button onClick={()=>setConfirmDel(d.id)}
+                        aria-label={`Remove the ${d.order_no} packing report`}
+                        title="Remove this packing report and return its pairs to the order's pending balance"
+                        className="text-rose-600 font-semibold hover:underline">Remove</button>}
+                </td>
               </tr>))}
           </tbody>
         </table>

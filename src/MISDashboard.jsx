@@ -18,12 +18,79 @@ const shortDate = value => value
 const dateRange = group => !group || !group.from ? "No orders" : group.from===group.to
   ? niceDate(group.from) : `${shortDate(group.from)} – ${niceDate(group.to)}`;
 
-function Kpi({label,value,detail,tone="#0F2233",pale="#F6F8FA",testId}){
-  return <div className="bg-white border border-slate-200 rounded-xl p-4" data-testid={testId}>
+/* A figure nobody can take apart is a figure nobody can trust. Giving `drill`
+   turns the tile into a button that opens the orders behind the number, so
+   "19% shortage" can be checked against the orders that produced it. */
+function Kpi({label,value,detail,tone="#0F2233",pale="#F6F8FA",testId,drill,onDrill,open}){
+  const body=<>
     <div className="sign text-slate-500" style={{fontSize:10,fontWeight:600}}>{label}</div>
     <div className="mono mt-2" style={{fontSize:27,lineHeight:1,fontWeight:600,color:tone}}>{value}</div>
     <div className="mt-3 rounded-md px-2 py-1.5" style={{fontSize:11.5,color:tone,background:pale,minHeight:31}}>{detail}</div>
-  </div>;
+    {drill && <div className="mt-2 text-indigo-700" style={{fontSize:10.5,fontWeight:600}}>
+      {open?"Hide the orders behind this ▲":"Show the orders behind this ▼"}</div>}
+  </>;
+  if(!drill) return <div className="bg-white border border-slate-200 rounded-xl p-4" data-testid={testId}>{body}</div>;
+  return <button type="button" onClick={()=>onDrill(open?null:drill)} data-testid={testId}
+    aria-expanded={!!open}
+    className="text-left bg-white border rounded-xl p-4 hover:border-indigo-400 transition-colors"
+    style={{borderColor:open?"#0B6BCB":"#E2E8F0"}}>{body}</button>;
+}
+
+/* The orders that produce one figure, with the arithmetic spelled out. Every
+   row comes from the same snapshot the tile was computed from, so the two can
+   never disagree. */
+function Drill({metric,snapshot,fmt,pct,niceDate}){
+  if(!metric) return null;
+  const all=snapshot.orders||[];
+  const VIEWS={
+    shortage:{
+      title:"Accepted shortage — orders closed with pairs never delivered",
+      rows:all.filter(o=>o.shortage>0),
+      sum:`${fmt(snapshot.shortage_pairs_last_30_days)} shortage pairs ÷ ${fmt(snapshot.closed_order_pairs_last_30_days)} pairs on orders closed in the last 30 days = ${pct(snapshot.dispatch_shortage_pct)}`,
+      empty:"No order has been closed short. A part-shipped order that is still open counts as pending, not shortage — see Pending below.",
+      cols:["Ordered","Dispatched","Shortage"], cell:o=>[o.qty,o.dispatched,o.shortage],
+    },
+    pending:{
+      title:"Still to ship — ordered pairs not yet dispatched",
+      rows:all.filter(o=>o.pending>0),
+      sum:`${fmt(all.reduce((n,o)=>n+o.pending,0))} pairs outstanding across ${all.filter(o=>o.pending>0).length} order(s)`,
+      empty:"Nothing outstanding.",
+      cols:["Ordered","Dispatched","Pending"], cell:o=>[o.qty,o.dispatched,o.pending],
+    },
+    coverage:{
+      title:"Order versus dispatch — last 30 days",
+      rows:all.filter(o=>o.dispatched>0||o.pending>0),
+      sum:`${fmt(snapshot.dispatched_last_30_days)} dispatched ÷ ${fmt(snapshot.ordered_last_30_days)} ordered in the last 30 days = ${pct(snapshot.order_vs_dispatch_pct)}`,
+      empty:"No orders or dispatches in the last 30 days.",
+      cols:["Ordered","Dispatched","Pending"], cell:o=>[o.qty,o.dispatched,o.pending],
+    },
+    breach:{ title:"Delayed orders", rows:all.filter(o=>o.status==="breach"),
+      sum:`${all.filter(o=>o.status==="breach").length} order(s) past their target date`,
+      empty:"Nothing delayed.", cols:["Pairs","Slips","Bottleneck"], cell:o=>[o.qty,`${o.slip_days}d`,o.bottleneck||"—"] },
+    at_risk:{ title:"Orders at risk", rows:all.filter(o=>o.status==="at_risk"),
+      sum:`${all.filter(o=>o.status==="at_risk").length} order(s) within days of missing their target`,
+      empty:"Nothing at risk.", cols:["Pairs","Slips","Bottleneck"], cell:o=>[o.qty,`${o.slip_days}d`,o.bottleneck||"—"] },
+  };
+  const v=VIEWS[metric];
+  if(!v) return null;
+  return <section className="bg-white border border-indigo-300 rounded-xl p-4">
+    <div className="text-sm font-semibold text-slate-800">{v.title}</div>
+    <div className="mono text-xs text-slate-600 mt-1">{v.sum}</div>
+    {!v.rows.length
+      ? <div className="text-xs text-slate-500 mt-3">{v.empty}</div>
+      : <div className="overflow-x-auto mt-3"><table className="w-full text-xs" style={{minWidth:560}}>
+          <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
+            <th className="text-left py-1">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th>
+            {v.cols.map(c=><th key={c} className="text-right">{c}</th>)}
+          </tr></thead>
+          <tbody>{v.rows.map(o=><tr key={o.order_no} className="border-t border-slate-100">
+            <td className="py-1.5"><div className="mono font-semibold">{o.order_no}</div>
+              <div className="mono text-slate-400">{o.pi_no||"No PI"}</div></td>
+            <td>{o.party||"—"}</td><td>{o.article}</td>
+            {v.cell(o).map((x,i)=><td key={i} className="mono text-right">{typeof x==="number"?fmt(x):x}</td>)}
+          </tr>)}</tbody>
+        </table></div>}
+  </section>;
 }
 
 function StatusPill({status}){
@@ -56,6 +123,7 @@ function Progress({value,color="#0B6BCB"}){
 export default function MISDashboard({state,dispatches=[],dispatchLoading=false,dispatchError="",onRefresh,today}){
   const snapshot=useMemo(()=>buildMisSnapshot(state,dispatches,{today}),[state,dispatches,today]);
   const [filter,setFilter]=useState("all");
+  const [drill,setDrill]=useState(null);   // which figure is being taken apart
   const [search,setSearch]=useState("");
   const visible=snapshot.orders.filter(order=>(filter==="all"||order.status===filter)
     && (!search.trim() || [order.order_no,order.pi_no,order.party,order.article]
@@ -86,24 +154,30 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
       <Kpi label="Total live orders" value={fmt(snapshot.total_orders)} detail={`${fmt(snapshot.total_pairs)} ordered pairs`} testId="kpi-total-orders" />
       <Kpi label="Orders on time" value={fmt(snapshot.status.on_track.count)} detail={dateRange(snapshot.status.on_track)} tone={STATUS.on_track.color} pale={STATUS.on_track.pale} testId="kpi-on-time" />
-      <Kpi label="Orders at risk" value={fmt(snapshot.status.at_risk.count)} detail={dateRange(snapshot.status.at_risk)} tone={STATUS.at_risk.color} pale={STATUS.at_risk.pale} testId="kpi-at-risk" />
-      <Kpi label="Delayed orders" value={fmt(snapshot.status.breach.count)} detail={dateRange(snapshot.status.breach)} tone={STATUS.breach.color} pale={STATUS.breach.pale} testId="kpi-delayed" />
+      <Kpi label="Orders at risk" drill="at_risk" onDrill={setDrill} open={drill==="at_risk"} value={fmt(snapshot.status.at_risk.count)} detail={dateRange(snapshot.status.at_risk)} tone={STATUS.at_risk.color} pale={STATUS.at_risk.pale} testId="kpi-at-risk" />
+      <Kpi label="Delayed orders" drill="breach" onDrill={setDrill} open={drill==="breach"} value={fmt(snapshot.status.breach.count)} detail={dateRange(snapshot.status.breach)} tone={STATUS.breach.color} pale={STATUS.breach.pale} testId="kpi-delayed" />
       <Kpi label="Avg production days" value={fmt(snapshot.average_production_days,1)} detail="Average scheduled release-to-dispatch lead time" testId="kpi-production-days" />
       <Kpi label="Capacity utilisation" value={pct(snapshot.capacity_util_pct)} detail="Average planned utilisation across active centres" tone="#0B6BCB" pale="#EFF6FF" testId="kpi-utilisation" />
     </section>
 
-    <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <section className="grid grid-cols-1 md:grid-cols-4 gap-3">
       <Kpi label="Order vs dispatch %" value={pct(snapshot.order_vs_dispatch_pct)}
         detail={`${fmt(snapshot.dispatched_last_30_days)} dispatched ÷ ${fmt(snapshot.ordered_last_30_days)} ordered pairs · last 30 days`}
-        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-order-dispatch-pct" />
+        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-order-dispatch-pct" drill="coverage" onDrill={setDrill} open={drill==="coverage"} />
       <Kpi label="Dispatch shortage %" value={pct(snapshot.dispatch_shortage_pct)}
         detail={`${fmt(snapshot.shortage_pairs_last_30_days)} shortage ÷ ${fmt(snapshot.closed_order_pairs_last_30_days)} pairs on orders closed in 30 days`}
         tone={snapshot.dispatch_shortage_pct?"#BE123C":"#047857"} pale={snapshot.dispatch_shortage_pct?"#FFF1F2":"#ECFDF5"}
-        testId="kpi-dispatch-shortage-pct" />
+        testId="kpi-dispatch-shortage-pct" drill="shortage" onDrill={setDrill} open={drill==="shortage"} />
+      <Kpi label="Still to ship" value={fmt((snapshot.orders||[]).reduce((n,o)=>n+o.pending,0))}
+        detail={`${(snapshot.orders||[]).filter(o=>o.pending>0).length} order(s) part-shipped or not started`}
+        tone="#B45309" pale="#FFFBEB" testId="kpi-pending"
+        drill="pending" onDrill={setDrill} open={drill==="pending"} />
       <Kpi label="Average dispatch days" value={fmt(snapshot.average_dispatch_days,1)}
         detail={`${fmt(snapshot.completed_orders_used_for_dispatch_days)} completed order${snapshot.completed_orders_used_for_dispatch_days===1?"":"s"} · order date to completed dispatch`}
         tone="#334155" pale="#F8FAFC" testId="kpi-average-dispatch-days" />
     </section>
+
+    <Drill metric={drill} snapshot={snapshot} fmt={fmt} pct={pct} niceDate={niceDate} />
 
     <section className="grid grid-cols-1 lg:grid-cols-5 gap-4">
       <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl p-4">
