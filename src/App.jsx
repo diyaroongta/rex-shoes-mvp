@@ -49,7 +49,13 @@ export default function App(){
     try{
       const [list, settings] = await Promise.all([api.listOrders(), api.getSettings()]);
       setOrders(list);
-      if(settings && settings.capacities) setCaps(c=>({...c, ...settings.capacities}));
+      /* Only capacities for centres that still exist. Settings saved when
+         molding was ONE machine carry a stale MOLDING key; merged in and sent
+         back it was rejected, which blocked every capacity edit from then on —
+         one dead key poisoning all of them. */
+      if(settings && settings.capacities) setCaps(c=>({...c,
+        ...Object.fromEntries(Object.entries(settings.capacities)
+          .filter(([code])=>INPUTS.workcenters[code]))}));
       if(settings && settings.sla_targets) setTargets(settings.sla_targets);
     }catch(e){ setLoadErr(e.message||String(e)); setOrders([]); }
   })(); },[]);
@@ -135,7 +141,8 @@ export default function App(){
   const capsLoaded = useRef(false);
   useEffect(()=>{
     if(!capsLoaded.current){ capsLoaded.current = true; return; }   // skip the initial hydrate
-    const t=setTimeout(()=>{ api.putSettings({capacities:caps})
+    const t=setTimeout(()=>{ api.putSettings({capacities:
+        Object.fromEntries(Object.entries(caps).filter(([code])=>INPUTS.workcenters[code]))})
       .then(()=>setFlash("Machine capacities saved — the whole plan has been recalculated."))
       .catch(e=>setLoadErr(`Could not save the capacity change: ${e.message||e}. The figure on screen is not stored.`));
     }, 600);

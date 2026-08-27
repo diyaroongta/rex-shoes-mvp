@@ -48,7 +48,10 @@ export function buildLedger(orders = [], dispatches = [], pairsPerCarton = () =>
     const balance = rec.total_ordered - rec.total_dispatched;
     rec.total_pending = rec.closed ? 0 : balance;
     rec.shortfall     = rec.closed ? Math.max(0, balance) : 0;
-    rec.status = rec.closed        ? (rec.shortfall > 0 ? "closed short" : "complete")
+    /* A closed order with nothing short really is complete, but saying only
+       "complete" hides that it was closed deliberately rather than shipped
+       out naturally. */
+    rec.status = rec.closed        ? (rec.shortfall > 0 ? "closed short" : "closed complete")
                : rec.total_dispatched === 0 ? "not started"
                : balance <= 0      ? "complete"
                : "partial";

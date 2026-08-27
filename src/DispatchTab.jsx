@@ -61,6 +61,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
     for(const [c,v] of Object.entries(draft)){ const n=Number(v)||0; if(n>0) dispatched[c]=n; }
     if(!Object.keys(dispatched).length && !closing){ setErr("Enter at least one quantity."); return; }
     const short=rec.total_ordered-rec.total_dispatched-Object.values(dispatched).reduce((a,b)=>a+b,0);
+    if(closing && short<=0 &&
+       !confirm(`${rec.order.order_no} has nothing short — the quantities entered cover the whole order.\n\n`+
+                `This will simply complete it. To close it short, reduce the quantities to what actually shipped.`))
+      return;
     if(closing && short>0 &&
        !confirm(`Close ${rec.order.order_no} with ${fmt(short)} pairs never delivered?\n\n`+
                 `The balance stops counting as pending and is recorded as a shortage. This cannot be undone from here.`))
@@ -159,7 +163,17 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                     </table>
                     <div className="flex gap-2 items-end flex-wrap">
                       <label className="text-xs text-slate-600">Type
-                        <select value={kind} onChange={e=>setKind(e.target.value)}
+                        <select value={kind} onChange={e=>{
+                            const next=e.target.value; setKind(next);
+                            /* The boxes start pre-filled with everything still
+                               outstanding, which is right for a real dispatch
+                               and exactly wrong for closing short: pressing it
+                               unchanged shipped the whole balance and left
+                               nothing short. Closing starts from zero, so the
+                               shortage is the balance unless pairs are typed. */
+                            if(next==="shortage") setDraft(d=>Object.fromEntries(Object.keys(d).map(k=>[k,0])));
+                            else setDraft(Object.fromEntries(rec.rows.map(r=>[r.combo,r.pending>0?r.pending:0])));
+                          }}
                           className="block mt-0.5 text-sm border border-slate-300 rounded-lg px-2 py-1 bg-white">
                           <option value="partial">Partial dispatch</option>
                           <option value="full">Full / final</option>
@@ -187,8 +201,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                           counting as pending; the shortfall stays on record against the order.
                         </div>
                       ) : (
-                        <div className="text-xs text-slate-500 mt-2">
-                          Nothing outstanding once this is recorded — either button completes the order.
+                        <div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-2 py-1.5 mt-2">
+                          The quantities above cover the whole order, so <b>nothing would be short</b>. Closing now
+                          simply completes {rec.order.order_no}. To record a shortage, reduce the quantities to what
+                          actually shipped — the rest becomes the shortfall.
                         </div>
                       );
                     })()}

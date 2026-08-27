@@ -699,7 +699,9 @@ describe("capacities validate against live reference data",()=>{
     expect(res.body.capacities.MOLDING).toBe(1200);
   });
 
-  it("still refuses a centre that exists nowhere, and names the real ones",async()=>{
+  /* A stale key is dropped, not fatal: refusing the whole request let one dead
+     work centre block every other capacity edit for good. */
+  it("drops a centre that no longer exists instead of refusing the save",async()=>{
     dbMocks.q.mockImplementation(async sql=>{
       const t=String(sql);
       if(t.includes("from settings")) return {rows:[]};
@@ -707,8 +709,11 @@ describe("capacities validate against live reference data",()=>{
       return {rows:[]};
     });
     const res=response();
-    await settingsHandler({method:"PUT",url:"/api/settings",body:{capacities:{NONSENSE:5}}},res);
-    expect(res.statusCode).toBe(400);
-    expect(res.body.error).toMatch(/Known centres are MOLDING/);
+    await settingsHandler({method:"PUT",url:"/api/settings",
+      body:{capacities:{MOLDING:1200,NONSENSE:5}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.capacities.MOLDING).toBe(1200);     // the real one still saves
+    expect(res.body.capacities.NONSENSE).toBeUndefined();
+    expect(res.body.dropped_work_centres).toEqual(["NONSENSE"]);
   });
 });

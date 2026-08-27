@@ -43,7 +43,10 @@ assert.deepEqual(totals, { ordered:1200, dispatched:650, pending:150, shortfall:
 const exact = buildLedger([orders[1]],
   [{ id:9, order_no:"JO2", dispatched:{"7X10S":200}, closes_order:true, dispatched_on:"2026-08-20" }], ppc);
 assert.equal(exact.JO2.shortfall, 0);
-assert.equal(exact.JO2.status, "complete");
+/* Closing an order that was in fact fully shipped is completion — but saying
+   only "complete" would hide that it was closed deliberately rather than
+   shipped out naturally. */
+assert.equal(exact.JO2.status, "closed complete");
 
 console.log("  pass  closing an order short clears its pending balance");
 console.log("  pass  the shortfall is recorded rather than erased");

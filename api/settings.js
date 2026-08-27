@@ -49,9 +49,12 @@ export default wrap(async (req, res) => {
     // Only accept known work centres, and only sane positive integers.
     const centres = await workCentres();
     const clean = {};
+    const dropped = [];
     for(const [k, v] of Object.entries(caps)){
-      if(!centres[k]) return fail(res, 400,
-        `unknown work centre: ${k}. Known centres are ${Object.keys(centres).join(", ")}.`);
+      /* A centre that no longer exists is stale settings, not bad input:
+         refusing the whole request let one dead key block every capacity edit.
+         It is dropped and reported instead. */
+      if(!centres[k]){ dropped.push(k); continue; }
       const n = Math.round(Number(v));
       if(!Number.isFinite(n) || n < 1) return fail(res, 400, `capacity for ${k} must be >= 1`);
       clean[k] = n;
@@ -63,6 +66,8 @@ export default wrap(async (req, res) => {
       if(!Number.isFinite(n) || n < 0) return fail(res, 400, `target for ${k} must be 0 or more`);
       targets[k] = n;
     }
+    // Forget the stale keys rather than carrying them forward for ever.
+    for(const k of dropped) delete (prev.capacities||{})[k];
     const base = DEFAULTS();
     // A settings save is a PATCH even though the HTTP verb is PUT. Machine
     // inputs are debounced one at a time and PI configuration is saved from a
@@ -95,7 +100,7 @@ export default wrap(async (req, res) => {
     else if(prev.pi_config) value.pi_config = prev.pi_config;
     await q(`insert into settings (id, value) values (1, $1)
              on conflict (id) do update set value = $1, updated_at = now()`, [JSON.stringify(value)]);
-    return res.status(200).json(value);
+    return res.status(200).json(dropped.length ? { ...value, dropped_work_centres: dropped } : value);
   }
 
   return fail(res, 405, `${req.method} not allowed`);
