@@ -489,7 +489,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [parties,setParties]=useState([]);
   const [piTerms,setPiTerms]=useState(null);
   const [piConfig,setPiConfig]=useState(null);
-  useEffect(()=>{ Promise.all([api.getSettings(),api.listParties().catch(()=>[])])
+  useEffect(()=>{ Promise.all([api.getSettings(),
+      api.listParties().catch(e=>{
+        setErr(`Could not load the customer list: ${e.message||e}. `
+          +`Customer names will not autocomplete and agreed terms may not be applied.`);
+        return [];
+      })])
     .then(([v,partyRows])=>{ if(v.pi_terms) setPiTerms(v.pi_terms); if(v.pi_config) setPiConfig(v.pi_config);
                if(v.pi_terms && v.pi_terms.discount_pct!=null) setDiscountPct(v.pi_terms.discount_pct);
                setParties(partyRows||[]); })
@@ -1117,6 +1122,20 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       </div>
       {err && <div className="mt-3 rounded-xl px-3 py-2.5 text-sm bg-orange-50 text-orange-900 border border-orange-200">{err}</div>}
       {savedMsg && <div className="mt-3 rounded-xl px-3 py-2.5 text-sm bg-emerald-50 text-emerald-900 border border-emerald-200">✓ {savedMsg} See “Orders & dispatch”.</div>}
+      {/* Exactly what the reader returned. Captured all along but never shown,
+          which left no way to tell a misread from a mis-mapping — the
+          difference between fixing the prompt and fixing the code. */}
+      {rawRead && <details className="mt-3">
+        <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">
+          What the reader actually returned — open this if a size or a customer looks wrong</summary>
+        <p className="text-xs text-slate-500 mt-1">
+          If the wrong value is already here, the photo was misread and the fix is a clearer picture or a
+          correction below. If it is right here but wrong on screen, that is ours to fix — send us this text.
+        </p>
+        <textarea readOnly value={rawRead} rows={8} onFocus={e=>e.target.select()}
+          className="w-full mt-2 border border-slate-200 rounded-lg px-2 py-1.5 mono bg-slate-50"
+          style={{fontSize:10}} />
+      </details>}
       <details className="mt-3">
         <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">AI read not working here? Read it in a Claude chat and paste the result</summary>
         <div className="text-xs text-slate-500 mt-2 leading-relaxed">
@@ -1541,7 +1560,11 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
     finally{ setBusyPi(""); }
   }
   useEffect(()=>{ Promise.all([showArchived?api.listArchivedPis():api.listPis(),
-                               api.getSettings().catch(()=>({}))])
+                               api.getSettings().catch(e=>{
+                                 setErr(`Could not load the invoice settings: ${e.message||e}. `
+                                   +`Deductions and GST shown below may be defaults, not the agreed terms.`);
+                                 return {};
+                               })])
     .then(([rows,cfg])=>{setPis(rows);setSettings(cfg||{});})
     .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[showArchived]);
   if(!pis) return <div className="text-sm text-slate-500">Loading the PI master…</div>;

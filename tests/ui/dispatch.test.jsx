@@ -40,6 +40,8 @@ it("removes a packing report and says the pairs are pending again",async()=>{
 
   await user.click(screen.getByLabelText("Confirm removing the JO1 packing report"));
   await waitFor(()=>expect(mocks.deleteDispatch).toHaveBeenCalledWith(7));
-  expect(await screen.findByText(/48 pair\(s\) are pending again on JO1/)).toBeInTheDocument();
+  // Shown twice on purpose: once at the top, once beside the history table
+  // where the button actually is.
+  expect((await screen.findAllByText(/48 pair\(s\) are pending again on JO1/)).length).toBe(2);
   expect(onChanged).toHaveBeenCalled();                          // every tab re-reads
 });

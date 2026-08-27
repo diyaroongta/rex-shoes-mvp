@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
@@ -23,6 +23,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
   const [confirmDel,setConfirmDel]=useState(null);
+  const historyMsgRef=useRef(null);
 
   /* A packing report can be mis-keyed. Removing one returns its pairs to the
      order's pending balance, so this is a correction — not a way to make a
@@ -220,6 +221,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
     {!!dispatches.length && (
       <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm mt-4">
         <div className="text-sm font-semibold text-slate-700 mb-2">Dispatch history</div>
+        {(err||msg) && <div ref={historyMsgRef}
+          className={`text-xs rounded-lg border px-3 py-2 mb-2 ${err
+            ?"border-rose-200 bg-rose-50 text-rose-800":"border-emerald-200 bg-emerald-50 text-emerald-900"}`}>
+          {err||msg}</div>}
         <table className="w-full text-xs">
           <thead><tr className="text-slate-500">
             <th className="text-left py-1">Date</th><th className="text-left">Order</th>

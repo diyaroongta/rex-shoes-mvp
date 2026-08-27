@@ -130,6 +130,22 @@ create table if not exists dispatches (
 );
 create index if not exists dispatches_order_idx on dispatches (order_no);
 
+-- A packing report can be mis-keyed, and the pairs have to be recoverable.
+-- Removing one therefore moves it here rather than erasing it: the order's
+-- pending balance is corrected, and what was recorded is still answerable for.
+create table if not exists dispatches_removed (
+  id            integer primary key,
+  order_no      text        not null,
+  dispatched    jsonb       not null,
+  cartons       jsonb,
+  kind          text,
+  note          text,
+  dispatched_on date,
+  closes_order  boolean     not null default false,
+  removed_at    timestamptz not null default now()
+);
+create index if not exists dispatches_removed_order_idx on dispatches_removed (order_no, removed_at desc);
+
 -- ---------------------------------------------------------------------------
 -- Parties (customers) and their commercial terms. Terms are set here and are
 -- NOT editable on an individual PI — that is the point: an invoice must not be

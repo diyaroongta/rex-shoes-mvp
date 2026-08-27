@@ -1,4 +1,4 @@
-import { q } from "./_lib/db.js";
+import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { INPUTS } from "../shared/inputs.js";
 import { pairsPerCarton, setReference } from "../shared/bridge.js";
@@ -90,8 +90,38 @@ export default wrap(async (req, res) => {
     return res.status(201).json(rows[0]);
   }
 
+  /* Removing a mis-keyed packing report. The record is NOT erased — it moves to
+     dispatches_removed, so what was once claimed as shipped stays answerable
+     for — but it stops counting, which returns those pairs to the order's
+     pending balance. That is the correction the factory actually needs; an
+     un-editable wrong number is not an audit trail, it is a wrong number. */
   if(req.method === "DELETE"){
-    return fail(res,405,"dispatch reports are audit records and cannot be deleted");
+    const id = Number(req.query.id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const client = await db().connect();
+    try{
+      await client.query("begin");
+      await client.query(`create table if not exists dispatches_removed (
+        id integer primary key, order_no text not null, dispatched jsonb not null,
+        cartons jsonb, kind text, note text, dispatched_on date,
+        closes_order boolean not null default false,
+        removed_at timestamptz not null default now())`);
+      const { rows } = await client.query(
+        `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order
+           from dispatches where id = $1 for update`, [id]);
+      if(!rows.length){ await client.query("rollback"); return fail(res, 404, "no such dispatch"); }
+      const d = rows[0];
+      await client.query(
+        `insert into dispatches_removed (id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order)
+         values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
+        [d.id, d.order_no, JSON.stringify(d.dispatched), JSON.stringify(d.cartons || {}),
+         d.kind, d.note, d.dispatched_on, d.closes_order]);
+      await client.query("delete from dispatches where id = $1", [id]);
+      await client.query("commit");
+      const pairs = Object.values(d.dispatched || {}).reduce((a,b)=>a+(Number(b)||0), 0);
+      return res.status(200).json({ removed:id, order_no:d.order_no, pairs_returned:pairs });
+    }catch(e){ try{ await client.query("rollback"); }catch(_){ } throw e; }
+    finally{ client.release(); }
   }
 
   return fail(res, 405, `${req.method} not allowed`);

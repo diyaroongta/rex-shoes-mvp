@@ -717,3 +717,33 @@ describe("capacities validate against live reference data",()=>{
     expect(res.body.dropped_work_centres).toEqual(["NONSENSE"]);
   });
 });
+
+/* A mis-keyed packing report has to be correctable, and the pairs have to come
+   back — but what was once claimed as shipped must stay answerable for. */
+describe("removing a packing report",()=>{
+  it("archives the record rather than erasing it, and returns the pairs",async()=>{
+    const row={id:7,order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":2},
+      kind:"partial",note:null,dispatched_on:"2026-08-25",closes_order:false};
+    const client={query:vi.fn(async sql=>
+      String(sql).includes("from dispatches where id")?{rows:[row]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await dispatchHandler({method:"DELETE",url:"/api/dispatches",query:{id:"7"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.pairs_returned).toBe(48);
+    const ran=client.query.mock.calls.map(([s])=>String(s));
+    expect(ran.some(s=>s.includes("insert into dispatches_removed"))).toBe(true);
+    expect(ran.some(s=>s.startsWith("delete from dispatches"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
+  it("404s on a dispatch that does not exist, without deleting anything",async()=>{
+    const client={query:vi.fn(async()=>({rows:[]})),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await dispatchHandler({method:"DELETE",url:"/api/dispatches",query:{id:"999"}},res);
+    expect(res.statusCode).toBe(404);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+    expect(client.query.mock.calls.some(([s])=>String(s).startsWith("delete from dispatches"))).toBe(false);
+  });
+});
