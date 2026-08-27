@@ -575,3 +575,47 @@ describe("catalogue deletion safety",()=>{
     expect(c.query).toHaveBeenCalledWith("commit");
   });
 });
+
+/* A PI carries its own price chart so an invoice keeps the price it was raised
+   at, and so a price fixed for one customer does not silently re-price every
+   future PI for everyone. That makes it money on the patch path, checked on
+   the server as well as in the browser. */
+describe("per-PI prices",()=>{
+  const live={articles:{CUSTOM:{combos:{"1X2":{}},combo_order:["1X2"]}}};
+  const current={order_no:"JO1",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,
+    party:"Buyer",lines:[{combo:"1X2",qty:2}],pi:{pi_no:"PI1",mrp:{"1X2":699}},version:0};
+  const setup=()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from orders where order_no")) return {rows:[current]};
+      if(t.includes("reference_data")) return {rows:[{value:live}]};
+      return {rows:[]};
+    });
+    const client={query:vi.fn(async sql=>String(sql).startsWith("update orders")
+      ?{rows:[{...current,version:1}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    return client;
+  };
+
+  it("stores a per-size price override on the PI, keeping the rest of the blob",async()=>{
+    const client=setup();
+    const res=response();
+    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+      body:{pi:{mrp:{"1X2":699,"1X2::1":749}}}},res);
+    expect(res.statusCode).toBe(200);
+    const written=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"))[1][0];
+    const pi=JSON.parse(written);
+    expect(pi.mrp["1X2::1"]).toBe(749);
+    expect(pi.pi_no).toBe("PI1");          // the rest of the blob survives
+  });
+
+  it("refuses a negative or non-numeric price",async()=>{
+    setup();
+    for(const bad of [{"1X2":-5},{"1X2":"free"}]){
+      const res=response();
+      await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},body:{pi:{mrp:bad}}},res);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error).toMatch(/0 or more/);
+    }
+  });
+});

@@ -65,8 +65,23 @@ function validatePatch(body, current, INPUTS){
   }
   // pi is a free-form blob (pi_no, price, remarks, attachment, order_nature...).
   // MERGE rather than replace, so editing just the remarks doesn't wipe pi_no.
-  if("pi" in body && body.pi && typeof body.pi === "object")
+  if("pi" in body && body.pi && typeof body.pi === "object"){
+    /* The PI carries its own price chart, so an invoice keeps the price it was
+       raised at. It is money, so it is checked here too — the browser is not
+       the only way in. */
+    if("mrp" in body.pi){
+      const chart = body.pi.mrp;
+      if(chart == null || typeof chart !== "object" || Array.isArray(chart))
+        return { err:"pi.mrp must be an object of size or range prices" };
+      for(const [key, value] of Object.entries(chart)){
+        if(!String(key).trim()) return { err:"pi.mrp has a blank size or range" };
+        const n = Number(value);
+        if(!Number.isFinite(n) || n < 0)
+          return { err:`pi.mrp ${String(key).replace("::"," size ")} must be a number of 0 or more` };
+      }
+    }
     out.pi = { ...(current.pi || {}), ...body.pi };
+  }
   if(!Object.keys(out).length) return { err:"nothing to update" };
   return { patch: out };
 }

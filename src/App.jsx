@@ -1539,6 +1539,19 @@ function EditOrder({o,onSave,onCancel}){
   const [printingEdit,setPrintingEdit]=useState(!!((o.pi&&o.pi.printing)||o.printing));
   const [stitchingEdit,setStitchingEdit]=useState((o.pi&&o.pi.stitching)||o.stitching||"inhouse");
   const [attachment,setAttachment]=useState((o.pi&&o.pi.attachment)||null);
+  /* MRP is snapshotted onto the PI when it is issued, so an invoice keeps the
+     price it was raised at even if the article's list price later moves. That
+     makes the snapshot the right place to correct a price for THIS invoice —
+     editing the shared chart instead would re-price every future PI. */
+  const [mrpEdits,setMrpEdits]=useState({});
+  const piMrp={...((INPUTS.mrp||{})[article]||{}),...((o.pi&&o.pi.mrp)||{})};
+  const priceFor=(combo,size)=>{
+    const key=`${combo}::${size}`;
+    if(mrpEdits[key]!=null) return mrpEdits[key];
+    const value=mrpForSize(piMrp,combo,size);
+    return value==null?"":String(value);
+  };
+  const setPrice=(combo,size,value)=>setMrpEdits(m=>({...m,[`${combo}::${size}`]:value}));
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
 
@@ -1593,9 +1606,17 @@ function EditOrder({o,onSave,onCancel}){
     if(produce&&(!nature.trim()||!dispatchTimeline.trim()||!soleEdit.trim()||!upperEdit.trim())){
       setErr("Order nature, dispatch timeline, sole colour and upper colour are required before producing the revised PI."); return;
     }
+    const nextMrp={...piMrp};
+    for(const [key,value] of Object.entries(mrpEdits)){
+      const text=String(value).trim();
+      if(text===""){ delete nextMrp[key]; continue; }
+      const n=Number(text);
+      if(!Number.isFinite(n)||n<0){ setErr(`MRP for ${key.replace("::"," size ")} must be a number of 0 or more.`); return; }
+      nextMrp[key]=n;
+    }
     setBusy(true); setErr("");
     try{ await onSave({expected_version:o.version,article_code:article,party,order_date:date,priority:Number(prio)||2,lines:clean,
-      pi:{...(o.pi||{}),remarks, order_nature:nature, vl:vlEdit,
+      pi:{...(o.pi||{}),mrp:nextMrp,remarks, order_nature:nature, vl:vlEdit,
           dispatch_timeline:dispatchTimeline,
           terms:{...((o.pi&&o.pi.terms)||{}),dispatch_timeline:dispatchTimeline},
           sole_colour:soleEdit, upper_colour:upperEdit,
@@ -1683,6 +1704,14 @@ function EditOrder({o,onSave,onCancel}){
                         aria-label={`${l.combo} size ${size} pairs`}
                         onChange={e=>setSize(i,size,e.target.value)}
                         className="block w-16 text-sm border border-slate-300 rounded px-1.5 py-1 mono" />
+                      {/* Price for THIS invoice. Blank falls back to the
+                          article's list price; a value here overrides it
+                          without touching any other PI. */}
+                      <input type="number" min={0} value={priceFor(l.combo,size)}
+                        aria-label={`${l.combo} size ${size} MRP`}
+                        placeholder="MRP"
+                        onChange={e=>setPrice(l.combo,size,e.target.value)}
+                        className="block w-16 text-xs border border-slate-200 rounded px-1.5 py-1 mono mt-0.5 bg-amber-50" />
                     </label>))}
                 </div>
                 <div className="text-slate-400 mt-1" style={{fontSize:9}}>
@@ -1690,6 +1719,11 @@ function EditOrder({o,onSave,onCancel}){
                 </div>
               </>
             : <div className="flex gap-1.5 mt-1 items-end">
+                <div><span className="text-slate-400" style={{fontSize:9}}>MRP</span>
+                  <input type="number" min={0} value={priceFor(l.combo,l.combo)}
+                    aria-label={`${l.combo} MRP`} placeholder="list"
+                    onChange={e=>setPrice(l.combo,l.combo,e.target.value)}
+                    className="block w-20 text-sm border border-slate-200 rounded px-1.5 py-1 mono bg-amber-50" /></div>
                 <div><span className="text-slate-400" style={{fontSize:9}}>pairs</span>
                   <input type="number" min={0} value={l.qty}
                     aria-label={`${l.combo} pairs`} onChange={e=>setQty(i,e.target.value)}
