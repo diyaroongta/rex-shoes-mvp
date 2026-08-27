@@ -478,3 +478,44 @@ describe("correcting a size",()=>{
       .some(sel=>sel.value==="8s")).toBe(false);
   });
 });
+
+/* "Orders & dispatch — every live order" was listing orders that had already
+   shipped in full, burying the ones that still need attention. Completed work
+   moves out of the live list but is never deleted. */
+describe("live orders exclude completed work",()=>{
+  const two=[
+    {order_no:"JO1",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"A",
+     lines:[{combo:"7X10S",qty:24}],pi:{},version:1},
+    {order_no:"JO2",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"B",
+     lines:[{combo:"7X10S",qty:24}],pi:{},version:1},
+  ];
+
+  it("hides a fully dispatched order and shows it under Show completed",async()=>{
+    mocks.listOrders.mockResolvedValue(two);
+    mocks.listDispatches.mockResolvedValue([
+      {id:1,order_no:"JO1",dispatched:{"7X10S":24},kind:"full",dispatched_on:"2026-08-21"},
+    ]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+
+    expect(await screen.findByText("Live orders · 1")).toBeInTheDocument();
+    expect(screen.queryByText("JO1")).not.toBeInTheDocument();   // shipped in full
+    expect(screen.getByText("JO2")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText(/Show completed/));
+    expect(await screen.findByText("JO1")).toBeInTheDocument();  // still there, not deleted
+    expect(screen.queryByText("JO2")).not.toBeInTheDocument();
+  });
+
+  it("keeps a partly dispatched order in the live list",async()=>{
+    mocks.listOrders.mockResolvedValue(two);
+    mocks.listDispatches.mockResolvedValue([
+      {id:1,order_no:"JO1",dispatched:{"7X10S":12},kind:"partial",dispatched_on:"2026-08-21"},
+    ]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+    expect(await screen.findByText("Live orders · 2")).toBeInTheDocument();
+  });
+});

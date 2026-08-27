@@ -3,6 +3,7 @@ import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, sourc
 import { compute, fromDay, dayIndex } from "../shared/engine.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards } from "../shared/intake.js";
+import { buildLedger } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
@@ -145,6 +146,14 @@ export default function App(){
           printing:(o.pi&&o.pi.printing)||o.printing||false })),
         INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin, targets?{targets}:{})
     : null, [orders,wcs,refTick,targets]);
+
+  /* Ordered versus dispatched, from the same shared ledger the dispatch screen
+     renders. An order that has shipped in full — or been closed short — is
+     finished work, and listing it under "every LIVE order" buries the orders
+     that still need attention. */
+  const ledger = useMemo(
+    ()=>buildLedger(state?state.orders:[], dispatches, pairsPerCarton),
+    [state, dispatches]);
 
   async function askAI(){
     if(!aiQ.trim()||!state)return; setAiBusy(true); setAiA("");
@@ -351,7 +360,7 @@ export default function App(){
           onRefresh={syncAll} />}
         {tab==="pis" && <PiDatabaseTab orders={orders} onScheduled={syncAll} onChanged={syncAll} />}
         {tab==="orders" && <>
-          <OrdersTab state={state} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
+          <OrdersTab state={state} ledger={ledger} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
           <div className="flex gap-2 mt-3">
             <button onClick={()=>downloadSheetCSV(orders)} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
@@ -447,6 +456,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     .catch(()=>{}); },[]);
   const [piNo,setPiNo]=useState("");
   const [savedMsg,setSavedMsg]=useState("");
+  const saveErrRef=useRef(null);
+  // Bring a refusal into view rather than leaving it above the fold.
+  useEffect(()=>{ if(err&&saveErrRef.current)
+    saveErrRef.current.scrollIntoView({behavior:"smooth",block:"center"}); },[err]);
   const [pasteText,setPasteText]=useState("");
   const fileRef=useRef(null);
   const allocatePiNo=async()=>{
@@ -1270,6 +1283,11 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           </button>
         </div>
       </div>
+      {/* The same message is shown up in step 1, but Save is a thousand pixels
+          below it — a refusal rendered off-screen reads as nothing happening
+          at all, which is exactly how "it will not save and shows no error"
+          came about. */}
+      {err && <div ref={saveErrRef} className="text-sm rounded-xl border border-rose-300 bg-rose-50 text-rose-900 px-3 py-2.5 mb-3">{err}</div>}
       {previewStale && <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
         Match &amp; Check has changed since this PI was generated. Press <b>Regenerate PI with latest edits</b> before printing or saving.
       </div>}
@@ -1606,18 +1624,36 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
   </div>;
 }
 
-function OrdersTab({state,onBump,onSelect,selected,onRemove,onEdit}){
+function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
   const [confirmDel,setConfirmDel]=useState(null);
   const [editing,setEditing]=useState(null);
+  const [showDone,setShowDone]=useState(false);
+  /* Fully shipped, or closed short: finished work. This screen is "every LIVE
+     order", and leaving completed ones in it buries the orders that still need
+     attention. They are not deleted — the toggle brings them back. */
+  const isDone=o=>{ const rec=ledger[o.order_no];
+    return !!rec && rec.total_dispatched>0 && rec.total_pending<=0; };
+  const done=state.orders.filter(isDone);
+  const visible=showDone?done:state.orders.filter(o=>!isDone(o));
   if(!state.orders.length) return <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm text-center text-slate-500 text-sm">No orders yet — add one from the <b>➕ New order</b> tab. Each photo you read lands here and drives the whole plan.</div>;
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
+    <div className="flex items-center gap-2 mb-2 flex-wrap">
+      <div className="text-sm font-semibold text-slate-700">
+        {showDone?`Completed · ${done.length}`:`Live orders · ${visible.length}`}</div>
+      {!!done.length && <label className="ml-auto text-xs text-slate-600 flex items-center gap-1.5">
+        <input type="checkbox" checked={showDone} onChange={e=>{setShowDone(e.target.checked);onSelect(null);}} />
+        Show completed ({done.length})
+      </label>}
+    </div>
+    {!visible.length && <div className="text-sm text-slate-500 py-6 text-center">
+      {showDone?"Nothing completed yet.":"Every order has been dispatched — tick Show completed to see them."}</div>}
     <table className="w-full text-sm" style={{borderCollapse:"collapse",minWidth:760}}>
       <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
         <th className="text-left py-2 px-2">Order</th><th className="text-left py-2 px-2">Party</th><th className="text-left py-2 px-2">Article</th>
         <th className="text-right py-2 px-2">Qty</th><th className="text-center py-2 px-2">Priority</th>
         <th className="text-left py-2 px-2">Dispatch</th><th className="text-right py-2 px-2">Lead</th><th className="text-left py-2 px-2">SLA</th><th></th>
       </tr></thead>
-      <tbody>{state.orders.map(o=>(
+      <tbody>{visible.map(o=>(
         <React.Fragment key={o.order_no}>
         <tr className="hover:bg-slate-50">
           <td className="py-2 px-2 mono font-semibold" style={{borderTop:"1px solid #eef0f4"}}>{o.order_no}</td>
