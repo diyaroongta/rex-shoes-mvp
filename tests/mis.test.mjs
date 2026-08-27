@@ -75,3 +75,30 @@ console.log("  pass  order-health counts and date ranges");
 console.log("  pass  30-day order versus dispatch shortfall");
 console.log("  pass  planned production days, output and utilisation");
 console.log("  pass  pending and closed-short order reconciliation\n");
+
+/* Orders are read with `where active`; dispatch events are not. A dispatch
+   against an order that has since been archived must stop contributing pairs,
+   or the dashboard reports shipments against work that is no longer in the
+   plan — "261 pairs dispatched" with nothing in production. The dispatch
+   screen already drops these, so MIS must use the same rule or the two
+   screens disagree about the same day. */
+const ghost = buildMisSnapshot(
+  { orders: [], machine_load: [], daily_load: {} },
+  [{ order_no:"JO-ARCHIVED", dispatched:{ "7X10S":261 }, dispatched_on:"2026-08-23" }],
+  { today:"2026-08-23" });
+assert.equal(ghost.dispatched_last_30_days, 0,
+  "a dispatch whose order is no longer live must not be counted");
+assert.equal(ghost.total_orders, 0);
+assert.equal(ghost.trend.reduce((n,b)=>n+b.dispatched,0), 0, "and must not appear in the trend");
+
+const liveOne = buildMisSnapshot(
+  { orders:[{order_no:"JO1",qty:300,lines:[{combo:"A",qty:300}],order_date:"2026-08-20",
+             dispatch_date:"2026-09-01",lead_days:10,sla:"on_track",stages:[]}],
+    machine_load:[], daily_load:{} },
+  [{ order_no:"JO1", dispatched:{ A:120 }, dispatched_on:"2026-08-23" },
+   { order_no:"JO-ARCHIVED", dispatched:{ A:261 }, dispatched_on:"2026-08-23" }],
+  { today:"2026-08-23" });
+assert.equal(liveOne.dispatched_last_30_days, 120, "only the live order's pairs count");
+assert.equal(liveOne.orders[0].dispatched, 120);
+
+console.log("  pass  dispatches against archived orders stop counting\n");

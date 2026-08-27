@@ -38,7 +38,12 @@ assert.equal(card.vl,"","a shoe ordered in both rolls has no single card-level t
 assert.deepEqual(card.lines.map(l=>l.combo),["7X10S","11X1","2X5","6X8","9X12"]);
 assert.deepEqual(card.lines.map(l=>l.type),["VELCRO","VELCRO","VELCRO","LACE","LACE"],
   "the size range decides the roll, not the section heading");
-assert.deepEqual(card.lines.find(l=>l.combo==="11X1").sizes,{"12s":24,"13s":48,"1":48});
+/* The single-packsize chart is banded kids 24 / adult 18, and those are SIZE
+   bands, not closures. 12s and 13s are kids sizes so they pack at 24; size 1
+   is an adult size and packs at 18, even though it sits in the Velcro half.
+   Reading the V marker as "kids" is what charged 2X5 at 24 a carton when its
+   own range says 18. */
+assert.deepEqual(card.lines.find(l=>l.combo==="11X1").sizes,{"12s":24,"13s":48,"1":36});
 assert.deepEqual(card.lines.find(l=>l.combo==="9X12").sizes,{"10":18,"11":18},
   "adult SPIKE sizes must use ARMOUR's 18-pair single-size packing rate");
 

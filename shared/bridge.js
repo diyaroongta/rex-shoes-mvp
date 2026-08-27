@@ -245,8 +245,13 @@ export function singlePackingRule(article,size,articleType="",combo=""){
   // repeated adult roll printed again as 6..12 further along the sheet.
     let ppc=null;
   if(chart.kids != null || chart.adult != null){
+      /* "kids" and "adult" are SIZE BANDS, not closures. The Large roll needs
+         the override because it prints 6..13 bare as adult sizes, where the
+         position alone would read them as kids. The Small roll does not: its
+         6..13 really are kids and its 1..5 really are adult, so position is
+         already right — forcing kids there charged 2X5 at 24 pairs a carton
+         when its own range says 18. */
       if(type.startsWith("L")) ppc=chart.adult ?? null;
-      else if(type.startsWith("V")) ppc=chart.kids ?? null;
       else ppc=pos <= 7 ? chart.kids : chart.adult;
     }else if(pos <= 7) ppc=chart["6-13"] ?? null;
     else if(pos <= 12) ppc=chart["1-5"] ?? chart["5.5-12"] ?? null;

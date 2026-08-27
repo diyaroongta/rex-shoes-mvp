@@ -79,7 +79,15 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
   const today = isoDay(options.today) || new Date().toISOString().slice(0, 10);
   const todayDay = dayNumber(today);
   const orders = Array.isArray(state && state.orders) ? state.orders : [];
-  const byDispatch = dispatchByOrder(dispatches);
+
+  /* Orders are read with `where active`, dispatch events are not. An event
+     against an order that has since been archived must not keep contributing
+     pairs, or the dashboard reports dispatches for work no longer in the plan —
+     261 pairs shipped against nothing in production. The dispatch screen
+     already drops these; MIS has to use the same rule or the two disagree. */
+  const live = new Set(orders.map(order => String(order.order_no)));
+  const dispatchEvents = (dispatches || []).filter(event => live.has(String(event.order_no || "")));
+  const byDispatch = dispatchByOrder(dispatchEvents);
 
   const orderRows = orders.map(order => {
     const qty = orderQuantity(order);
@@ -128,7 +136,7 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     const day = dayNumber(order.order_date);
     return sum + (day != null && day >= monthStart && day <= todayDay ? orderQuantity(order) : 0);
   }, 0);
-  const dispatchedLast30 = (dispatches || []).reduce((sum, event) => {
+  const dispatchedLast30 = dispatchEvents.reduce((sum, event) => {
     const day = dayNumber(event.dispatched_on);
     return sum + (day != null && day >= monthStart && day <= todayDay ? sumObject(event.dispatched) : 0);
   }, 0);
@@ -183,7 +191,7 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     completed_orders_used_for_dispatch_days: dispatchedOrders.length,
     month_from: fromDayNumber(monthStart),
     month_to: today,
-    trend: fiveDayBuckets(todayDay, orders, dispatches),
+    trend: fiveDayBuckets(todayDay, orders, dispatchEvents),
     machines: machineRows,
     orders: orderRows.sort((a, b) => {
       const rank = { breach: 0, at_risk: 1, on_track: 2 };
