@@ -353,3 +353,31 @@ describe("the invoice itself is editable",()=>{
     expect(screen.getByRole("button",{name:/Save & send/})).toBeEnabled();
   });
 });
+
+/* Orders, dispatches and the PI master are three views of the same rows. A
+   change made on any tab has to reload all of them, or the screens disagree:
+   editing an order from the PI database used to leave the schedule, dispatch
+   and the dashboard showing the figures from before the edit. */
+describe("tabs stay in step with one another",()=>{
+  it("reloads orders AND dispatches after an edit made in the PI database",async()=>{
+    mocks.listPis.mockResolvedValue([{pi_no:"PI77",pi_date:"2026-08-22",party:"Buyer",
+      status:"produced",revision:0,snapshot:{orders:[{order_no:"JO77",order_date:"2026-08-22",
+      article_code:"SPIKE",party:"Buyer",priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI77"}}]}}]);
+    mocks.listOrders.mockResolvedValue([{order_no:"JO77",order_date:"2026-08-22",
+      article_code:"SPIKE",priority:2,party:"Buyer",lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI77"},version:1}]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await user.click(await screen.findByRole("button",{name:"View / edit"}));
+    await user.click(await screen.findByRole("button",{name:/Edit JO77/}));
+
+    const ordersBefore=mocks.listOrders.mock.calls.length;
+    const dispatchesBefore=mocks.listDispatches.mock.calls.length;
+    await user.click(screen.getByRole("button",{name:"Save edits"}));
+
+    await waitFor(()=>expect(mocks.patchOrder).toHaveBeenCalled());
+    // Both lists must be re-read, not just the PI list this screen owns.
+    await waitFor(()=>expect(mocks.listOrders.mock.calls.length).toBeGreaterThan(ordersBefore));
+    await waitFor(()=>expect(mocks.listDispatches.mock.calls.length).toBeGreaterThan(dispatchesBefore));
+  });
+});

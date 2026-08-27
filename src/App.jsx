@@ -75,6 +75,12 @@ export default function App(){
     catch(e){ setDispatchErr(e.message||String(e)); }
     finally{ setDispatchLoading(false); }
   };
+  /* ONE refresh for every screen. Orders, dispatches and the PI master are
+     three views of the same rows, so a change made on any tab has to reload
+     all of them — editing an order from the PI database used to leave the
+     schedule, dispatch and MIS showing the figures from before the edit. */
+  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches()]); };
+
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
     const next=Math.max(1,cur.priority+dir);
@@ -338,8 +344,8 @@ export default function App(){
             clerk until Save or Close PI, not to the currently visible tab. */}
         <div style={{display:tab==="intake"?"block":"none"}}><NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} /></div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
-          onRefresh={async()=>{await Promise.all([refresh(),refreshDispatches()]);}} />}
-        {tab==="pis" && <PiDatabaseTab orders={orders} onScheduled={refresh} />}
+          onRefresh={syncAll} />}
+        {tab==="pis" && <PiDatabaseTab orders={orders} onScheduled={syncAll} onChanged={syncAll} />}
         {tab==="orders" && <>
           <OrdersTab state={state} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
           <div className="flex gap-2 mt-3">
@@ -350,9 +356,9 @@ export default function App(){
         {tab==="plan" && <PlanTab state={state} caps={caps} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
-        {tab==="dispatch" && <DispatchTab orders={state.orders} onChanged={async()=>{await refresh();await refreshDispatches();}} />}
+        {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
-        {tab==="bulk" && <BulkOrderTab onImported={async()=>{ await refresh(); setTab("schedule"); }} />}
+        {tab==="bulk" && <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="catalogue" && <CatalogueTab
           onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
@@ -1387,7 +1393,7 @@ function Pill({status}){
   return <span className="mono text-xs font-semibold px-2 py-0.5 rounded-full" style={{color:SLA_COLOR[status],background:status==="on_track"?"#ecfdf5":status==="at_risk"?"#fff7ed":"#fef2f2"}}>{SLA_LABEL[status]}</span>;
 }
 
-function PiDatabaseTab({orders=[],onScheduled}){
+function PiDatabaseTab({orders=[],onScheduled,onChanged}){
   const [pis,setPis]=useState(null);
   const [selectedPi,setSelectedPi]=useState(null);
   const [editingOrder,setEditingOrder]=useState(null);
@@ -1468,7 +1474,9 @@ function PiDatabaseTab({orders=[],onScheduled}){
         onCancel={()=>setEditingOrder(null)}
         onSave={async patch=>{
           setErr("");
-          try{ await api.patchOrder(o.order_no,patch); await reloadPis(); setEditingOrder(null); }
+          try{ await api.patchOrder(o.order_no,patch); await reloadPis();
+               if(onChanged) await onChanged();      // schedule, dispatch and MIS all read these rows
+               setEditingOrder(null); }
           catch(e){ setErr(e.message||String(e)); throw e; }
         }}/>)}</div>}
       <div data-print-area>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
@@ -10,8 +10,11 @@ const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
    quantity; it never edits the order, so what was ordered stays auditable
    against what actually shipped. Cartons are derived from the packing chart
    where one exists — otherwise the field is left blank rather than guessed. */
-export default function DispatchTab({ orders, onChanged }){
-  const [dispatches,setDispatches]=useState([]);
+/* Dispatch events arrive as a prop rather than being fetched here. Holding a
+   second copy meant this screen and the dashboard could show different totals
+   for the same day — whichever had refreshed last won. One source, one set of
+   numbers. */
+export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [open,setOpen]=useState(null);
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
@@ -20,8 +23,6 @@ export default function DispatchTab({ orders, onChanged }){
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
 
-  const load=()=>api.listDispatches().then(setDispatches).catch(e=>setErr(e.message||String(e)));
-  useEffect(()=>{ load(); },[]);
 
   /* ordered − dispatched, per combo, per order. The arithmetic — including what
      closing an order short does to the pending balance — lives in shared/. */
@@ -57,11 +58,11 @@ export default function DispatchTab({ orders, onChanged }){
       }
       await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
         kind: closing ? "shortage" : kind, note, closes_order: closing });
-      await load(); setOpen(null);
+      setOpen(null);
       setMsg(closing
         ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
         : `Packing report recorded for ${rec.order.order_no}.`);
-      onChanged && onChanged();
+      if(onChanged) await onChanged();   // reloads the shared dispatch list
     }catch(e){ setErr(String(e.message||e)); }
     finally{ setBusy(false); }
   }
