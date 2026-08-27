@@ -128,7 +128,7 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
           </div>)}
         </div>
         <div className="mt-4 flex items-center gap-3">
-          <div className="flex-1"><Progress value={snapshot.dispatch_coverage_pct} /></div>
+          <div className="flex-1"><Progress value={snapshot.order_vs_dispatch_pct} /></div>
           <div className="mono text-sm font-semibold text-slate-700">{pct(snapshot.order_vs_dispatch_pct)} order vs dispatch</div>
         </div>
       </div>

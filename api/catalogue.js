@@ -72,9 +72,27 @@ export default wrap(async (req, res) => {
       if(!canonical){await client.query("rollback");return fail(res,404,`unknown article: ${article_code}`);}
       const definition=ref.articles[canonical]||{};
       const ranges=definition.combo_order||Object.keys(definition.combos||{});
-      if(ranges.length){
+
+      /* An order whose article has vanished takes the whole planner down —
+         compute() reads article.routing and throws, which blanks every screen,
+         not just this one. Orders are therefore an absolute bar, checked
+         before anything else and never overridable by a confirmation flag. */
+      const {rows:used}=await client.query(
+        "select order_no from orders where article_code = $1 order by order_no limit 6",[canonical]);
+      if(used.length){
         await client.query("rollback");
-        return fail(res,409,`${canonical} already has a BOM. Remove individual BOM items in Packing & BOM rules; a complete article cannot be deleted from Catalogue.`);
+        const names=used.slice(0,5).map(r=>r.order_no).join(", ");
+        return fail(res,409,`${canonical} is used by ${used.length>5?"orders including":"order(s)"} ${names}. `
+          +`Delete or re-article those orders first — removing an article still on an order would break the schedule for every order.`);
+      }
+
+      /* A BOM is real work and deleting it is not something to do by accident,
+         so it needs an explicit acknowledgement — but it is no longer a refusal,
+         because there was previously no way at all to remove a finished article. */
+      if(ranges.length && String(req.query.confirm_bom||"")!=="1"){
+        await client.query("rollback");
+        return fail(res,409,`${canonical} has a BOM: ${ranges.length} size range(s) and their material rates, `
+          +`packing and MRP would all be deleted. Confirm to continue — it can be restored from Data & BOM history.`);
       }
 
       const catalogueBefore=await client.query(

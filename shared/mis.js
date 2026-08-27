@@ -176,7 +176,6 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     ordered_last_30_days: orderedLast30,
     dispatched_last_30_days: dispatchedLast30,
     shortfall_last_30_days: Math.max(0, orderedLast30 - dispatchedLast30),
-    dispatch_coverage_pct: orderedLast30 ? 100 * dispatchedLast30 / orderedLast30 : 0,
     order_vs_dispatch_pct: orderedLast30 ? 100 * dispatchedLast30 / orderedLast30 : 0,
     shortage_pairs_last_30_days: shortagePairs,
     closed_order_pairs_last_30_days: closedOrderPairs,

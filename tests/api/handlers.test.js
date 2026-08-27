@@ -259,7 +259,9 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
-  it("blocks deleting a catalogue article that already has a BOM",async()=>{
+  // A BOM is no longer a permanent bar — there was previously no way at all to
+  // remove a finished article — but it must still be confirmed deliberately.
+  it("asks before deleting a catalogue article that already has a BOM",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{}};
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")
       ?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
@@ -267,7 +269,7 @@ describe("database API contracts",()=>{
     const res=response();
     await catalogueHandler({method:"DELETE",url:"/api/catalogue?article_code=CUSTOM",query:{article_code:"CUSTOM"}},res);
     expect(res.statusCode).toBe(409);
-    expect(res.body.error).toMatch(/already has a BOM/);
+    expect(res.body.error).toMatch(/has a BOM/);
     expect(client.query).toHaveBeenCalledWith("rollback");
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("delete from catalogue"))).toBe(false);
   });
@@ -527,5 +529,49 @@ describe("setup errors are diagnosable",()=>{
     const res=response();
     await boom({method:"POST",url:"/api/pis"},res);
     expect(res.body.error).toBe("Server error");
+  });
+});
+
+/* Deleting an article that still has orders takes the PLANNER down, not just
+   the catalogue: compute() reads article.routing and throws, blanking every
+   screen. Orders are an absolute bar; a BOM is a confirmable one. */
+describe("catalogue deletion safety",()=>{
+  const withBom={articles:{SPIKE:{sole_type:"EVA",combo_order:["7X10S"],combos:{"7X10S":{rates:{}}}}},materials:{}};
+  const client=()=>({query:vi.fn(async sql=>{
+    const t=String(sql);
+    if(t.includes("select value from reference_data")) return {rows:[{value:JSON.parse(JSON.stringify(withBom))}]};
+    if(t.includes("from orders where article_code")) return {rows:client.orders||[]};
+    if(t.includes("from catalogue order by")) return {rows:[]};
+    return {rows:[]};
+  }),release:vi.fn()});
+
+  it("refuses while any order still uses the article",async()=>{
+    const c=client(); client.orders=[{order_no:"JO2043"},{order_no:"JO2044"}];
+    dbMocks.connect.mockResolvedValue(c);
+    const res=response();
+    await catalogueHandler({method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE",confirm_bom:"1"}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/JO2043/);
+    expect(c.query).toHaveBeenCalledWith("rollback");
+  });
+
+  it("asks before removing a finished article's BOM",async()=>{
+    const c=client(); client.orders=[];
+    dbMocks.connect.mockResolvedValue(c);
+    const res=response();
+    await catalogueHandler({method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE"}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/has a BOM/);
+  });
+
+  it("deletes it once confirmed, and records a restorable revision",async()=>{
+    const c=client(); client.orders=[];
+    dbMocks.connect.mockResolvedValue(c);
+    const res=response();
+    await catalogueHandler({method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE",confirm_bom:"1"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.deleted).toBe("SPIKE");
+    expect(c.query.mock.calls.some(([s])=>String(s).includes("reference_data_history"))).toBe(true);
+    expect(c.query).toHaveBeenCalledWith("commit");
   });
 });

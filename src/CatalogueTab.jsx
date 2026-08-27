@@ -106,10 +106,10 @@ export default function CatalogueTab({onChanged,onAddBom}){
     finally{setBusy("");}
   }
 
-  async function deleteCatalogueItem(code){
+  async function deleteCatalogueItem(code,confirmBom=false){
     setBusy(`${code}:delete`);setErr("");setMsg("");
     try{
-      await api.deleteCatalogue(code);
+      await api.deleteCatalogue(code,confirmBom);
       await reloadReference();
       setCat(current=>{const next={...current};delete next[code];return next;});
       setDeleteCandidate("");
@@ -182,11 +182,13 @@ export default function CatalogueTab({onChanged,onAddBom}){
             {!combos.length&&<button onClick={()=>onAddBom&&onAddBom(code)}
               className="mt-2 w-full text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-2 py-1.5">
               Missing BOM — add now</button>}
-            {!combos.length&&(deleteCandidate===code
+            {(deleteCandidate===code
               ? <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 p-2">
-                  <div className="text-xs text-rose-900">Delete <b>{code}</b>? It has no BOM, so its empty article record and catalogue details will both be removed.</div>
+                  <div className="text-xs text-rose-900">{combos.length
+                    ? <>Delete <b>{code}</b>? Its BOM ({combos.length} size range{combos.length===1?"":"s"} and their material rates), packing and MRP go with it. Restorable from Data &amp; BOM history.</>
+                    : <>Delete <b>{code}</b>? It has no BOM, so its empty article record and catalogue details will both be removed.</>}</div>
                   <div className="flex gap-2 mt-2">
-                    <button type="button" disabled={busy===`${code}:delete`} onClick={()=>deleteCatalogueItem(code)}
+                    <button type="button" disabled={busy===`${code}:delete`} onClick={()=>deleteCatalogueItem(code,combos.length>0)}
                       className="text-xs font-semibold text-white bg-rose-700 rounded px-2 py-1 disabled:opacity-40">
                       {busy===`${code}:delete`?"Deleting…":`Confirm delete ${code}`}</button>
                     <button type="button" disabled={busy===`${code}:delete`} onClick={()=>setDeleteCandidate("")}

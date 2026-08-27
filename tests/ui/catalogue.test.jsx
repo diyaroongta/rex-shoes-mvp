@@ -24,12 +24,21 @@ beforeEach(()=>{
 it("deletes a catalogue-only item after an explicit confirmation",async()=>{
   const onChanged=vi.fn();
   render(<CatalogueTab onChanged={onChanged}/>);
-  expect(screen.queryByRole("button",{name:/Delete CUSTOM/})).not.toBeInTheDocument();
+  // Every article can now be deleted; a stub goes without a BOM confirmation,
+  // a finished article carries one.
   await userEvent.click(screen.getByRole("button",{name:"Delete EMPTY from catalogue"}));
   await userEvent.click(screen.getByRole("button",{name:"Confirm delete EMPTY"}));
-  await waitFor(()=>expect(apiMocks.deleteCatalogue).toHaveBeenCalledWith("EMPTY"));
+  await waitFor(()=>expect(apiMocks.deleteCatalogue).toHaveBeenCalledWith("EMPTY",false));
   expect(await screen.findByText(/EMPTY was removed from the catalogue/)).toBeInTheDocument();
   expect(onChanged).toHaveBeenCalled();
+});
+
+it("sends the BOM confirmation when deleting a finished article",async()=>{
+  render(<CatalogueTab/>);
+  await userEvent.click(screen.getByRole("button",{name:"Delete CUSTOM from catalogue"}));
+  expect(screen.getByText(/material rates/)).toBeInTheDocument();   // names what goes with it
+  await userEvent.click(screen.getByRole("button",{name:"Confirm delete CUSTOM"}));
+  await waitFor(()=>expect(apiMocks.deleteCatalogue).toHaveBeenCalledWith("CUSTOM",true));
 });
 
 it("edits MRP only size by size, without exposing a range-price editor",async()=>{

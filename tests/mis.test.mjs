@@ -40,7 +40,7 @@ assert.equal(mis.capacity_util_pct, 62.5);
 assert.equal(mis.ordered_last_30_days, 300);
 assert.equal(mis.dispatched_last_30_days, 280);
 assert.equal(mis.shortfall_last_30_days, 20);
-assert.equal(Math.round(mis.dispatch_coverage_pct), 93);
+assert.equal(Math.round(mis.order_vs_dispatch_pct), 93);
 assert.equal(Math.round(mis.order_vs_dispatch_pct),93);
 assert.equal(Math.round(mis.dispatch_shortage_pct*10)/10,6.7);
 assert.equal(mis.shortage_pairs_last_30_days,20);
@@ -67,7 +67,7 @@ assert.equal(o3.bottleneck,"PACKING");
 const empty=buildMisSnapshot({orders:[],machine_load:[],daily_load:{}},[],{today:"2026-08-23"});
 assert.equal(empty.total_orders,0);
 assert.equal(empty.capacity_util_pct,0);
-assert.equal(empty.dispatch_coverage_pct,0);
+assert.equal(empty.order_vs_dispatch_pct,0);
 assert.equal(empty.dispatch_shortage_pct,0);
 assert.equal(empty.average_dispatch_days,0);
 

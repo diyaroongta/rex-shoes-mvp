@@ -61,7 +61,10 @@ export const patchReference = patch     => j("/api/reference", {
 export const getCatalogue   = ()        => j("/api/catalogue");
 export const putCatalogue   = entry     => j("/api/catalogue", {
   method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entry) });
-export const deleteCatalogue= code      => j(`/api/catalogue?article_code=${encodeURIComponent(code)}`, { method:"DELETE" });
+/* `confirmBom` is the explicit yes to also deleting a finished article's BOM,
+   packing and MRP. Orders referencing the article always block the delete. */
+export const deleteCatalogue= (code, confirmBom=false) =>
+  j(`/api/catalogue?article_code=${encodeURIComponent(code)}${confirmBom?"&confirm_bom=1":""}`, { method:"DELETE" });
 
 /* ---- AI, proxied ---- */
 export async function readOrderPhoto(imageBase64){
