@@ -878,7 +878,13 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
            size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
            ppc:Number(l.ppc)||undefined,
            vl:comboType(c.article,l.combo)||c.vl||""}
-        : {combo:l.combo,qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0),
+        /* Cartons are held to 4 decimals so a pairs→cartons round-trip keeps
+           its precision on screen (100 pairs ÷ 24 = 4.1667). Multiplying that
+           back out gives 100.0008, and pairs are indivisible — the server
+           rightly refuses a fractional quantity, which failed the whole save
+           for every order whose sizes had been edited or read from a PI. */
+        : {combo:l.combo,qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0)
+                               :Math.round((Number(l.cartons)||0)*(Number(l.ppc)||0)),
            label:l.raw||l.combo,sizes:l.sizes,size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
            ppc:Number(l.ppc)||undefined,
            vl:comboType(c.article,l.combo)||c.vl||""}),
@@ -1059,7 +1065,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     const nextPpc=e.target.value===""?"":Number(e.target.value);
                     if(!l.sizes||!Number(l.ppc)||!Number(nextPpc)){setLine(i,k,{ppc:nextPpc});return;}
                     const nextSizes=Object.fromEntries(Object.entries(l.sizes)
-                      .map(([size,pairs])=>[size,+(Number(pairs)/Number(l.ppc)*Number(nextPpc)).toFixed(4)]));
+                      .map(([size,pairs])=>[size,Math.round(Number(pairs)/Number(l.ppc)*Number(nextPpc))]));
                     setLine(i,k,{ppc:nextPpc,sizes:nextSizes,
                       qty:Object.values(nextSizes).reduce((sum,pairs)=>sum+Number(pairs||0),0)});
                   }}
@@ -1236,7 +1242,8 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                 ? c.lines.map(l=>({...l,size_order:l.size_order||comboSizesForArticle(c.article,l.combo)}))
                 : c.lines.filter(l=>(Number(l.cartons)||0)>0)
                     .map(l=>({ combo:l.combo,
-                      qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0),
+                      qty:l.sizes?Object.values(l.sizes).reduce((a,b)=>a+(Number(b)||0),0)
+                          :Math.round((Number(l.cartons)||0)*(Number(l.ppc)||0)),
                       sizes:l.sizes, label:l.raw||l.combo,
                       size_order:l.size_order||comboSizesForArticle(c.article,l.combo) })),
             })).filter(it => it.lines.length);

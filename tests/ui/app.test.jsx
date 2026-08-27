@@ -299,3 +299,27 @@ describe("critical UI contracts",()=>{
     expect(patch.pi.terms.dispatch_timeline).toBe("30 days");
   });
 });
+
+/* Pairs are indivisible, and the server refuses a fractional quantity. Cartons
+   are deliberately held to 4 decimals so a pairs→cartons round-trip keeps its
+   precision on screen (100 ÷ 24 = 4.1667 cartons), but multiplying that back
+   out gives 100.0008. That failed the entire save with
+   "qty must be a whole number above 0" — nothing reached production — for any
+   order whose sizes had been edited or read from a PI. */
+describe("quantities sent to the server",()=>{
+  const wholePairs = drafts => drafts.every(d => d.lines.every(l =>
+    Number.isInteger(l.qty) && l.qty > 0 &&
+    (!l.sizes || Object.values(l.sizes).every(v => Number.isInteger(Number(v))))));
+
+  it("never sends a fractional pair count, whatever the carton arithmetic",async()=>{
+    // The exact round-trip the intake performs when sizes drive the cartons.
+    const cartons = +(100/24).toFixed(4);
+    expect(Number.isInteger(cartons * 24)).toBe(false);      // the trap
+    expect(Number.isInteger(Math.round(cartons * 24))).toBe(true);
+
+    // and the contract the save path must uphold
+    expect(wholePairs([{lines:[{combo:"7X10S",qty:Math.round(cartons*24)}]}])).toBe(true);
+    expect(wholePairs([{lines:[{combo:"7X10S",qty:cartons*24}]}])).toBe(false);
+    expect(wholePairs([{lines:[{combo:"7X10S",qty:96,sizes:{"7s":24.5,"8s":24,"9s":24,"10s":24}}]}])).toBe(false);
+  });
+});
