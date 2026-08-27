@@ -619,3 +619,64 @@ describe("per-PI prices",()=>{
     }
   });
 });
+
+/* Archiving is reversible and is the safe default. Permanent deletion exists
+   for a PI raised in error, but must never destroy shipment evidence. */
+describe("PI archive and permanent delete",()=>{
+  it("refuses a permanent delete without an explicit confirmation",async()=>{
+    const res=response();
+    await pisHandler({method:"DELETE",url:"/api/pis",query:{pi_no:"PI77"}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/Archive it instead/);
+    expect(dbMocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a PI whose orders have shipped, and names them",async()=>{
+    const client={query:vi.fn(async sql=>{
+      const t=String(sql);
+      if(t.includes("from proforma_invoices where pi_no")) return {rows:[{pi_no:"PI77"}]};
+      if(t.includes("from orders where pi->>")) return {rows:[{order_no:"JO77"},{order_no:"JO78"}]};
+      if(t.includes("from dispatches where order_no")) return {rows:[{order_no:"JO78"}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await pisHandler({method:"DELETE",url:"/api/pis",query:{pi_no:"PI77",confirm:"1"}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/JO78/);
+    expect(res.body.error).toMatch(/never destroyed/);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+    expect(client.query.mock.calls.some(([s])=>String(s).startsWith("delete from orders"))).toBe(false);
+  });
+
+  it("deletes the PI, its revisions and its orders when nothing has shipped",async()=>{
+    const client={query:vi.fn(async sql=>{
+      const t=String(sql);
+      if(t.includes("from proforma_invoices where pi_no")) return {rows:[{pi_no:"PI77"}]};
+      if(t.includes("from orders where pi->>")) return {rows:[{order_no:"JO77"}]};
+      if(t.includes("from dispatches where order_no")) return {rows:[]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await pisHandler({method:"DELETE",url:"/api/pis",query:{pi_no:"PI77",confirm:"1"}},res);
+    expect(res.statusCode).toBe(200);
+    const ran=client.query.mock.calls.map(([s])=>String(s));
+    expect(ran.some(s=>s.startsWith("delete from orders"))).toBe(true);
+    expect(ran.some(s=>s.includes("delete from proforma_invoice_revisions"))).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
+  it("archiving deactivates the PI's orders so they leave the schedule",async()=>{
+    const client={query:vi.fn(async sql=>String(sql).startsWith("update proforma_invoices")
+      ?{rowCount:1,rows:[]}:{rows:[{order_no:"JO77"}]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",action:"archive"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.archived).toBe(true);
+    const orderUpdate=client.query.mock.calls.find(([s])=>String(s).includes("update orders set active"));
+    expect(orderUpdate[1]).toEqual(["PI77",false]);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+});

@@ -109,5 +109,46 @@ export default wrap(async (req,res)=>{
     return res.status(200).json({pi_no:piNo,restored:inserted,reactivated,already_linked:already});
   }
 
+  /* Permanent deletion. Archiving is the safe operation and the default; this
+     exists for a PI raised in error. It removes the PI, its revision history
+     and its orders — but never dispatch evidence: an order that has shipped
+     anything cannot be destroyed, and the refusal names the orders so the user
+     can see why. Archive that PI instead. */
+  if(req.method==="DELETE"){
+    const piNo=String(req.query?.pi_no||"").trim();
+    if(!piNo) return fail(res,400,"pi_no is required");
+    if(String(req.query?.confirm||"")!=="1")
+      return fail(res,400,`Deleting ${piNo} is permanent and cannot be undone. Archive it instead, or confirm the deletion.`);
+
+    const client=await db().connect();
+    try{
+      await client.query("begin");
+      const {rows:exists}=await client.query("select pi_no from proforma_invoices where pi_no=$1 for update",[piNo]);
+      const {rows:orderRows}=await client.query(
+        "select order_no from orders where pi->>'pi_no' = $1 order by order_no",[piNo]);
+      if(!exists.length&&!orderRows.length){
+        await client.query("rollback");
+        return fail(res,404,`no such PI: ${piNo}`);
+      }
+      const orderNos=orderRows.map(r=>r.order_no);
+      if(orderNos.length){
+        const {rows:shipped}=await client.query(
+          `select distinct order_no from dispatches where order_no = any($1::text[]) order by order_no`,[orderNos]);
+        if(shipped.length){
+          await client.query("rollback");
+          return fail(res,409,`${piNo} cannot be deleted: ${shipped.map(r=>r.order_no).join(", ")} `
+            +`${shipped.length===1?"has":"have"} recorded dispatches, and shipment records are never destroyed. `
+            +`Archive this PI instead.`,409);
+        }
+        await client.query("delete from orders where order_no = any($1::text[])",[orderNos]);
+      }
+      await client.query("delete from proforma_invoice_revisions where pi_no=$1",[piNo]);
+      await client.query("delete from proforma_invoices where pi_no=$1",[piNo]);
+      await client.query("commit");
+      return res.status(200).json({deleted:piNo,orders:orderNos});
+    }catch(e){try{await client.query("rollback");}catch(_){ }throw e;}
+    finally{client.release();}
+  }
+
   return fail(res,405,`${req.method} not allowed`);
 });

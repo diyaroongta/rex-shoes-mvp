@@ -1401,10 +1401,33 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
   const [linking,setLinking]=useState("");
-  const reloadPis=()=>api.listPis().then(setPis);
-  useEffect(()=>{ Promise.all([api.listPis(),api.getSettings().catch(()=>({}))])
+  const [showArchived,setShowArchived]=useState(false);
+  const [busyPi,setBusyPi]=useState("");
+  const [deletePi,setDeletePi]=useState(null);
+  const reloadPis=()=>(showArchived?api.listArchivedPis():api.listPis()).then(setPis);
+
+  /* Archive hides a PI and takes its orders off the schedule; restore puts them
+     back; delete is permanent and refuses while anything has shipped. All three
+     change orders, so every other tab is reloaded too. */
+  async function runPiAction(piNo,action){
+    setBusyPi(piNo);setErr("");setMsg("");
+    try{
+      if(action==="archive"){ const r=await api.archivePi(piNo);
+        setMsg(`${piNo} archived. ${r.orders.length} order(s) taken off the schedule — Restore puts them back.`); }
+      else if(action==="restore"){ const r=await api.restorePi(piNo);
+        setMsg(`${piNo} restored. ${r.orders.length} order(s) back on the schedule.`); }
+      else { const r=await api.deletePi(piNo);
+        setMsg(`${piNo} permanently deleted${r.orders.length?`, along with ${r.orders.join(", ")}`:""}.`);
+        setDeletePi(null); if(selectedPi===piNo) setSelectedPi(null); }
+      await reloadPis();
+      if(onChanged) await onChanged();
+    }catch(e){ setErr(e.message||String(e)); }
+    finally{ setBusyPi(""); }
+  }
+  useEffect(()=>{ Promise.all([showArchived?api.listArchivedPis():api.listPis(),
+                               api.getSettings().catch(()=>({}))])
     .then(([rows,cfg])=>{setPis(rows);setSettings(cfg||{});})
-    .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[]);
+    .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[showArchived]);
   if(!pis) return <div className="text-sm text-slate-500">Loading the PI master…</div>;
   const liveOrderNos=new Set((orders||[]).map(o=>o.order_no));
   async function linkToSchedule(piNo){
@@ -1434,7 +1457,15 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3">{err}</div>}
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
     <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
-      <div className="text-sm font-semibold text-slate-700 mb-1">PI master database</div>
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <div className="text-sm font-semibold text-slate-700">
+          {showArchived?"Archived PIs":"PI master database"}</div>
+        <label className="ml-auto text-xs text-slate-600 flex items-center gap-1.5">
+          <input type="checkbox" checked={showArchived}
+            onChange={e=>{setShowArchived(e.target.checked);setSelectedPi(null);setDeletePi(null);setMsg("");setErr("");}} />
+          Show archived
+        </label>
+      </div>
       <p className="text-xs text-slate-500 mb-3">Issued PIs are snapshotted here independently of the live production queue. Revisions made through Edit are retained with their revision number.</p>
       {!pis.length ? <div className="text-sm text-slate-400 py-6 text-center">No PIs have been issued yet.</div> :
       <table className="w-full text-sm" style={{minWidth:720}}>
@@ -1453,9 +1484,37 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
                 className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
                 {linking===p.pi_no?"Linking…":`Add ${missing.length} to schedule`}</button>
             : <span className="text-xs font-semibold text-emerald-700">Linked</span>}</td>
-          <td className="text-right"><button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button></td>
+          <td className="text-right whitespace-nowrap">
+            <button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button>
+            {showArchived
+              ? <button disabled={busyPi===p.pi_no} onClick={()=>runPiAction(p.pi_no,"restore")}
+                  className="ml-2 text-xs font-semibold text-emerald-700 hover:underline disabled:opacity-40">
+                  {busyPi===p.pi_no?"…":"Restore"}</button>
+              : <button disabled={busyPi===p.pi_no} onClick={()=>runPiAction(p.pi_no,"archive")}
+                  title="Hide this PI and take its orders off the schedule. Fully reversible."
+                  className="ml-2 text-xs font-semibold text-slate-600 hover:underline disabled:opacity-40">
+                  {busyPi===p.pi_no?"…":"Archive"}</button>}
+            <button disabled={busyPi===p.pi_no} onClick={()=>setDeletePi(deletePi===p.pi_no?null:p.pi_no)}
+              title="Permanently remove this PI and its orders"
+              className="ml-2 text-xs font-semibold text-rose-600 hover:underline disabled:opacity-40">Delete</button>
+          </td>
         </tr>;})}</tbody>
       </table>}
+      {deletePi && <div className="mt-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-3">
+        <div className="text-sm font-semibold text-rose-900 mb-1">Permanently delete {deletePi}?</div>
+        <div className="text-xs text-rose-800 leading-relaxed mb-2">
+          This removes the PI, its revision history and its orders, and cannot be undone.
+          Anything already dispatched against those orders blocks the deletion — shipment records are
+          never destroyed. <b>Archive</b> hides a PI instead and can be reversed at any time.
+        </div>
+        <div className="flex gap-2">
+          <button disabled={busyPi===deletePi} onClick={()=>runPiAction(deletePi,"delete")}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-700 text-white disabled:opacity-50">
+            {busyPi===deletePi?"Deleting…":`Delete ${deletePi} permanently`}</button>
+          <button onClick={()=>setDeletePi(null)}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
+        </div>
+      </div>}
     </div>
     {chosen&&items.length>0&&<div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm mt-4">
       <div className="flex items-center gap-2 mb-3"><div className="text-sm font-semibold">{chosen.pi_no} · revision {chosen.revision||0}</div>

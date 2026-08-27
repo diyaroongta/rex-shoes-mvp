@@ -8,6 +8,7 @@ const mocks=vi.hoisted(()=>({
   getReference:vi.fn(),getCatalogue:vi.fn(),listParties:vi.fn(),
   createOrders:vi.fn(),patchReference:vi.fn(),saveParty:vi.fn(),
   schedulePi:vi.fn(),patchOrder:vi.fn(),
+  listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),
 }));
@@ -37,6 +38,10 @@ beforeEach(()=>{
   mocks.patchReference.mockResolvedValue({ok:true});
   mocks.saveParty.mockResolvedValue({name:"Test Buyer"});
   mocks.schedulePi.mockResolvedValue({restored:["JO77"]});
+  mocks.listArchivedPis.mockResolvedValue([]);
+  mocks.archivePi.mockResolvedValue({orders:["JO77"]});
+  mocks.restorePi.mockResolvedValue({orders:["JO77"]});
+  mocks.deletePi.mockResolvedValue({deleted:"PI77",orders:["JO77"]});
   mocks.patchOrder.mockResolvedValue({});
   mocks.nextPiNumber.mockResolvedValue({pi_no:"PI-2026-000001"});
   mocks.previewPartyTerms.mockResolvedValue({orders:0,pis:[],changing:0,terms:{discount_pct:40}});
@@ -379,5 +384,57 @@ describe("tabs stay in step with one another",()=>{
     // Both lists must be re-read, not just the PI list this screen owns.
     await waitFor(()=>expect(mocks.listOrders.mock.calls.length).toBeGreaterThan(ordersBefore));
     await waitFor(()=>expect(mocks.listDispatches.mock.calls.length).toBeGreaterThan(dispatchesBefore));
+  });
+});
+
+/* Archiving and deleting a PI were built as API endpoints once and reported as
+   finished while no button existed. These assert the CONTROLS, not the
+   handlers, because a working endpoint nobody can reach is not a feature. */
+describe("a PI can be archived or permanently deleted",()=>{
+  const onePi=[{pi_no:"PI77",pi_date:"2026-08-22",party:"Buyer",status:"produced",revision:0,
+    snapshot:{orders:[{order_no:"JO77",order_date:"2026-08-22",article_code:"SPIKE",
+      party:"Buyer",priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI77"}}]}}];
+
+  it("offers Archive and Delete, and syncs the other tabs after archiving",async()=>{
+    mocks.listPis.mockResolvedValue(onePi);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    expect(await screen.findByRole("button",{name:"Archive"})).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Delete"})).toBeInTheDocument();
+
+    const ordersBefore=mocks.listOrders.mock.calls.length;
+    await user.click(screen.getByRole("button",{name:"Archive"}));
+    await waitFor(()=>expect(mocks.archivePi).toHaveBeenCalledWith("PI77"));
+    // Archiving takes orders off the schedule, so every tab must re-read.
+    await waitFor(()=>expect(mocks.listOrders.mock.calls.length).toBeGreaterThan(ordersBefore));
+  });
+
+  it("makes permanent deletion a separate, spelled-out confirmation",async()=>{
+    mocks.listPis.mockResolvedValue(onePi);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await user.click(await screen.findByRole("button",{name:"Delete"}));
+
+    // One click must not destroy anything.
+    expect(mocks.deletePi).not.toHaveBeenCalled();
+    expect(screen.getByText(/cannot be undone/)).toBeInTheDocument();
+    expect(screen.getByText(/shipment records are\s+never destroyed/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button",{name:/Delete PI77 permanently/}));
+    await waitFor(()=>expect(mocks.deletePi).toHaveBeenCalledWith("PI77"));
+  });
+
+  it("shows archived PIs on demand and offers Restore there",async()=>{
+    mocks.listPis.mockResolvedValue([]);
+    mocks.listArchivedPis.mockResolvedValue(onePi);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await user.click(screen.getByLabelText("Show archived"));
+    await waitFor(()=>expect(mocks.listArchivedPis).toHaveBeenCalled());
+    await user.click(await screen.findByRole("button",{name:"Restore"}));
+    await waitFor(()=>expect(mocks.restorePi).toHaveBeenCalledWith("PI77"));
   });
 });

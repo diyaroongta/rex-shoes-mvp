@@ -26,6 +26,12 @@ export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponen
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
 export const listPis         = ()          => j("/api/pis");
 export const schedulePi      = pi_no       => post("/api/pis", { pi_no });
+export const listArchivedPis = ()          => j("/api/pis?archived=1");
+/* Archiving hides a PI and takes its orders off the schedule; restoring puts
+   them back. Deleting is permanent and refuses while any order has shipped. */
+export const archivePi       = pi_no       => post("/api/pis", { pi_no, action:"archive" });
+export const restorePi       = pi_no       => post("/api/pis", { pi_no, action:"restore" });
+export const deletePi        = pi_no       => j(`/api/pis?pi_no=${encodeURIComponent(pi_no)}&confirm=1`, { method:"DELETE" });
 export const nextPiNumber    = ()          => post("/api/pi-numbers", {});
 
 /* ---- shared config (machine capacities) ---- */
