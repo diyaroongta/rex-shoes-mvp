@@ -126,6 +126,25 @@ is added to what remains. Re-ordering those steps changes the total.
 > first line item (₹48,363 on the sample PI). This app sums every line; test E in
 > `tests/pi.test.mjs` locks that in. Do not "fix" it to match their spreadsheet.
 
+**Colour.** Two different things share the word, and they must not be merged:
+
+- A colour against a **material row** makes it a *different material*: black and
+  blue rexine are bought, stocked and netted separately (their sheets even price
+  them apart). The colour is folded into the material name — `REXINE 54" BLACK` —
+  so every downstream key stays the flat `NAME||UOM`. `Default` means no colour.
+  This is why two rows for one material are no longer "duplicates".
+- **Sole Colour / Upper Colour** on a BOM or Catalogue row describe the *shoe*.
+  They are one value per article, prefill a new order and the PI, and change
+  nothing about procurement.
+
+**Columns the factory adds.** `parseReferenceWorkbook` returns every column it
+does not recognise, with sample values and its best guess, and the upload screen
+makes the user confirm each one before anything saves — map it to a field, keep
+it as a free-text note, or leave it out. A guessed column is applied to the
+preview so the outcome shown is honest, but is never saved unconfirmed, and no
+column is ever dropped in silence. A bare `Colour` is the one genuinely
+ambiguous heading: material colour on the BOM sheet, upper colour on Catalogue.
+
 **Parties.** One handwritten sheet routinely lists **several different customers**,
 each with their own order. Party belongs to each order, never to the sheet. A PI is
 issued to one customer, so a multi-party sheet produces one invoice each.
@@ -146,6 +165,9 @@ Each of these was a real bug found in production. Most have a regression test no
 | Unresized image uploads | Phone photos exceeded the serverless request limit and failed silently. Always resize client-side. |
 | Sharing catalogue photos | Gola Plus inherited Gola's photo and pictured the wrong shoe on invoices. |
 | Guessing a combo for a lone size | `mapToCombo` used to snap any size to the nearest range. It must return `{combo:null, single:size}` and let the user resolve it. |
+| Reading a colour as a duplicate row | The client's BOM sheet has a COLOUR column per material. Read as one material, `REXINE-54" BLACK` and `REXINE-54" blue` were "duplicate BOM material" and the whole upload was rejected. Colour belongs to material identity. |
+| Losing a column to its own heading | The shipped template writes `Size Run (optional)`; the header key kept `optional`, so the column was ignored. `key()` now strips it. |
+| A hard-coded default colour | The PI screen started every order at sole colour "Black" — invented factory data on every invoice. It starts empty; the article master supplies the real colour. |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---

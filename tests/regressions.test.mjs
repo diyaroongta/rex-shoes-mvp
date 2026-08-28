@@ -3,6 +3,7 @@ import { compute } from "../shared/engine.js";
 import { INPUTS } from "../shared/inputs.js";
 import { mergePiSnapshot, ordersFromPiSnapshot } from "../shared/pi-schedule.js";
 import { routingForSole } from "../shared/reference-edit.js";
+import { colouredMaterialName, mergeBom } from "../shared/bom-import.js";
 
 console.log("\nregressions — cross-feature contracts");
 
@@ -37,3 +38,43 @@ console.log("  pass  PI snapshots can be safely restored into the schedule");
 console.log("  pass  stale PI lines are blocked visibly");
 console.log("  pass  partial live sync preserves the full PI audit snapshot");
 console.log("  pass  catalogue sole edits keep routing consistent\n");
+
+/* Colour on a BOM upload — two different things sharing a word.
+
+   A colour written against a MATERIAL makes it a different material to buy.
+   A colour written against the ARTICLE is the shoe's standard sole/upper
+   colour: it prefills an order and must never touch procurement. */
+assert.equal(colouredMaterialName('REXINE 54"',"blue"),'REXINE 54" BLUE');
+assert.equal(colouredMaterialName('REXINE 54"',"Default"),'REXINE 54"',"Default means no colour");
+assert.equal(colouredMaterialName('REXINE 54"',""),'REXINE 54"');
+assert.equal(colouredMaterialName("BLACK THREAD","BLACK"),"BLACK THREAD","a name already carrying the colour is left alone");
+
+const baseReference = {
+  articles:{ GOLA:{ sole_type:"PVC", sole_colour:"Black", upper_colour:"Black",
+    combo_order:["6X8"], combos:{ "6X8":{ stitching_combo:"6X8", rates:{ CUTTING:{ "MESH||MTR":0.4 } } } } } },
+  materials:{ "MESH||MTR":{ name:"MESH", uom:"MTR", stock:120 } },
+};
+const uploadWithColours = mergeBom(baseReference,{
+  article:"GOLA", soleType:"PVC", soleColour:"White", upperColour:"White/Grey",
+  combo_order:["6X8"],
+  combos:{ "6X8":{ stitching_combo:"6X8", rates:{ CUTTING:{ "MESH BLUE||MTR":0.4 } } } },
+  materials:{ "MESH BLUE||MTR":{ name:"MESH BLUE", uom:"MTR", colour:"BLUE" } },
+},{mode:"replace"});
+assert.equal(uploadWithColours.reference.articles.GOLA.sole_colour,"White");
+assert.equal(uploadWithColours.reference.articles.GOLA.upper_colour,"White/Grey");
+assert.deepEqual(uploadWithColours.newMaterials,["MESH BLUE||MTR"],
+  "a colour-specific material is a NEW material, reported so its stock is not assumed");
+assert.equal(uploadWithColours.reference.materials["MESH BLUE||MTR"].stock,0);
+assert.equal(uploadWithColours.reference.materials["MESH||MTR"].stock,120,"existing stock is never touched");
+
+/* The colour columns are optional. A file that leaves them out is saying
+   nothing about colour — it must not wipe the colours already on file. */
+const uploadWithout = mergeBom(uploadWithColours.reference,{
+  article:"GOLA", soleType:"PVC",
+  combo_order:["6X8"],
+  combos:{ "6X8":{ stitching_combo:"6X8", rates:{ CUTTING:{ "MESH||MTR":0.5 } } } },
+  materials:{ "MESH||MTR":{ name:"MESH", uom:"MTR" } },
+},{mode:"replace"});
+assert.equal(uploadWithout.reference.articles.GOLA.sole_colour,"White");
+assert.equal(uploadWithout.reference.articles.GOLA.upper_colour,"White/Grey");
+console.log("  pass  material colour buys separately; article colour only prefills, and neither is wiped by an upload that omits it");

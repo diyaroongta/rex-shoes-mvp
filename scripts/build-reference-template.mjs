@@ -159,6 +159,15 @@ function dataSheet({ name, tabColour, title, subtitle, columns, examples, valida
   pair("2", "Repeat Article Code, Sole Type and Size Range on EVERY row. Never leave a cell blank to mean “same as above” — each row is read on its own.");
   pair("3", "Use one spelling per material. MESH 58\" and Mesh-58\" would be bought as two different materials, splitting the requirement between them.");
 
+  heading("COLOURS");
+  pair("Material Colour", "The colour of THAT material. Black and blue rexine are bought and stocked separately, so each colour is its own line — write the colour, or leave it blank / Default when colour does not matter.");
+  pair("Sole / Upper Colour", "The shoe's standard colours. They fill in a new order and the PI, and change nothing about what is bought. One value per article.");
+
+  heading("A COLUMN WE DO NOT KNOW");
+  pair("You may add columns", "Add a column of your own and upload the file as usual.");
+  pair("Factory OS asks", "Before saving, it shows the column, a few of its values, and what it thinks the column is. You confirm it, point it at a different field, keep it as a note, or leave it out.");
+  pair("Nothing is guessed", "No column is imported until you have answered, and no column is dropped silently.");
+
   heading("ALLOWED VALUES");
   pair("Sole Type",   SOLE_TYPES.join(", ") + "   (dropdown on the BOM tab)");
   pair("Stage",       STAGES.join(", ") + "   (dropdown)");
@@ -183,29 +192,38 @@ function dataSheet({ name, tabColour, title, subtitle, columns, examples, valida
 }
 
 /* ---------------------------------------------------------------------- BOM */
+const BOM_COLUMNS = [
+  { header:"Article Code",  width:22 },
+  { header:"Sole Type",     width:13 },
+  { header:"Size Range",    width:13 },
+  { header:"Stage",         width:16 },
+  { header:"Material",      width:28 },
+  // A colour makes the material a DIFFERENT material to buy, so it sits with
+  // the material. Leave blank (or write Default) when colour does not matter.
+  { header:"Material Colour (optional)", width:20 },
+  { header:"UOM",           width:9,  align:"center" },
+  { header:"Rate per Pair", width:15, numFmt:"0.0000", align:"right" },
+  { header:"Size Run (optional)", width:22 },
+  // These two describe the SHOE, not the row. Repeat them or fill them once.
+  { header:"Sole Colour (optional)",  width:20 },
+  { header:"Upper Colour (optional)", width:20 },
+];
+const bomCol = header => BOM_COLUMNS.findIndex(c => c.header === header) + 1;
+
 dataSheet({
   name:"BOM", tabColour:"FF047857",
   title:"BOM — what one pair consumes",
   subtitle:"Preferred: write Small or Large when a range repeats. If blank, Factory OS follows the uploaded range order: all Small ranges first, then Large.",
-  columns:[
-    { header:"Article Code",  width:22 },
-    { header:"Sole Type",     width:13 },
-    { header:"Size Range",    width:13 },
-    { header:"Stage",         width:16 },
-    { header:"Material",      width:28 },
-    { header:"UOM",           width:9,  align:"center" },
-    { header:"Rate per Pair", width:15, numFmt:"0.0000", align:"right" },
-    { header:"Size Run (optional)", width:22 },
-  ],
+  columns:BOM_COLUMNS,
   examples:[],
   validations:[
-    { col:2, values:SOLE_TYPES, title:"Sole Type",
+    { col:bomCol("Sole Type"), values:SOLE_TYPES, title:"Sole Type",
       message:`Choose one of: ${SOLE_TYPES.join(", ")}` },
-    { col:4, values:STAGES, title:"Stage",
+    { col:bomCol("Stage"), values:STAGES, title:"Stage",
       message:`Choose one of: ${STAGES.join(", ")}` },
-    { col:6, values:UOMS, title:"UOM",
+    { col:bomCol("UOM"), values:UOMS, title:"UOM",
       message:`Choose one of: ${UOMS.join(", ")}. Keep the same unit for a material everywhere.` },
-    { col:8, values:["Small","Large"], title:"Size Run",
+    { col:bomCol("Size Run (optional)"), values:["Small","Large"], title:"Size Run",
       message:"Use Small or Large when the same numeral exists in both runs. Leave blank only when rows remain in Small-then-Large order." },
   ],
 });
@@ -240,6 +258,8 @@ dataSheet({
     { header:"Packing Source", width:22 },
     { header:"Photo File Name", width:22 },
     { header:"BOM Range (optional)", width:22 },
+    { header:"Sole Colour (optional)",  width:20 },
+    { header:"Upper Colour (optional)", width:20 },
   ],
   examples:[],
   validations:[
@@ -255,19 +275,11 @@ dataSheet({
   name:"Example Only", tabColour:"FF9CA3AF",
   title:"EXAMPLE ONLY — not imported by Factory OS",
   subtitle:"Copy this pattern into BOM, Packing and Catalogue. Do not use this sheet as an upload tab.",
-  columns:[
-    { header:"Article Code",  width:22 },
-    { header:"Sole Type",     width:13 },
-    { header:"Size Range",    width:13 },
-    { header:"Stage",         width:16 },
-    { header:"Material",      width:28 },
-    { header:"UOM",           width:9,  align:"center" },
-    { header:"Rate per Pair", width:15, numFmt:"0.0000", align:"right" },
-    { header:"Size Run (optional)", width:22 },
-  ],
+  columns:BOM_COLUMNS,
   examples:[
-    ["EXAMPLE ARTICLE","EVA","6X8","CUTTING",'MESH 58"',"MTR",0.42,"Small"],
-    ["EXAMPLE ARTICLE","EVA","6X8","STITCHING","THREAD","MTR",1.2,"Small"],
+    ["EXAMPLE ARTICLE","EVA","6X8","CUTTING",'MESH 58"',"BLACK","MTR",0.42,"Small","Black","Black"],
+    ["EXAMPLE ARTICLE","EVA","6X8","CUTTING",'MESH 58"',"BLUE","MTR",0.42,"Small","Black","Black"],
+    ["EXAMPLE ARTICLE","EVA","6X8","STITCHING","THREAD","","MTR",1.2,"Small","Black","Black"],
   ],
   rows:0,
 });

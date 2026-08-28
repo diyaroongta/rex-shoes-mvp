@@ -106,7 +106,7 @@ const duplicateHeaders=parseReferenceWorkbook([{name:"Packing",rows:[
   ["Article Code","Size Range","Pairs per Carton","PPC"],
   ["SPIKE","7X10S",24,18],
 ]}],INPUTS);
-assert.ok(duplicateHeaders.errors.some(e=>e.includes("duplicate column")&&e.includes("pairspercarton")),
+assert.ok(duplicateHeaders.errors.some(e=>e.includes("duplicate column")&&e.includes("Pairs per Carton")),
   "two columns meaning the same thing must be rejected instead of reading whichever comes first");
 
 const conflictingPacking=parseReferenceWorkbook([
@@ -254,3 +254,108 @@ for(const [article,,a,b] of varied){
   assert.deepEqual(Object.keys(variedWorkbook.mrp[article]),[a,b]);
 }
 console.log("  pass  six varied article names remain six BOMs with multiple size ranges\n");
+
+/* ---------------------------------------------------------------------------
+   Colours, and columns the factory adds to their own copy of the template.
+
+   The client's real BOM sheet carries a COLOUR column against every material:
+   REXINE-54" in BLACK and in blue, THREAD 3 PLY at two different rates. Read as
+   one material those rows are duplicates, and the whole upload was rejected
+   with "duplicate BOM material" — the exact failure they photographed. Colour
+   makes the material a different material to buy, so the rows are not
+   duplicates at all. */
+const clientColourSheet = [{name:"BOM",rows:[
+  ["Article Code","Sole Type","Size Range","Stage","Material","COLOUR","UOM","Rate per Pair","Size Run"],
+  ["JILL","EVA","6X8","CUTTING",'REXINE-54"',"BLACK","MTR",45,"Small"],
+  ["JILL","EVA","6X8","CUTTING",'REXINE-54"',"blue","MTR",45,"Small"],
+  ["JILL","EVA","6X8","STITCHING","THREAD 3 PLY","BLACK","MTR",2.5,"Small"],
+  ["JILL","EVA","6X8","STITCHING","THREAD 3 PLY","blue","MTR",2,"Small"],
+  ["JILL","EVA","6X8","PACKING","TISSUE PAPER","Default","PCS",4,"Small"],
+]}];
+const coloured = parseReferenceWorkbook(clientColourSheet,{articles:{},materials:{}});
+assert.deepEqual(coloured.errors,[],coloured.errors.join(" | "));
+assert.deepEqual(Object.keys(coloured.boms[0].materials).sort(),[
+  'REXINE 54" BLACK||MTR','REXINE 54" BLUE||MTR','THREAD 3 PLY BLACK||MTR','THREAD 3 PLY BLUE||MTR','TISSUE PAPER||PCS',
+],"a colour makes a separate material; Default means no colour");
+assert.equal(coloured.boms[0].combos["6X8"].rates.STITCHING['THREAD 3 PLY BLACK||MTR'],2.5);
+assert.equal(coloured.boms[0].combos["6X8"].rates.STITCHING['THREAD 3 PLY BLUE||MTR'],2);
+assert.equal(coloured.boms[0].materials['REXINE 54" BLUE||MTR'].colour,"BLUE","lower-case blue is one colour with BLUE");
+assert.ok(coloured.warnings.some(w=>/colour-specific material/.test(w)&&/0 stock/.test(w)),
+  "splitting a material by colour must say that the new colour starts with its own stock");
+
+/* A bare COLOUR heading is the one real ambiguity — beside a material it is
+   that material's colour, on the Catalogue it is the shoe's upper. It is
+   applied as a suggestion so the preview is honest, and returned for the user
+   to confirm. Nothing else in the file depends on their answer. */
+const [colourColumn] = coloured.columns;
+assert.equal(colourColumn.sheet,"BOM");
+assert.equal(colourColumn.applied,"materialcolour");
+assert.equal(colourColumn.choice,null,"a suggestion is not an answer — it must still be confirmed");
+assert.deepEqual(colourColumn.samples,["BLACK","blue","Default"],"the user decides with their own values in front of them");
+
+/* Answering differently re-reads the file that way — and then the rows really
+   are duplicates, which is the honest outcome of that answer. */
+const asUpper = parseReferenceWorkbook(clientColourSheet,{articles:{},materials:{}},
+  {columnMap:{"BOM::colour":"uppercolour"}});
+assert.ok(asUpper.errors.some(e=>/duplicate BOM material/.test(e)));
+assert.equal(asUpper.columns[0].choice,"uppercolour","a confirmed column stays confirmed");
+
+/* Explicit colour headings need no confirmation: sole and upper colour are the
+   article's standard colours and prefill an order; they are not materials. */
+const standardColours = parseReferenceWorkbook([{name:"BOM",rows:[
+  [...BOM_HEAD,"Sole Colour","Upper Colour"],
+  ["GLAMOUR","EVA","6X8","CUTTING","MESH","MTR",0.42,"Black","N.Blue / S.Blue"],
+  ["GLAMOUR","EVA","6X8","PACKING","INNER BOX","PCS",1,"BLACK","n.blue / s.blue"],
+]}],{articles:{},materials:{}});
+assert.deepEqual(standardColours.errors,[],standardColours.errors.join(" | "));
+assert.deepEqual(standardColours.columns,[],"our own headings are never queried");
+assert.equal(standardColours.boms[0].soleColour,"Black");
+assert.equal(standardColours.boms[0].upperColour,"N.Blue / S.Blue");
+assert.ok(!Object.keys(standardColours.boms[0].materials).some(k=>/BLACK/.test(k)),
+  "a standard sole colour must not split the materials");
+
+const contradictoryColour = parseReferenceWorkbook([{name:"BOM",rows:[
+  [...BOM_HEAD,"Sole Colour"],
+  ["GLAMOUR","EVA","6X8","CUTTING","MESH","MTR",0.42,"Black"],
+  ["GLAMOUR","EVA","6X8","PACKING","INNER BOX","PCS",1,"White"],
+]}],{articles:{},materials:{}});
+assert.ok(contradictoryColour.errors.some(e=>/more than one Sole Colour/.test(e)),
+  "one article cannot have two standard sole colours; row order must not decide it");
+
+/* A column we have never seen. It is not imported on a guess and not dropped
+   in silence — it comes back for an answer, and can be kept as a note. */
+const invented = [{name:"BOM",rows:[
+  [...BOM_HEAD,"Supplier Ref"],
+  ["GLAMOUR","EVA","6X8","CUTTING","MESH","MTR",0.42,"SUP-118"],
+]}];
+const unknownColumn = parseReferenceWorkbook(invented,{articles:{},materials:{}});
+assert.equal(unknownColumn.columns.length,1);
+assert.equal(unknownColumn.columns[0].header,"Supplier Ref");
+assert.equal(unknownColumn.columns[0].applied,"__ignore__","an unrecognised column changes nothing until it is explained");
+assert.deepEqual(unknownColumn.errors,[],unknownColumn.errors.join(" | "));
+
+const asNote = parseReferenceWorkbook(invented,{articles:{},materials:{}},
+  {columnMap:{"BOM::supplierref":"__note__"}});
+assert.deepEqual(asNote.boms[0].materials["MESH||MTR"].notes,{"Supplier Ref":"SUP-118"});
+
+/* A near-miss heading is offered to the closest field we know, still as a
+   question rather than an assumption. */
+const nearMiss = parseReferenceWorkbook([{name:"Packing",rows:[
+  ["Article Code","Size Range","Pairs Per Box"],["GLAMOUR","6X8",24],
+]}],{articles:{articles:{}},materials:{}});
+assert.equal(nearMiss.columns[0].suggestion,"pairspercarton");
+assert.equal(nearMiss.columns[0].suggestionLabel,"Pairs per Carton");
+
+/* Our own template writes "Size Run (optional)" and "BOM Range (optional)".
+   Those must read as the field itself — a header key that kept the note would
+   both lose the column and ask the user about a column we shipped. */
+const templateHeadings = parseReferenceWorkbook([
+  {name:"BOM",rows:[[...BOM_HEAD,"Size Run (optional)","Material Colour (optional)"],
+    ["GLAMOUR","EVA","7X10","CUTTING","MESH","MTR",0.5,"Large","BLACK"]]},
+  {name:"Packing",rows:[["Article Code","Size Range","Pairs per Carton","BOM Range (optional)"],
+    ["GLAMOUR","7X10",24,""]]},
+],{articles:{},materials:{}});
+assert.deepEqual(templateHeadings.columns,[],"the template's own headings are understood as they are");
+assert.equal(templateHeadings.boms[0].combos["7X10"].size_run,"LARGE");
+assert.ok(templateHeadings.boms[0].materials["MESH BLACK||MTR"]);
+console.log("  pass  colours split a material, standard colours prefill an order, and unknown columns are asked about\n");

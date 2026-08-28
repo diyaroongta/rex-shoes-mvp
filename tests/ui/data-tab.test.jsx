@@ -161,3 +161,59 @@ it("requires a second click before restoring a reference revision",async()=>{
   await userEvent.click(screen.getByRole("button",{name:"Restore"}));
   await waitFor(()=>expect(apiMocks.restoreReference).toHaveBeenCalledWith(7));
 });
+
+/* The factory adds columns to their own copy of the template. The upload must
+   neither guess nor silently drop them: their real sheet carries a COLOUR
+   against every material, and read as one material those rows are duplicates —
+   the "duplicate BOM material" rejection they hit in production. */
+it("asks what an unrecognised column means and blocks the save until it is answered",async()=>{
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Article Code","Sole Type","Size Range","Stage","Material","COLOUR","UOM","Rate per Pair"],
+    ["CUSTOM","EVA","1X2","CUTTING",'REXINE-54"',"BLACK","MTR",45],
+    ["CUSTOM","EVA","1X2","CUTTING",'REXINE-54"',"blue","MTR",45],
+  ]),"BOM");
+  const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  const file=new File([bytes],"colour.xlsx");
+  Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
+  const {container}=render(<DataTab/>);
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
+
+  expect(await screen.findByText(/column we are not sure about/)).toBeInTheDocument();
+  expect(screen.getByText(/Values in the file: BLACK, blue/)).toBeInTheDocument();
+  const save=screen.getByRole("button",{name:/^Save /});
+  expect(save).toBeDisabled();
+
+  const choice=screen.getByRole("combobox",{name:/This column is/});
+  expect(choice).toHaveDisplayValue(/we would read it as Material Colour/);
+  await userEvent.selectOptions(choice,"materialcolour");
+  await waitFor(()=>expect(screen.getByRole("button",{name:/^Save /})).toBeEnabled());
+
+  await userEvent.click(screen.getByRole("button",{name:/^Save /}));
+  await waitFor(()=>expect(apiMocks.uploadBom).toHaveBeenCalled());
+  const {batch}=apiMocks.uploadBom.mock.calls[0][0];
+  expect(Object.keys(batch.boms[0].materials).sort())
+    .toEqual(['REXINE 54" BLACK||MTR','REXINE 54" BLUE||MTR']);
+});
+
+/* Answering "it is the shoe's upper colour" is a legitimate answer, and then
+   the two rows genuinely are the same material twice. The refusal must come
+   back rather than the second row quietly overwriting the first. */
+it("re-reads the file with the answer given, errors included",async()=>{
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Article Code","Sole Type","Size Range","Stage","Material","COLOUR","UOM","Rate per Pair"],
+    ["CUSTOM","EVA","1X2","CUTTING","MESH","BLACK","MTR",1],
+    ["CUSTOM","EVA","1X2","CUTTING","MESH","BLACK","MTR",2],
+  ]),"BOM");
+  const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  const file=new File([bytes],"colour2.xlsx");
+  Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
+  const {container}=render(<DataTab/>);
+  fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
+  await screen.findByText(/column we are not sure about/);
+  await userEvent.selectOptions(screen.getByRole("combobox",{name:/This column is/}),"uppercolour");
+  expect(await screen.findByText(/duplicate BOM material/)).toBeInTheDocument();
+  expect(screen.getByRole("button",{name:/^Save /})).toBeDisabled();
+  expect(apiMocks.uploadBom).not.toHaveBeenCalled();
+});

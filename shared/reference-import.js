@@ -1,4 +1,5 @@
-import { articleCode, comboCode, existingArticleCode, normaliseMaterial } from "./bom-import.js";
+import { articleCode, colouredMaterialName, comboCode, existingArticleCode,
+  materialColourToken, normaliseMaterial } from "./bom-import.js";
 import { comboSizesForArticleIn, resolveArticleSizeWithSequenceIn,
   createSizeSequenceState, scopedSizeKey, parseSizeToken, sizeRunOptionsForRange } from "./bridge.js";
 
@@ -8,7 +9,12 @@ export const CATALOGUE_HEADERS=["Article Code","Size Range","Description","MRP p
 
 const SOLES=new Set(["EVA","PVC","PU","STUCK-ON"]);
 const STAGES=new Set(["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","ASSEMBLY","PACKING","DISPATCH"]);
-const key=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+/* "(optional)" in a heading is instruction to the person filling the sheet,
+   not part of the field name — our own template writes it, so a header key
+   that kept it would ask about a column we ourselves shipped. */
+const key=s=>String(s||"").toLowerCase()
+  .replace(/\((?:\s*optional\s*|\s*required\s*|\s*if any\s*)\)/g," ")
+  .replace(/[^a-z0-9]+/g,"");
 const text=v=>String(v==null?"":v).trim();
 const HEADER_ALIASES={
   article:"articlecode",articleno:"articlecode",articlenumber:"articlecode",articlename:"articlecode",product:"articlecode",
@@ -24,7 +30,66 @@ const HEADER_ALIASES={
   mrp:"mrpperpair",price:"defaultprice",defaultpriceperpair:"defaultprice",
   pvcprocess:"pvcmachine",machine:"pvcmachine",photo:"photofilename",imagefilename:"photofilename",
   packingarticle:"packingsource",packinglistsource:"packingsource",inheritsfrom:"packingsource",
+  /* Colours. The article's standard sole and upper colour are explicit
+     headings; a bare "Colour" is resolved per sheet below, never silently. */
+  solecolor:"solecolour",soleshade:"solecolour",colourofsole:"solecolour",colorofsole:"solecolour",
+  uppercolor:"uppercolour",uppershade:"uppercolour",colourofupper:"uppercolour",colorofupper:"uppercolour",
+  materialcolor:"materialcolour",materialshade:"materialcolour",itemcolour:"materialcolour",itemcolor:"materialcolour",
+  componentcolour:"materialcolour",componentcolor:"materialcolour",shade:"materialcolour",
 };
+
+/* Every column each sheet understands. Anything else is NOT guessed at: it is
+   reported so the person uploading says what it means before the file saves. */
+export const COLUMN_LABELS={
+  articlecode:"Article Code",soletype:"Sole Type",sizerange:"Size Range",sizerun:"Size Run",
+  bomrange:"BOM Range",stage:"Stage",component:"Component",material:"Material",
+  materialcolour:"Material Colour",uom:"UOM",rateperpair:"Rate per Pair",
+  solecolour:"Sole Colour",uppercolour:"Upper Colour",pairspercarton:"Pairs per Carton",
+  description:"Description",mrpperpair:"MRP per Pair",defaultprice:"Default Price",
+  pvcmachine:"PVC Machine",packingsource:"Packing Source",photofilename:"Photo File Name",
+};
+export const COLUMN_HELP={
+  materialcolour:"Colour of THIS material. A coloured material is bought separately — black and blue rexine become two lines with their own stock.",
+  solecolour:"The article's standard sole colour. Prefills new orders and the PI; it does not change what is bought.",
+  uppercolour:"The article's standard upper colour. Prefills new orders and the PI; it does not change what is bought.",
+  component:"The part the material is used on. Only a fallback for a blank Material cell.",
+  sizerun:"Small or Large, when the same numerals exist in both runs.",
+  bomrange:"Which BOM size range a standalone size borrows.",
+};
+export const SHEET_COLUMNS={
+  BOM:["articlecode","soletype","sizerange","sizerun","stage","component","material","materialcolour",
+    "uom","rateperpair","solecolour","uppercolour"],
+  Packing:["articlecode","sizerange","bomrange","pairspercarton"],
+  Catalogue:["articlecode","sizerange","bomrange","description","mrpperpair","defaultprice","soletype",
+    "pvcmachine","packingsource","photofilename","solecolour","uppercolour"],
+};
+/* A bare "Colour" means different things on different sheets: next to a
+   material it is that material's colour; on the Catalogue it is the shoe's
+   upper. Each is only a SUGGESTION — the upload asks before using it. */
+const SHEET_GUESSES={
+  BOM:{colour:"materialcolour",color:"materialcolour"},
+  Catalogue:{colour:"uppercolour",color:"uppercolour"},
+  Packing:{},
+};
+export const IGNORE_COLUMN="__ignore__";
+export const NOTE_COLUMN="__note__";
+
+/* A column resolver for one sheet. `chosen` holds what the user has already
+   confirmed for this file, keyed "Sheet::header", and always wins. */
+function resolverFor(label,chosen={}){
+  const guesses=SHEET_GUESSES[label]||{};
+  const known=new Set(SHEET_COLUMNS[label]||[]);
+  return cell=>{
+    const raw=key(cell);
+    if(!raw) return "";
+    const decided=chosen[`${label}::${raw}`];
+    if(decided) return decided===IGNORE_COLUMN||decided===NOTE_COLUMN?`${decided}:${raw}`:decided;
+    const aliased=HEADER_ALIASES[raw]||raw;
+    if(known.has(aliased)) return aliased;
+    if(guesses[raw]) return guesses[raw];
+    return aliased;
+  };
+}
 const headerKey=s=>HEADER_ALIASES[key(s)]||key(s);
 const STAGE_ALIASES={MOULDING:"MOLDING",MOLD:"MOLDING",MOULD:"MOLDING",UPPERQC:"UPPER_QC",UPPERQUALITYCHECK:"UPPER_QC",PREP:"PREPARATION"};
 const SOLE_ALIASES={STUCKON:"STUCK-ON",STUCK_ON:"STUCK-ON",STUCK:"STUCK-ON"};
@@ -33,40 +98,102 @@ const UOM_ALIASES={PC:"PCS","PCS.":"PCS",PIECE:"PCS",PIECES:"PCS",PAIR:"PAIR",PA
 const cleanStage=v=>{const raw=text(v).toUpperCase().replace(/[^A-Z0-9]+/g,"_").replace(/^_|_$/g,"");return STAGE_ALIASES[raw]||raw;};
 const cleanSole=v=>{const raw=text(v).toUpperCase().replace(/\s+/g,"_");return SOLE_ALIASES[raw]||raw;};
 const cleanUom=v=>{const raw=text(v).toUpperCase();return UOM_ALIASES[raw]||raw.replace(/\.$/,"");};
+/* Colours are free text — the factory writes "N.Blue / S.Blue" as readily as
+   "Black". Keep exactly what was typed apart from stray spacing; compare
+   case-insensitively so BLACK and Black are not read as a disagreement. */
+const MAX_COLOUR=60;
+const cleanColour=v=>text(v).replace(/\s+/g," ").trim();
+const sameColour=(a,b)=>String(a||"").toUpperCase()===String(b||"").toUpperCase();
 const cleanRun=v=>{const raw=text(v).toUpperCase();if(!raw)return "";if(raw.startsWith("S"))return "SMALL";if(raw.startsWith("L")||raw.startsWith("B"))return "LARGE";return raw;};
 
 /* Find the header row rather than assuming it is the first one. A workbook
    people fill in by hand routinely carries a title and a note above the table,
    and a parser that only reads row 1 rejects the whole file for it — with a
    row-number error that points at the title, which tells the user nothing. */
-function headerRowIndex(rows,required){
+function headerRowIndex(rows,required,resolve=headerKey){
   const want=(required||[]).map(headerKey);
   for(let i=0;i<Math.min((rows||[]).length,25);i++){
-    const map=((rows[i]||[]).map(headerKey));
+    const map=((rows[i]||[]).map(resolve));
     if(want.every(w=>map.includes(w))) return i;
   }
   return 0;
 }
 
-function rowObjects(rows,required){
-  const at=headerRowIndex(rows,required);
+function rowObjects(rows,required,resolve=headerKey){
+  const at=headerRowIndex(rows,required,resolve);
   const header=(rows||[])[at]||[];
-  const map=header.map(headerKey);
+  const map=header.map(resolve);
+  /* Columns the user chose to keep as a free-text note. They are recorded and
+     shown, never used in any calculation. */
+  const noteCols=map.map((k,i)=>[k,i]).filter(([k])=>String(k).startsWith(`${NOTE_COLUMN}:`))
+    .map(([,i])=>({index:i,label:text(header[i])||`Column ${i+1}`}));
   return (rows||[]).slice(at+1).map((row,index)=>({
     row:at+index+2,                       // 1-based, as Excel shows it
     get:name=>row[map.indexOf(headerKey(name))],
+    notes:()=>Object.fromEntries(noteCols.map(c=>[c.label,text(row[c.index])]).filter(([,v])=>v)),
     empty:row.every(v=>v==null||text(v)===""),
   })).filter(r=>!r.empty);
 }
 
-function duplicateHeaders(rows,required){
-  const at=headerRowIndex(rows,required), header=(rows||[])[at]||[];
+function duplicateHeaders(rows,required,resolve=headerKey){
+  const at=headerRowIndex(rows,required,resolve), header=(rows||[])[at]||[];
   const seen=new Set(),duplicates=new Set();
   for(const cell of header){
-    const canonical=headerKey(cell);if(!canonical)continue;
+    const canonical=resolve(cell);
+    if(!canonical||String(canonical).startsWith(`${IGNORE_COLUMN}:`)||String(canonical).startsWith(`${NOTE_COLUMN}:`))continue;
     if(seen.has(canonical))duplicates.add(canonical);else seen.add(canonical);
   }
   return [...duplicates];
+}
+
+const tokensOf=s=>String(s||"").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+/* The closest column this sheet already understands, or null. Deliberately
+   only a SUGGESTION: nothing is imported from a guessed column until the
+   person uploading confirms it. */
+function suggestColumn(label,rawKey,headerText){
+  const want=tokensOf(headerText||rawKey);
+  let best=null,bestScore=0;
+  for(const col of SHEET_COLUMNS[label]||[]){
+    const canonical=key(COLUMN_LABELS[col]||col);
+    const overlap=tokensOf(COLUMN_LABELS[col]||col).filter(t=>want.includes(t)).length;
+    const near=canonical.includes(rawKey)||rawKey.includes(canonical)?1:0;
+    const score=overlap+near;
+    if(score>bestScore){bestScore=score;best=col;}
+  }
+  return bestScore>0?best:null;
+}
+
+/* Columns in the file that this sheet does not already understand, plus the
+   ones whose meaning depends on the sheet (a bare "Colour"). Each carries what
+   the importer would do with it, so the UI can ask for a yes rather than
+   silently dropping a column the factory took the trouble to fill in. */
+function pendingColumns(label,rows,required,chosen){
+  const known=new Set(SHEET_COLUMNS[label]||[]);
+  const guesses=SHEET_GUESSES[label]||{};
+  const at=headerRowIndex(rows,required,resolverFor(label,chosen));
+  const header=(rows||[])[at]||[];
+  const out=[];
+  header.forEach((cell,i)=>{
+    const raw=key(cell);
+    if(!raw) return;
+    const aliased=HEADER_ALIASES[raw]||raw;
+    if(known.has(aliased)) return;                       // an understood column
+    const samples=[];
+    for(const row of (rows||[]).slice(at+1)){
+      const v=text((row||[])[i]);
+      if(v&&!samples.includes(v)) samples.push(v);
+      if(samples.length>=3) break;
+    }
+    const suggestion=guesses[raw]||suggestColumn(label,raw,text(cell));
+    out.push({
+      sheet:label, header:text(cell)||`Column ${i+1}`, key:raw, samples,
+      suggestion:suggestion||null,
+      suggestionLabel:suggestion?COLUMN_LABELS[suggestion]:null,
+      choice:chosen[`${label}::${raw}`]||null,
+      applied:chosen[`${label}::${raw}`]||suggestion||IGNORE_COLUMN,
+    });
+  });
+  return out;
 }
 
 function sheet(sheets,name){
@@ -77,22 +204,41 @@ function sheet(sheets,name){
   return (sheets||[]).find(s=>(aliases[wanted]||new Set([wanted])).has(key(s.name||s.sheetName)));
 }
 
-export function parseReferenceWorkbook(sheets,reference={}){
+/* opts.columnMap: decisions the user has already confirmed for THIS file,
+   keyed "Sheet::headerkey" — a column name, IGNORE_COLUMN or NOTE_COLUMN. */
+export function parseReferenceWorkbook(sheets,reference={},opts={}){
   const errors=[],warnings=[];
   const boms={},packing={},packingSingles={},catalogue={},mrp={},individualSizes={};
   const bomSheet=sheet(sheets,"BOM"), packingSheet=sheet(sheets,"Packing"), catalogueSheet=sheet(sheets,"Catalogue");
   if(!bomSheet&&!packingSheet&&!catalogueSheet)
-    return {errors:["Workbook must contain a BOM, Packing or Catalogue sheet."],warnings,boms:[],packing,packingSingles,catalogue,mrp,individualSizes};
+    return {errors:["Workbook must contain a BOM, Packing or Catalogue sheet."],warnings,boms:[],packing,packingSingles,catalogue,mrp,individualSizes,
+      columns:[],columnMap:{}};
 
-  for(const [label,input,required] of [["BOM",bomSheet,["Article Code","Size Range","Stage","Material"]],
-    ["Packing",packingSheet,PACKING_HEADERS],["Catalogue",catalogueSheet,["Article Code"]]]){
+  const BOM_REQUIRED=["Article Code","Size Range","Stage","Material"];
+  const SHEETS=[["BOM",bomSheet,BOM_REQUIRED],["Packing",packingSheet,PACKING_HEADERS],["Catalogue",catalogueSheet,["Article Code"]]];
+
+  /* Read whatever the factory added to the file. An unrecognised column is
+     never imported on a guess and never dropped in silence: the best match is
+     applied so the preview shows the real outcome, and the column is returned
+     for the user to confirm or change before anything saves. */
+  const chosen={...(opts.columnMap||{})};
+  const columns=[];
+  for(const [label,input,required] of SHEETS){
     if(!input)continue;
-    const duplicates=duplicateHeaders(input.rows||[],required);
-    if(duplicates.length)errors.push(`${label}: duplicate column${duplicates.length===1?"":"s"} ${duplicates.join(", ")}. Keep one column for each field.`);
+    for(const column of pendingColumns(label,input.rows||[],required,chosen)) columns.push(column);
+  }
+  const columnMap={...chosen};
+  for(const column of columns) columnMap[`${column.sheet}::${column.key}`]=column.applied;
+  const resolvers=Object.fromEntries(SHEETS.map(([label])=>[label,resolverFor(label,columnMap)]));
+
+  for(const [label,input,required] of SHEETS){
+    if(!input)continue;
+    const duplicates=duplicateHeaders(input.rows||[],required,resolvers[label]);
+    if(duplicates.length)errors.push(`${label}: duplicate column${duplicates.length===1?"":"s"} ${duplicates.map(d=>COLUMN_LABELS[d]||d).join(", ")}. Keep one column for each field.`);
   }
 
   const seen=new Set();
-  for(const r of rowObjects(bomSheet?.rows||[],["Article Code","Size Range","Stage","Material"])){
+  for(const r of rowObjects(bomSheet?.rows||[],BOM_REQUIRED,resolvers.BOM)){
     const article=articleCode(r.get("Article Code"));
     const sole=cleanSole(r.get("Sole Type"));
     const rawRange=comboCode(r.get("Size Range"));
@@ -100,9 +246,12 @@ export function parseReferenceWorkbook(sheets,reference={}){
     const sizeRun=cleanRun(r.get("Size Run"));
     const stage=cleanStage(r.get("Stage"));
     const component=text(r.get("Component"));
-    const material=normaliseMaterial(r.get("Material")||component);
+    const materialColour=materialColourToken(r.get("Material Colour"));
+    const material=colouredMaterialName(normaliseMaterial(r.get("Material")||component),materialColour);
     const uom=cleanUom(r.get("UOM"));
     const rate=Number(r.get("Rate per Pair"));
+    const soleColour=cleanColour(r.get("Sole Colour"));
+    const upperColour=cleanColour(r.get("Upper Colour"));
     const prefix=`BOM row ${r.row}`;
     if(!article||!sole||!combo||!stage||!material||!uom||!Number.isFinite(rate)||rate<=0){
       errors.push(`${prefix}: complete every required field and use a rate greater than 0.`);continue;
@@ -110,18 +259,46 @@ export function parseReferenceWorkbook(sheets,reference={}){
     if(!SOLES.has(sole)){errors.push(`${prefix}: Sole Type must be EVA, PVC, PU or STUCK-ON.`);continue;}
     if(!STAGES.has(stage)){errors.push(`${prefix}: unknown Stage ${stage}.`);continue;}
     if(sizeRun&&!['SMALL','LARGE'].includes(sizeRun)){errors.push(`${prefix}: Size Run must be Small or Large.`);continue;}
+    const tooLong=[["Sole Colour",soleColour],["Upper Colour",upperColour]].find(([,v])=>v.length>MAX_COLOUR);
+    if(tooLong){errors.push(`${prefix}: ${tooLong[0]} must be ${MAX_COLOUR} characters or fewer.`);continue;}
     const duplicate=[article,combo,stage,material,uom].join("|");
     if(seen.has(duplicate)){errors.push(`${prefix}: duplicate BOM material for ${article} ${combo} ${stage}.`);continue;}
     seen.add(duplicate);
-    const bom=boms[article]||(boms[article]={article,soleType:sole,combo_order:[],combos:{},materials:{},warnings:[]});
+    const bom=boms[article]||(boms[article]={article,soleType:sole,soleColour:null,upperColour:null,
+      combo_order:[],combos:{},materials:{},warnings:[]});
     if(bom.soleType!==sole){errors.push(`${prefix}: ${article} has more than one Sole Type.`);continue;}
+    /* Colour is a property of the article, not of one BOM row, so two rows that
+       disagree cannot both be right. Refuse rather than let row order decide. */
+    let colourConflict=false;
+    for(const [field,label,value] of [["soleColour","Sole Colour",soleColour],["upperColour","Upper Colour",upperColour]]){
+      if(!value) continue;
+      if(bom[field]&&!sameColour(bom[field],value)){
+        errors.push(`${prefix}: ${article} has more than one ${label} (${bom[field]}, then ${value}). Use one colour per article.`);
+        colourConflict=true;
+      }else if(!bom[field]) bom[field]=value;
+    }
+    if(colourConflict) continue;
     if(!bom.combos[combo]){bom.combo_order.push(combo);bom.combos[combo]={stitching_combo:combo,rates:{},...(sizeRun?{size_run:sizeRun}:{})};}
     else if(sizeRun&&bom.combos[combo].size_run&&bom.combos[combo].size_run!==sizeRun){errors.push(`${prefix}: ${article} ${combo} has conflicting Size Run values.`);continue;}
     else if(sizeRun) bom.combos[combo].size_run=sizeRun;
     const materialKey=`${material}||${uom}`;
     bom.combos[combo].rates[stage]=bom.combos[combo].rates[stage]||{};
     bom.combos[combo].rates[stage][materialKey]=rate;
-    bom.materials[materialKey]={name:material,uom};
+    const rowNotes=r.notes();
+    bom.materials[materialKey]={name:material,uom,
+      ...(materialColour?{colour:materialColour}:{}),
+      ...(Object.keys(rowNotes).length?{notes:{...(bom.materials[materialKey]?.notes||{}),...rowNotes}}:
+          bom.materials[materialKey]?.notes?{notes:bom.materials[materialKey].notes}:{})};
+  }
+
+  /* Colour splits a material in two. Say so before it saves: the new colour
+     carries its own stock, so procurement will show its full requirement until
+     a stock figure is entered against it. */
+  for(const bom of Object.values(boms)){
+    const fresh=Object.entries(bom.materials).filter(([k,m])=>m.colour&&!(reference.materials||{})[k]);
+    if(!fresh.length) continue;
+    warnings.push(`${bom.article}: ${fresh.length} colour-specific material${fresh.length===1?" is":"s are"} new `
+      +`(for example ${fresh[0][1].name}). Each is stocked and bought separately, and starts at 0 stock until you enter one.`);
   }
 
   const workbookReference={...reference,articles:{...(reference.articles||{})}};
@@ -138,7 +315,7 @@ export function parseReferenceWorkbook(sheets,reference={}){
   }
 
   const packingSequence={};
-  for(const r of rowObjects(packingSheet?.rows||[],PACKING_HEADERS)){
+  for(const r of rowObjects(packingSheet?.rows||[],PACKING_HEADERS,resolvers.Packing)){
     const rawArticle=articleCode(r.get("Article Code"));
     const article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
     const rawRange=comboCode(r.get("Size Range"));
@@ -184,7 +361,7 @@ export function parseReferenceWorkbook(sheets,reference={}){
   }
 
   const catalogueSequence={};
-  for(const r of rowObjects(catalogueSheet?.rows||[],["Article Code"])){
+  for(const r of rowObjects(catalogueSheet?.rows||[],["Article Code"],resolvers.Catalogue)){
     const rawArticle=articleCode(r.get("Article Code"));
     let article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
     let combo=comboCode(r.get("Size Range"));
@@ -213,12 +390,21 @@ export function parseReferenceWorkbook(sheets,reference={}){
       }
     }
     const sole=cleanSole(r.get("Sole Type"));
+    const soleColour=cleanColour(r.get("Sole Colour"));
+    const upperColour=cleanColour(r.get("Upper Colour"));
     const machine=text(r.get("PVC Machine")).toUpperCase();
     const packingSource=articleCode(r.get("Packing Source"));
     const prefix=`Catalogue row ${r.row}`;
     if(!article){errors.push(`${prefix}: Article Code is required.`);continue;}
     if(price!=null&&(!Number.isFinite(price)||price<0)){errors.push(`${prefix}: Default Price must be 0 or more.`);continue;}
     if(sole&&!SOLES.has(sole)){errors.push(`${prefix}: Sole Type must be EVA, PVC, PU or STUCK-ON.`);continue;}
+    const longColour=[["Sole Colour",soleColour],["Upper Colour",upperColour]].find(([,v])=>v.length>MAX_COLOUR);
+    if(longColour){errors.push(`${prefix}: ${longColour[0]} must be ${MAX_COLOUR} characters or fewer.`);continue;}
+    const bomColourClash=[["soleColour","Sole Colour",soleColour],["upperColour","Upper Colour",upperColour]]
+      .find(([field,,value])=>value&&boms[article]?.[field]&&!sameColour(boms[article][field],value));
+    if(bomColourClash){
+      errors.push(`${prefix}: ${bomColourClash[1]} ${bomColourClash[2]} contradicts ${boms[article][bomColourClash[0]]} on the BOM sheet for ${article}.`);continue;
+    }
     if(machine&&!['ROTARY','VERTICAL'].includes(machine)){errors.push(`${prefix}: PVC Machine must be ROTARY or VERTICAL.`);continue;}
     if(machine&&sole&&sole!=="PVC"){errors.push(`${prefix}: PVC Machine can only be set for a PVC article.`);continue;}
     const definition=boms[article]||reference.articles?.[article];
@@ -264,12 +450,25 @@ export function parseReferenceWorkbook(sheets,reference={}){
       description,
       price:priceKey?null:price,
       sole_type:sole||null,
+      sole_colour:soleColour||null,
+      upper_colour:upperColour||null,
       molding_machine:machine||null,
       packing_source:packingSource||null,
       photo_file_name:text(r.get("Photo File Name"))||null,
     };
+    // Columns the user chose to keep as a note: recorded against the article,
+    // shown in Catalogue, and used by no calculation.
+    const rowNotes=r.notes();
+    if(Object.keys(rowNotes).length) incoming.notes=rowNotes;
     const previous=catalogue[article];
+    if(previous&&incoming.notes) previous.notes={...(previous.notes||{}),...incoming.notes};
     if(previous){
+      // Colours compare case-insensitively; Black and BLACK are one colour.
+      for(const [field,label] of [["sole_colour","Sole Colour"],["upper_colour","Upper Colour"]]){
+        if(previous[field]&&incoming[field]&&!sameColour(previous[field],incoming[field]))
+          errors.push(`${prefix}: ${label} conflicts with the earlier ${article} row.`);
+        else if(previous[field]==null&&incoming[field]!=null) previous[field]=incoming[field];
+      }
       for(const field of ["description","price","sole_type","molding_machine","packing_source","photo_file_name"]){
         if(previous[field]!=null&&incoming[field]!=null&&previous[field]!==incoming[field])
           errors.push(`${prefix}: ${field.replaceAll("_"," ")} conflicts with the earlier ${article} row.`);
@@ -304,5 +503,6 @@ export function parseReferenceWorkbook(sheets,reference={}){
     });
   }
 
-  return {errors,warnings,boms:Object.values(boms),packing,packingSingles,catalogue,mrp,individualSizes,removals};
+  return {errors,warnings,boms:Object.values(boms),packing,packingSingles,catalogue,mrp,individualSizes,removals,
+    columns,columnMap};
 }

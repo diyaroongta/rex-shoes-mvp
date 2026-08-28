@@ -58,7 +58,7 @@ export default function StockTab({ onChanged }){
       return {
         key, sn:i+1,
         category: md.category ?? guessCategory(m.name),
-        name: m.name, size: md.size ?? "", uom: m.uom,
+        name: m.name, size: md.size ?? "", uom: m.uom, notes: m.notes,
         opening, rec, issue, stock, min,
         alert: min > 0 && stock < min,
         order_qty: min > 0 && stock < min ? min - stock : 0,
@@ -160,7 +160,12 @@ export default function StockTab({ onChanged }){
                   <option value="">—</option>
                   {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
                 </select></td>
-              <td style={TD}>{r.name}</td>
+              <td style={TD}>{r.name}
+                {/* Free-text columns kept from the BOM upload. Shown where the
+                    material is, used by nothing. */}
+                {r.notes&&Object.keys(r.notes).length>0&&<div style={{fontSize:10,color:"#64748b"}}>
+                  {Object.entries(r.notes).map(([label,value])=>`${label}: ${value}`).join(" · ")}
+                </div>}</td>
               <td style={TD}><input value={val(r,"size")||""} onChange={e=>set(r.key,"size",e.target.value)}
                 style={{fontSize:11,border:"none",width:56,background:"transparent"}} /></td>
               <td style={{...TD,textAlign:"center"}}>{r.uom}</td>

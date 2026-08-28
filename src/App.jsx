@@ -443,6 +443,21 @@ function downloadSheetCSV(orders){
 /* ------------- New order: photo -> read -> match -> PI -> save ------------- */
 const packQty = (article, combo) => pairsPerCarton(article, combo);
 
+/* The article's standard sole/upper colour, when the factory has uploaded one.
+   Absent means unknown, never a guess — an article with no colour on file
+   leaves the field blank for the clerk to fill. */
+const articleColour = (article, field) => String((INPUTS.articles[article]||{})[field]||"");
+const sameColour = (a,b) => String(a||"").trim().toUpperCase()===String(b||"").trim().toUpperCase();
+/* Switching a card to another article: a colour the clerk typed is theirs and
+   is kept. A colour that is only the OLD article's standard follows the new
+   article instead — and clears if the new article has none, so one shoe's
+   colour is never quietly printed on another. */
+const colourForNewArticle = (value, fromArticle, toArticle, field) => {
+  const now=articleColour(toArticle,field);
+  if(!value||sameColour(value,articleColour(fromArticle,field))) return now;
+  return value;
+};
+
 /* What to print in the article's V/L column. A shoe ordered in both rolls says
    so, rather than being split into two articles to give each one a value. */
 const vlSummary = card => {
@@ -475,7 +490,11 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [piPreviewSignature,setPiPreviewSignature]=useState("");
   const [customerCity,setCustomerCity]=useState("");
   const [vl,setVl]=useState("");
-  const [soleColour,setSoleColour]=useState("Black");
+  /* Was hard-coded "Black". That is factory data invented by the app: it put a
+     colour on every PI whether or not anyone chose one. The article master now
+     carries the real standard colour, so this starts empty and is filled by the
+     PI being read, the article, or the clerk — and never by us. */
+  const [soleColour,setSoleColour]=useState("");
   const [upperColour,setUpperColour]=useState("");
   const [remarks,setRemarks]=useState("None");
   const [orderNature,setOrderNature]=useState("");
@@ -516,20 +535,29 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   useEffect(()=>{allocatePiNo();},[]);
   const ARTS=Object.keys(INPUTS.articles).filter(article=>
     ((INPUTS.articles[article]||{}).combo_order||Object.keys((INPUTS.articles[article]||{}).combos||{})).length>0);
-  const withArticleDetails = (card, extra={}) => ({
-    party,
-    customer_city:customerCity,
-    order_date:orderDate,
-    priority:Number(priority)||2,
-    order_nature: orderNature,
-    stitching,
-    printing,
-    vl,
-    sole_colour: soleColour,
-    upper_colour: upperColour,
-    ...card,
-    ...extra,
-  });
+  /* The article master can carry the article's standard sole and upper colour
+     (optional columns on the BOM upload). They are a starting point only —
+     both fields stay editable, and anything already known about THIS order,
+     read off the slip or the PI, wins. */
+  const withArticleDetails = (card, extra={}) => {
+    const merged = {
+      party,
+      customer_city:customerCity,
+      order_date:orderDate,
+      priority:Number(priority)||2,
+      order_nature: orderNature,
+      stitching,
+      printing,
+      vl,
+      sole_colour: soleColour,
+      upper_colour: upperColour,
+      ...card,
+      ...extra,
+    };
+    return {...merged,
+      sole_colour: merged.sole_colour || articleColour(merged.article,"sole_colour"),
+      upper_colour: merged.upper_colour || articleColour(merged.article,"upper_colour")};
+  };
   const sourceCards=piCards||cards||[];
   /* Extracted so an edit made ON the invoice can re-stamp the signature. That
      edit changes the cards and the preview together, so the preview is not
@@ -756,6 +784,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
      being flattened onto one half. */
   function remapForArticle(card,art){
     const oldCombos=articleTypeCombos(card.article);
+    const colours={
+      sole_colour:colourForNewArticle(card.sole_colour,card.article,art,"sole_colour"),
+      upper_colour:colourForNewArticle(card.upper_colour,card.article,art,"upper_colour"),
+    };
     const combos=articleTypeCombos(art);
     const lines=(card.lines||[]).map((l,k)=>{
       const foundPos=oldCombos.indexOf(l.combo);
@@ -776,7 +808,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       return {...l,combo,type,ppc,size_order:sizes,...(keep?{}:{sizes:undefined})};
     });
     const present=[...new Set(lines.map(l=>l.type).filter(Boolean))];
-    return {...card,article:art,vl:present.length===1?present[0]:"",types:present,matched:true,lines};
+    return {...card,...colours,article:art,vl:present.length===1?present[0]:"",types:present,matched:true,lines};
   }
   function onArticleChange(i,art){
     setCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art):c));
@@ -869,9 +901,13 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           placeholder={termsForParty(c.party).dispatch_timeline||"45 days"} className={FIELD} /></label>
       <label className={LABEL}>Sole colour *
         <input value={c.sole_colour||""} onChange={e=>change({sole_colour:e.target.value})}
+          placeholder={articleColour(c.article,"sole_colour")}
+          title={articleColour(c.article,"sole_colour")?`${c.article} standard: ${articleColour(c.article,"sole_colour")}`:""}
           className={FIELD} /></label>
       <label className={LABEL}>Upper colour *
         <input value={c.upper_colour||""} onChange={e=>change({upper_colour:e.target.value})}
+          placeholder={articleColour(c.article,"upper_colour")}
+          title={articleColour(c.article,"upper_colour")?`${c.article} standard: ${articleColour(c.article,"upper_colour")}`:""}
           className={FIELD} /></label>
       <label className={LABEL}>Print
         <select value={c.printing?"yes":"no"} onChange={e=>change({printing:e.target.value==="yes"})}

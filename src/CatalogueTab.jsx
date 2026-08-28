@@ -179,6 +179,15 @@ export default function CatalogueTab({onChanged,onAddBom}){
             <div className="text-xs text-slate-500 mt-0.5">
               {a.sole_type} sole{a.sole_assumed && <span className="text-amber-600"> · assumed</span>} · {combos.length} size ranges
             </div>
+            {/* Standard colours, when the article master carries them. They
+                prefill a new order and stay editable on it. */}
+            {(a.sole_colour||a.upper_colour) && <div className="text-xs text-slate-500 mt-0.5">
+              {[a.sole_colour&&`Sole ${a.sole_colour}`,a.upper_colour&&`Upper ${a.upper_colour}`].filter(Boolean).join(" · ")}
+            </div>}
+            {/* Columns from the upload the user chose to keep as notes. */}
+            {a.notes && Object.keys(a.notes).length>0 && <div className="text-[11px] text-slate-500 mt-0.5">
+              {Object.entries(a.notes).map(([label,value])=>`${label}: ${value}`).join(" · ")}
+            </div>}
             {!combos.length&&<button onClick={()=>onAddBom&&onAddBom(code)}
               className="mt-2 w-full text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-2 py-1.5">
               Missing BOM — add now</button>}

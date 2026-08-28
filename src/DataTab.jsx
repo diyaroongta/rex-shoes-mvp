@@ -2,7 +2,8 @@ import React, { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { existingArticleCode } from "../shared/bom-import.js";
 import { packingArticleSourceFor, pairsPerCarton } from "../shared/bridge.js";
-import { parseReferenceWorkbook } from "../shared/reference-import.js";
+import { parseReferenceWorkbook, COLUMN_LABELS, COLUMN_HELP, SHEET_COLUMNS,
+  IGNORE_COLUMN, NOTE_COLUMN } from "../shared/reference-import.js";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
 
@@ -54,6 +55,8 @@ function bomReview(current,incoming,mode){
 }
 
 const changeLabel=row=>`${row.combo} · ${row.stage} · ${row.material}`;
+const sameColourText=(a,b)=>String(a||"").trim().toUpperCase()===String(b||"").trim().toUpperCase();
+const current_colours=article=>({sole:(article||{}).sole_colour||"",upper:(article||{}).upper_colour||""});
 
 /* One upload path for every article-master change. A workbook may contain BOM,
    packing and catalogue sheets together, or only the sheet being changed; it
@@ -67,20 +70,42 @@ export default function DataTab({ onChanged }){
   const [removeConfirm,setRemoveConfirm]=useState(false);   // deleting loaded size ranges
   const [mappingConfirm,setMappingConfirm]=useState(false);
   const [bomMode,setBomMode]=useState("merge");
+  // Kept so a column decision can re-read the same file without re-picking it.
+  const [sheets,setSheets]=useState(null);
 
   async function pickMaster(file){
     setErr("");setMsg("");setMasterPreview(null);setMasterConfirm(false);setRemoveConfirm(false);
-    setMappingConfirm(false);setBomMode("merge");
+    setMappingConfirm(false);setBomMode("merge");setSheets(null);
     if(!file)return;
     try{
       checkWorkbookFile(file);
       const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
-      const sheets=workbookSheets(wb);
-      const parsed=parseReferenceWorkbook(sheets,INPUTS);
-      if(parsed.errors.length){setErr(parsed.errors.slice(0,50).join("\n"));return;}
-      const replacements=parsed.boms.map(b=>existingArticleCode(INPUTS.articles,b.article)).filter(Boolean);
-      setMasterPreview({...parsed,replacements,fileName:file.name||"Article master"});
+      const read=workbookSheets(wb);
+      setSheets(read);
+      showParse(parseReferenceWorkbook(read,INPUTS),file.name||"Article master");
     }catch(e){setErr("Could not read that master workbook: "+(e.message||e));}
+  }
+
+  /* Errors do not hide the preview when the file has columns still to be
+     explained: reading a column the wrong way is itself a common cause of the
+     errors, so the user must be able to correct the mapping and see them go. */
+  function showParse(parsed,fileName){
+    if(parsed.errors.length&&!(parsed.columns||[]).length){setErr(parsed.errors.slice(0,50).join("\n"));setMasterPreview(null);return;}
+    setErr("");   // the preview lists the rows itself; one copy, next to the fix
+    const replacements=parsed.boms.map(b=>existingArticleCode(INPUTS.articles,b.article)).filter(Boolean);
+    setMasterPreview({...parsed,replacements,fileName});
+  }
+
+  /* The user says what one of their own columns means. The file is read again
+     with that decision, so the preview below is the real outcome. */
+  function chooseColumn(column,value){
+    if(!sheets)return;
+    // Only decisions the user actually made carry over; a suggestion the
+    // importer is still asking about must not become an answer.
+    const columnMap={};
+    for(const c of masterPreview?.columns||[]) if(c.choice) columnMap[`${c.sheet}::${c.key}`]=c.choice;
+    columnMap[`${column.sheet}::${column.key}`]=value;
+    showParse(parseReferenceWorkbook(sheets,INPUTS,{columnMap}),masterPreview?.fileName);
   }
 
   function editMrp(article,combo,value){
@@ -91,13 +116,17 @@ export default function DataTab({ onChanged }){
 
   async function commitMaster(){
     if(!masterPreview)return;
+    if(masterPreview.errors.length){setErr("Fix the rows listed above before saving.");return;}
+    if(undecidedColumns.length){
+      setErr(`Say what ${undecidedColumns.map(c=>`"${c.header}"`).join(", ")} means before saving.`);return;
+    }
     const mappingWarnings=masterPreview.warnings.filter(w=>/treated .+ as /i.test(w));
     if(mappingWarnings.length&&!mappingConfirm){setErr("Confirm the article-name mappings before saving.");return;}
     if(bomMode==="replace"&&masterPreview.replacements.length&&!masterConfirm){setErr("Confirm the existing BOM replacements before saving.");return;}
     if(bomMode==="replace"&&(masterPreview.removals||[]).length&&!removeConfirm){setErr("This file deletes size ranges that are loaded today. Confirm that, or add the missing ranges to the file.");return;}
     setBusy(true);setErr("");setMsg("");
     try{
-      const {replacements,removals,fileName,...batch}=masterPreview;
+      const {replacements,removals,fileName,columns,columnMap,errors,...batch}=masterPreview;
       for(const [article,chart] of Object.entries(batch.mrp||{})){
         batch.mrp[article]=Object.fromEntries(Object.entries(chart).filter(([,value])=>value!=null&&value!==""));
         if(!Object.keys(batch.mrp[article]).length) delete batch.mrp[article];
@@ -113,6 +142,7 @@ export default function DataTab({ onChanged }){
     finally{setBusy(false);}
   }
 
+  const undecidedColumns=(masterPreview?.columns||[]).filter(c=>!c.choice);
   const masterArticles = masterPreview ? [...new Set([
     ...masterPreview.boms.map(b=>b.article),
     ...Object.keys(masterPreview.packing),
@@ -127,6 +157,8 @@ export default function DataTab({ onChanged }){
     for(const bom of masterPreview.boms) ref.articles[bom.article]={
       ...(ref.articles[bom.article]||{}),sole_type:bom.soleType,
       combo_order:bom.combo_order,combos:bom.combos,
+      ...(bom.soleColour?{sole_colour:bom.soleColour}:{}),
+      ...(bom.upperColour?{upper_colour:bom.upperColour}:{}),
     };
     for(const [article,sizes] of Object.entries(masterPreview.individualSizes||{})) if(ref.articles[article])
       ref.articles[article]={...ref.articles[article],individual_sizes:[...new Set([
@@ -139,6 +171,8 @@ export default function DataTab({ onChanged }){
       if(!ref.articles[article]) continue;
       ref.articles[article]={...ref.articles[article]};
       if(entry.sole_type) ref.articles[article].sole_type=entry.sole_type;
+      if(entry.sole_colour) ref.articles[article].sole_colour=entry.sole_colour;
+      if(entry.upper_colour) ref.articles[article].upper_colour=entry.upper_colour;
       if(Object.prototype.hasOwnProperty.call(entry,"packing_source")){
         if(entry.packing_source) ref.articles[article].packing_source=entry.packing_source;
         else if((masterPreview.packing||{})[article]||(masterPreview.packingSingles||{})[article])
@@ -193,6 +227,57 @@ export default function DataTab({ onChanged }){
         </div>
       </details>}
 
+      {/* Columns the factory added to their own copy of the template. Nothing
+          in this file is imported from a guessed column: the importer says what
+          it would do with each one and waits for a yes. */}
+      {!!(masterPreview.columns||[]).length&&<div className={`mt-4 rounded-xl border px-3 py-3 ${undecidedColumns.length?"border-amber-300 bg-amber-50":"border-emerald-300 bg-emerald-50"}`}>
+        <div className="text-xs font-semibold text-slate-900">
+          {undecidedColumns.length
+            ? `This file has ${undecidedColumns.length} column${undecidedColumns.length===1?"":"s"} we are not sure about — tell us what ${undecidedColumns.length===1?"it means":"they mean"}`
+            : "Extra columns confirmed"}
+        </div>
+        <div className="text-[11px] text-slate-600 mt-0.5">
+          Pick the field each one belongs to, keep it as a note, or leave it out. Nothing saves until each is answered.
+        </div>
+        <div className="grid gap-2 mt-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))"}}>
+          {(masterPreview.columns||[]).map(column=>{
+            const chosen=column.choice||"";
+            const target=column.choice||column.applied;
+            return <div key={`${column.sheet}::${column.key}`} className="rounded-lg bg-white border border-slate-200 p-2.5">
+              <div className="text-xs font-semibold text-slate-900">
+                {column.sheet} sheet · <span className="mono">{column.header}</span>
+              </div>
+              {!!column.samples.length&&<div className="text-[11px] text-slate-500 mt-0.5">
+                Values in the file: {column.samples.join(", ")}
+              </div>}
+              <label className="block text-[11px] text-slate-600 mt-1.5">This column is
+                <select value={chosen} onChange={e=>chooseColumn(column,e.target.value)}
+                  className="block mt-0.5 w-full text-xs border border-slate-300 rounded px-1.5 py-1 bg-white">
+                  <option value="">{column.suggestionLabel?`Choose — we would read it as ${column.suggestionLabel}`:"Choose what this column means"}</option>
+                  {(SHEET_COLUMNS[column.sheet]||[]).map(field=>
+                    <option key={field} value={field}>{COLUMN_LABELS[field]}</option>)}
+                  <option value={NOTE_COLUMN}>Something new — keep it as a note</option>
+                  <option value={IGNORE_COLUMN}>Not needed — leave it out</option>
+                </select></label>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {target===NOTE_COLUMN?"Recorded against the article or material and shown in Factory OS. No calculation uses it."
+                  :target===IGNORE_COLUMN?"Not imported."
+                  :COLUMN_HELP[target]||`Read as ${COLUMN_LABELS[target]||target}.`}
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>}
+
+      {!!masterPreview.errors.length&&<div className="mt-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2.5">
+        <div className="text-xs font-semibold text-rose-900 mb-1">
+          {masterPreview.errors.length} row{masterPreview.errors.length===1?"":"s"} cannot be read — nothing will save until they are fixed
+        </div>
+        <div className="text-[11px] text-rose-800 max-h-40 overflow-auto">
+          {masterPreview.errors.slice(0,50).map((e,i)=><div key={i}>• {e}</div>)}
+        </div>
+      </div>}
+
       <div className="grid gap-3 mt-4" style={{gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))"}}>
         {masterArticles.map(article=>{
           const existing=existingArticleCode(INPUTS.articles,article);
@@ -227,6 +312,21 @@ export default function DataTab({ onChanged }){
                 : source!==article?`Packing: uses ${source}.`:"No packing change."}
               {catalogue?` Catalogue: ${catalogue.sole_type||catalogue.description||"details updated"}.`:""}
             </div>
+            {/* Optional standard colours. Say what they will do, because they
+                change new orders rather than anything in the plan. */}
+            {(()=>{
+              const sole=bom?.soleColour||catalogue?.sole_colour||"";
+              const upper=bom?.upperColour||catalogue?.upper_colour||"";
+              if(!sole&&!upper) return null;
+              const onFile=current_colours(current);
+              const parts=[sole&&`sole ${sole}`,upper&&`upper ${upper}`].filter(Boolean);
+              const changed=(sole&&!sameColourText(sole,onFile.sole))||(upper&&!sameColourText(upper,onFile.upper));
+              return <div className="mt-1 text-[11px] text-slate-500">
+                Standard colours: {parts.join(", ")}{changed&&(onFile.sole||onFile.upper)
+                  ?` (replacing ${[onFile.sole&&`sole ${onFile.sole}`,onFile.upper&&`upper ${onFile.upper}`].filter(Boolean).join(", ")})`:""}.
+                {" "}Used to prefill new orders; existing orders are untouched.
+              </div>;
+            })()}
 
             <details className="mt-3 border-t border-slate-100 pt-2">
               <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">Review details</summary>
@@ -331,6 +431,8 @@ export default function DataTab({ onChanged }){
 
       <div className="flex gap-2 mt-3">
         <button disabled={busy
+                          ||!!masterPreview.errors.length
+                          ||!!undecidedColumns.length
                           ||(masterPreview.warnings.some(w=>/treated .+ as /i.test(w))&&!mappingConfirm)
                           ||(bomMode==="replace"&&masterPreview.replacements.length&&!masterConfirm)
                           ||(bomMode==="replace"&&(masterPreview.removals||[]).length&&!removeConfirm)} onClick={commitMaster}

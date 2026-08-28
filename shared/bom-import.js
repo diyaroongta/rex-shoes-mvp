@@ -27,6 +27,28 @@ export function normaliseMaterial(raw){
   return s;
 }
 
+/* A colour written against a material makes it a DIFFERENT material to buy:
+   black and blue rexine are ordered separately and counted separately, and the
+   client's own sheets already price them apart. The colour therefore becomes
+   part of the material name, so every downstream key — stock, netting,
+   shortage, procurement — stays the single flat key it has always been.
+   "Default" and the blanks below mean the material has no colour. */
+const NO_COLOUR = new Set(["", "DEFAULT", "DEFAULTS", "NA", "N/A", "NONE", "-", "--"]);
+export function materialColourToken(raw){
+  const c = String(raw == null ? "" : raw).toUpperCase().replace(/\s+/g, " ").trim();
+  return NO_COLOUR.has(c) ? "" : c;
+}
+export function colouredMaterialName(name, colour){
+  const c = materialColourToken(colour);
+  const base = String(name == null ? "" : name);
+  if(!c) return base;
+  // Do not repeat a colour the material name already carries (BLACK THREAD).
+  const words = new Set(base.toUpperCase().split(/[^A-Z0-9.]+/).filter(Boolean));
+  const spoken = c.split(/[^A-Z0-9.]+/).filter(Boolean);
+  if(spoken.length && spoken.every(t => words.has(t))) return base;
+  return `${base} ${c}`;
+}
+
 export function stageFor(component, materialCategory){
   const c = String(component || "").toUpperCase().trim();
   if(FORCE_STAGE[c]) return FORCE_STAGE[c];
@@ -153,5 +175,10 @@ export function mergeBom(reference, parsed, opts = {}){
     combos,
   };
   if(parsed.soleType!=="PVC") ref.articles[canonical].molding_machine=null;
+  /* Standard sole/upper colours are optional in the upload. A file that leaves
+     the columns out is saying nothing about colour, not saying "no colour", so
+     an omitted column must never wipe a colour already on file. */
+  if(parsed.soleColour) ref.articles[canonical].sole_colour=String(parsed.soleColour);
+  if(parsed.upperColour) ref.articles[canonical].upper_colour=String(parsed.upperColour);
   return { reference:ref, replaced, newMaterials, article:canonical };
 }

@@ -39,12 +39,55 @@ async function mutateReference(changeType, article, mutation){
   }finally{client.release();}
 }
 
+/* Optional standard colours for an article. Free text, so the only rules are
+   that it is text and that it stays short enough to display. */
+const MAX_COLOUR=60;
+function cleanColour(value,label){
+  if(value==null||value==="") return null;
+  if(typeof value!=="string"&&typeof value!=="number") reject(`${label} must be text`);
+  const clean=String(value).replace(/\s+/g," ").trim();
+  if(!clean) return null;
+  if(clean.length>MAX_COLOUR) reject(`${label} must be ${MAX_COLOUR} characters or fewer`);
+  return clean;
+}
+
+/* Free-text columns the user chose to keep as notes. Recorded and displayed,
+   never used in a calculation — so the only rules are size and shape. */
+const MAX_NOTES=12, MAX_NOTE=200, MAX_NOTE_LABEL=60;
+function cleanNotes(value,label){
+  if(value==null) return null;
+  if(typeof value!=="object"||Array.isArray(value)) reject(`${label}: notes must be a set of column/value pairs`);
+  const entries=Object.entries(value).filter(([,v])=>v!=null&&String(v).trim()!=="");
+  if(entries.length>MAX_NOTES) reject(`${label}: at most ${MAX_NOTES} extra columns can be kept as notes`);
+  const clean={};
+  for(const [name,v] of entries){
+    const noteLabel=String(name).replace(/\s+/g," ").trim().slice(0,MAX_NOTE_LABEL);
+    if(!noteLabel) continue;
+    clean[noteLabel]=String(v).replace(/\s+/g," ").trim().slice(0,MAX_NOTE);
+  }
+  return Object.keys(clean).length?clean:null;
+}
+
 function validateBom(parsed){
   if(!parsed||!parsed.article||!parsed.combos) reject("expected a parsed BOM");
   if(!parsed.materials||typeof parsed.materials!=="object") reject("BOM materials are required");
   if(!parsed.soleType||!SOLE_TYPES.includes(parsed.soleType)) reject("Sole Type must be EVA, PVC, PU or STUCK-ON");
   parsed={...parsed,article:articleCode(parsed.article)};
   if(!parsed.article) reject("Article Code is required");
+  parsed={...parsed,soleColour:cleanColour(parsed.soleColour,`${parsed.article}: Sole Colour`),
+    upperColour:cleanColour(parsed.upperColour,`${parsed.article}: Upper Colour`)};
+  /* Materials arrive from a workbook the browser parsed, so nothing beyond the
+     fields the app understands is allowed into the reference document. */
+  const materials={};
+  for(const [materialKey,m] of Object.entries(parsed.materials)){
+    if(!m||typeof m!=="object") reject(`${parsed.article}: material ${materialKey} is malformed`);
+    const name=String(m.name==null?"":m.name).trim(), uom=String(m.uom==null?"":m.uom).trim();
+    if(!name||!uom) reject(`${parsed.article}: material ${materialKey} needs a name and a unit`);
+    const colour=cleanColour(m.colour,`${parsed.article}: colour of ${name}`);
+    const notes=cleanNotes(m.notes,`${parsed.article}: ${name}`);
+    materials[materialKey]={name:name.slice(0,200),uom,...(colour?{colour}:{}),...(notes?{notes}:{})};
+  }
+  parsed={...parsed,materials};
   let rates=0;
   for(const [combo,c] of Object.entries(parsed.combos)){
     if(!combo||!c.rates||!Object.keys(c.rates).length) reject(`${parsed.article}: a size range has no rates`);
@@ -257,6 +300,14 @@ export default wrap(async (req, res) => {
           if(entry.molding_machine&&!['ROTARY','VERTICAL'].includes(entry.molding_machine)) reject(`${art}: invalid PVC Machine`);
           if(entry.price!=null&&(!Number.isFinite(Number(entry.price))||Number(entry.price)<0)) reject(`${art}: Default Price must be 0 or more`);
           if(entry.description!=null&&String(entry.description).length>500) reject(`${art}: description must be 500 characters or fewer`);
+          const soleColour=cleanColour(entry.sole_colour,`${art}: Sole Colour`);
+          const upperColour=cleanColour(entry.upper_colour,`${art}: Upper Colour`);
+          // Optional: only a supplied colour writes, so a Catalogue row about
+          // something else never clears colours already on file.
+          if(soleColour) ref.articles[art].sole_colour=soleColour;
+          if(upperColour) ref.articles[art].upper_colour=upperColour;
+          const notes=cleanNotes(entry.notes,art);
+          if(notes) ref.articles[art].notes={...(ref.articles[art].notes||{}),...notes};
           if(Object.prototype.hasOwnProperty.call(entry,"packing_source")){
           if(entry.packing_source){
               const requested=String(entry.packing_source).toUpperCase();

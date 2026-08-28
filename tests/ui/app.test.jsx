@@ -22,6 +22,7 @@ vi.mock("../../src/lib/client.js",()=>({
 }));
 
 import App from "../../src/App.jsx";
+import { REF } from "../../src/lib/refdata.js";
 import ArticleRulesTab from "../../src/ArticleRulesTab.jsx";
 import PartiesTab from "../../src/PartiesTab.jsx";
 
@@ -545,5 +546,39 @@ describe("actions report what they did",()=>{
     const cap=(await screen.findAllByLabelText(/pairs per day/i))[0];
     await user.clear(cap); await user.type(cap,"999");
     expect(await screen.findByText(/is not stored/,{},{timeout:3000})).toBeInTheDocument();
+  });
+});
+
+/* Standard colours uploaded with the article master. They save the clerk
+   retyping the same two words on every order, and they stay editable — the
+   colour that reaches the PI is whatever the order says, not the article. */
+describe("article standard colours",()=>{
+  const firstArticle=()=>Object.keys(REF.articles).find(code=>
+    (REF.articles[code].combo_order||Object.keys(REF.articles[code].combos||{})).length>0);
+
+  it("prefills a new order from the article master and lets the clerk overrule it",async()=>{
+    const user=userEvent.setup();
+    const code=firstArticle();
+    const before={...REF.articles[code]};
+    REF.articles[code]={...before,sole_colour:"Black",upper_colour:"N.Blue / S.Blue"};
+    try{
+      render(<App/>);
+      await user.click(await screen.findByRole("button",{name:"PI generation"}));
+      await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+      expect(screen.getByLabelText("Sole colour *")).toHaveValue("Black");
+      expect(screen.getByLabelText("Upper colour *")).toHaveValue("N.Blue / S.Blue");
+      await user.clear(screen.getByLabelText("Upper colour *"));
+      await user.type(screen.getByLabelText("Upper colour *"),"Red");
+      expect(screen.getByLabelText("Upper colour *")).toHaveValue("Red");
+    }finally{ REF.articles[code]=before; }
+  });
+
+  it("leaves the fields blank when the article master has no colour on file",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+    expect(screen.getByLabelText("Sole colour *")).toHaveValue("");
+    expect(screen.getByLabelText("Upper colour *")).toHaveValue("");
   });
 });

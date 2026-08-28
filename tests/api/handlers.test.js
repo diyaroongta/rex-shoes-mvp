@@ -341,6 +341,54 @@ describe("database API contracts",()=>{
     expect(res.body.mrp_articles).toEqual(["THUNDER"]);
   });
 
+  /* Colours reach the server inside a workbook the BROWSER parsed, so the
+     server keeps only the fields it understands — and a colour-specific
+     material is a new material with its own stock, never the old one renamed. */
+  it("stores colour-specific materials and article colours, dropping anything else",async()=>{
+    const ref={articles:{},materials:{"MESH||MTR":{name:"MESH",uom:"MTR",stock:80}},packing:{},mrp:{}};
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("select value from reference_data")) return {rows:[{value:ref}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{batch:{
+      boms:[{article:"JILL",soleType:"EVA",soleColour:" Black ",upperColour:"N.Blue / S.Blue",
+        combo_order:["6X8"],
+        materials:{
+          "MESH||MTR":{name:"MESH",uom:"MTR"},
+          "MESH BLUE||MTR":{name:"MESH BLUE",uom:"MTR",colour:"BLUE",notes:{"Supplier Ref":"SUP-118"},stock:9999},
+        },
+        combos:{"6X8":{rates:{CUTTING:{"MESH||MTR":0.4,"MESH BLUE||MTR":0.6}}}}}],
+      catalogue:{JILL:{article_code:"JILL",sole_colour:"Black",upper_colour:"N.Blue / S.Blue",
+        notes:{"Buyer Code":"KP-9"},sole_type:"EVA",price:null,molding_machine:null}},
+    }}},res);
+    expect(res.statusCode).toBe(200);
+    const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    const saved=JSON.parse(saveCall[1][0]);
+    expect(saved.materials["MESH BLUE||MTR"]).toEqual({name:"MESH BLUE",uom:"MTR",colour:"BLUE",
+      notes:{"Supplier Ref":"SUP-118"},stock:0});
+    expect(saved.materials["MESH||MTR"].stock).toBe(80);
+    expect(saved.articles.JILL.sole_colour).toBe("Black");
+    expect(saved.articles.JILL.upper_colour).toBe("N.Blue / S.Blue");
+    expect(saved.articles.JILL.notes).toEqual({"Buyer Code":"KP-9"});
+    expect(res.body.new_materials).toEqual(["MESH BLUE||MTR"]);
+  });
+
+  it("refuses a colour or note that is not text the app can display",async()=>{
+    const ref={articles:{},materials:{},packing:{}};
+    const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({method:"POST",url:"/api/reference",body:{parsed:{
+      article:"JILL",soleType:"EVA",soleColour:"x".repeat(61),combo_order:["1X2"],
+      materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},combos:{"1X2":{rates:{CUTTING:{"MAT||MTR":1}}}},
+    }}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/Sole Colour must be 60 characters or fewer/);
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("insert into reference_data (id, value)"))).toBe(false);
+  });
+
   it("requires explicit confirmation before replacing an existing BOM",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["1X2"],combos:{"1X2":{}}}},materials:{},packing:{}};
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
