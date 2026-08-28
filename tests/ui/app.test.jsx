@@ -10,7 +10,7 @@ const mocks=vi.hoisted(()=>({
   schedulePi:vi.fn(),patchOrder:vi.fn(),deleteAllOrders:vi.fn(),
   listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
-  previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),
+  previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),
 }));
 
 vi.mock("../../src/lib/client.js",()=>({
@@ -18,7 +18,7 @@ vi.mock("../../src/lib/client.js",()=>({
   setPriority:vi.fn(),deleteOrder:vi.fn(),deleteAllOrders:mocks.deleteAllOrders,patchOrder:mocks.patchOrder,
   schedulePi:mocks.schedulePi,listDispatches:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
-  readOrderPhoto:vi.fn(),readPi:vi.fn(),askCopilot:vi.fn(),
+  readOrderPhoto:vi.fn(),readPi:mocks.readPi,askCopilot:vi.fn(),
 }));
 
 import App from "../../src/App.jsx";
@@ -362,6 +362,39 @@ describe("the invoice itself is editable",()=>{
     // Editing on the invoice must not mark its own preview stale.
     expect(screen.queryByText(/Match & Check has changed since this PI was generated/)).not.toBeInTheDocument();
     expect(screen.getByRole("button",{name:/Save & send/})).toBeEnabled();
+  });
+});
+
+/* The "Review before saving" block sits between Match & Check and the rendered
+   invoice, and its quantity boxes used to write to piCards ALONE. The invoice
+   renders from piPreviewCards, so a figure corrected there printed as whatever
+   it had been before — the clerk's edit was visibly accepted and silently
+   discarded. */
+describe("edits made in the review block reach the invoice",()=>{
+  it("changes the printed quantity when a PI-read size is corrected",async()=>{
+    mocks.readPi.mockResolvedValue(JSON.stringify({
+      customer:"Test Buyer", pi_date:"2026-08-27", order_no:"PI-2026-000009", discount_pct:40,
+      items:[{article:"REX GOLA (V)", vl:"VELCRO", sole_colour:"Black", upper_colour:"Black",
+        order_nature:"MTO", rows:[{size:"11s",qty:18},{size:"12s",qty:18},{size:"13s",qty:18}]}],
+    }));
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    const upload=document.querySelector('input[type="file"][accept="application/pdf,image/*"]');
+    await user.upload(upload,new File(["x"],"pi.pdf",{type:"application/pdf"}));
+
+    const cell=await screen.findByLabelText("REX GOLA (V) 11X13 size 11s pairs");
+    await user.click(screen.getByRole("button",{name:"Generate PI from these edits"}));
+
+    const printed=()=>screen.getAllByLabelText(/pairs$/).filter(el=>el.closest("#pi-area"))
+      .map(el=>el.value);
+    expect(printed()).toContain("18");
+
+    await user.clear(cell); await user.type(cell,"30");
+    // The invoice below must show the corrected figure, with no regenerate step.
+    await waitFor(()=>expect(printed()).toContain("30"));
+    expect(screen.queryByText(/Match & Check has changed since this PI was generated/))
+      .not.toBeInTheDocument();
   });
 });
 

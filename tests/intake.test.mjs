@@ -98,11 +98,17 @@ assert.deepEqual(gv.lines.find(l=>l.combo==="11X13").size_order,["11s","12s","13
   "REX GOLA is a Lace/Velcro CLOSURE, not a kids/adult roll — 11X13 stays 11s..13s");
 assert.deepEqual(gv.lines.find(l=>l.combo==="1X3").size_order,["1","2","3"]);
 
-// A bare 8 on REX GOLA fits 8X10 (as 8s) and 8X10B (as 8). Both are real, so
-// the tie is reported and the clerk picks — it is never broken silently.
+/* A bare 8 on REX GOLA fits 8X10 (as 8s) and 8X10B (as 8). Both ranges are
+   real, and the ASCENDING RULE is what separates them: nothing on the sheet has
+   started the Large run, so this is the Small 8X10. The run and the CLOSURE are
+   independent facts — knowing the line is Velcro used to switch the ascending
+   rule off entirely, which left every such range unresolved for the clerk to
+   pick by hand. */
 const tie=buildPhotoCards({orders:[{category:"Gala",lines:[{sizes:["8","10"],cartons:2,type:"VELCRO"}]}]},INPUTS);
-assert.ok(tie.issues.some(i=>i.includes("fits both 8X10 and 8X10B")),
-  "an genuinely ambiguous roll must be reported, never guessed");
+assert.deepEqual(tie.issues,[],tie.issues.join(" | "));
+const tieLine=tie.cards[0].lines[0];
+assert.equal(tieLine.combo,"8X10","the ascending rule reads an unmarked leading 8X10 as the Small run");
+assert.deepEqual(tieLine.size_order,["8s","9s","10s"],"and it is costed against the Small range's own sizes");
 
 const unknown=buildPhotoCards({orders:[{
   party:"KP Gurgaon",category:"GLAMOUR",color:"WHI / U COL",lines:[
@@ -143,5 +149,58 @@ assert.ok(!readPrompt([]).includes("KNOWN CUSTOMERS"),
   "with no party master the reader simply returns what it reads");
 assert.ok(withParties.includes("Never bend a name that does not fit onto the nearest one"),
   "a new customer must survive the known-customer list rather than being snapped to it");
+
+/* ---- 27-Aug-2026, Bansal Barnala, "Gola V BLACK" ----------------------------
+   Five stacks written across one line, two of them with a RANGE on top:
+
+       7X10   11X13   11   2   6
+       ----   -----   --   -   -
+         5      4      2   5   7
+
+   Every failure this slip produced is asserted here.
+
+   1. Each stack is its OWN line. Three separate single sizes used to collapse
+      into one row labelled "11s, 2, 6" carrying 12.75 cartons, because two
+      lines that had both failed to resolve compared equal on `combo === null`.
+   2. The run comes from the ascending sequence and NOT from the closure. Gola
+      is a Velcro article, and knowing that used to switch the sequence off, so
+      no size was ever spelled 11s.
+   3. 11 is Small (nothing has started the Large run); 2 restarts the numerals
+      so it is Large, and the 6 after it stays Large.
+   4. A Large 6 is costed against the adult 6X7B and must pack at that range's
+      18 pairs a carton, not the kids band's 24. */
+const bansal=buildPhotoCards({orders:[{party:"Bansal Barnala",category:"Gola",color:"Black",type:"VELCRO",lines:[
+  {sizes:["7","10"],cartons:5},
+  {sizes:["11","13"],cartons:4},
+  {sizes:["11"],cartons:2},
+  {sizes:["2"],cartons:5},
+  {sizes:["6"],cartons:7},
+]}]},INPUTS);
+const bansalCard=bansal.cards[0];
+assert.equal(bansalCard.article,"REX GOLA (V)");
+assert.equal(bansalCard.lines.length,5,"five stacks are five lines — unresolved sizes must never merge into one row");
+assert.deepEqual(bansalCard.lines.map(l=>l.raw),["7X10","11X13","11","2","6"],
+  "the line label is provenance: what the slip wrote, not a spelling the app inferred");
+assert.deepEqual(bansalCard.lines.map(l=>l.combo),[null,"11X13","11X13","1X3","6X7B"],
+  "ranges resolve as ranges; 11 is Small, then 2 restarts the numerals so 2 and 6 are Large");
+assert.deepEqual(bansalCard.lines[2].sizes,{"11s":48},"an unmarked 11 before any Large size is the Small 11s");
+assert.deepEqual(bansalCard.lines[3].sizes,{"2":90});
+assert.deepEqual(bansalCard.lines[4].sizes,{"6":126},
+  "a Large 6 packs at its own 6X7B range rate of 18, not the kids band's 24");
+/* REX GOLA's kids run starts at 8s, so 7X10 is not a range this article has.
+   That is reported and left uncosted — it is never snapped to the nearby 8X10,
+   which would silently change both the BOM and the price. */
+assert.equal(bansalCard.lines[0].combo,null);
+assert.equal(bansalCard.lines[0].qty,0);
+assert.ok(bansal.issues.some(i=>i.includes("7s×10s is not an exact configured size range")),
+  "a range the article does not have must be surfaced, not snapped to its neighbour");
+
+/* The notation rules the reader is given. The fraction bar and the range
+   joiner look alike once transcribed flat, and conflating them is what turned
+   "11 over 2 cartons" into the size pair 11-and-2. */
+assert.ok(readPrompt().includes("A FRACTION BAR IS NEVER A RANGE JOINER"));
+assert.ok(readPrompt().includes("THE TOP OF A STACK IS OFTEN A RANGE"));
+assert.ok(readPrompt().includes('"sizes":["7","10"],"cartons":5'),
+  "the reader is shown a worked slip that mixes ranges and single sizes");
 
 console.log("  pass  photo stacks retain exact sizes, type and packing rate; unknown articles are blocked\n");

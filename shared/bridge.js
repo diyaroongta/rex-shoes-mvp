@@ -178,9 +178,11 @@ ${PARTY_LIST}
 PARTIES - a single sheet very often lists SEVERAL DIFFERENT CUSTOMERS, each with their own order beneath them. A party name is usually a business or a person plus a town (e.g. 'Bansal Bannala', 'Dhanani Shoe Guhati', 'Star Flw Manglore', 'Paras Indore'), often numbered 1) 2) 3). Put each order's own customer on that order as "party". NEVER carry one party across the whole sheet when other names appear - an order filed under the wrong customer is worse than one with no customer at all. If the sheet genuinely has only one party at the top, repeat it on every order. If an order has no identifiable party, return "party":"" for it rather than guessing or borrowing a neighbour's.
 A PARTY IS OFTEN JUST A TOWN. 'Belgaum order' means the customer is Belgaum; 'Indore' on its own is the customer Indore. Read the heading as written - do not decide a name is "only a place" and drop it. NEVER invent a name that is not on the page, and never carry a name over from another sheet. Returning "" is better than returning a plausible-looking name you did not actually read, because a wrong customer sends the goods and the invoice to the wrong person.
 KNOWN PRODUCTS - use one of these only when the writing genuinely identifies that product: ${PRODUCT_LIST}. Common minor spellings may be normalised ('Gala' = Gola, 'Silky Bly' = Silky Belly). UNRECOGNISED PRODUCT - if the sheet clearly names a different product that is not in the list (for example GLAMOUR), return that name exactly as written in \"category\" so the app can stop and ask the user to add or select it. NEVER force an unknown product onto the closest catalogue name. Where a product comes in Black and White, put which in \"color\"; otherwise leave color empty.
-HOW ENTRIES ARE WRITTEN - read this part carefully, it is the single most common source of error:
-- STACKED (one number written directly ABOVE another, like a fraction, often with a bar between them): the TOP number is the SIZE and the BOTTOM number is that size's NUMBER OF CARTONS. Each stack is a SEPARATE line item. Two stacks written next to each other, e.g. 8-over-2 then 9-over-3, are TWO lines - size 8 with 2 cartons, and size 9 with 3 cartons. NEVER merge two stacks into a single size-pair, and never take one stack's bottom number as the carton count for both.
-- SIDE BY SIDE on the same baseline, joined by | or a space or a slash (e.g. '6|8', '9 11', '12/1'): this is ONE SIZE-PAIR (a combo pack), with its carton count written below or beside it.
+HOW ENTRIES ARE WRITTEN - read this part carefully, it is the single most common source of error. THE TWO DIRECTIONS MEAN TWO DIFFERENT THINGS, and confusing them is what ruins a read:
+- VERTICAL = SIZE ENTRY over CARTONS. One thing written directly ABOVE another, like a fraction, usually with a bar between them: the TOP is the SIZE ENTRY and the BOTTOM is that entry's NUMBER OF CARTONS. Every stack is a SEPARATE line item. Two stacks written next to each other, e.g. 8-over-2 then 9-over-3, are TWO lines - size 8 with 2 cartons, and size 9 with 3 cartons. NEVER merge two stacks into one line, never take one stack's bottom number as the carton count for both, and never return a bottom number as a size.
+- HORIZONTAL = THE SIZE ENTRY ITSELF, which may be a RANGE of two sizes joined by X or x or a multiplication sign ('7X10', '11X13'), and occasionally by | or a dash ('11|13', '11-13'). Return BOTH endpoints in "sizes", e.g. "sizes":["11","13"]. A range is still ONE line item with ONE carton count.
+- THE TOP OF A STACK IS OFTEN A RANGE. '7X10 over 5' is the range 7-to-10 with 5 cartons. It is NOT size 7 with 10 cartons, NOT two stacks, and NOT size 7 alone - the 10 belongs to the range and the 5 is the only carton figure on that entry. A slip very often mixes both kinds: some stacks have a range on top, others a single size.
+- A FRACTION BAR IS NEVER A RANGE JOINER. '11 over 2' is size 11 with 2 cartons. Written out flat it would look like '11/2', which is NOT the pair 11-and-2. Only X, x, the multiplication sign, | or a dash joins two sizes into a range; a horizontal bar with a number beneath it is always size-over-cartons.
 SIZE RUN AND CLOSURE ARE SEPARATE. If a section is marked S or Small, set "group":"SMALL". If it is marked L, Large or Big, set "group":"LARGE". A free-standing L, or L beside a size, always means Large; NEVER turn that into Lace. Only the full word Lace sets "type":"LACE", and only the full word Velcro sets "type":"VELCRO". LEGACY ARTICLE-CODE EXCEPTION: when (L) is attached directly to an official catalogue article name such as REX GOLA (L) or SMART BOY (L) WHITE, preserve the complete official article name in "category"; that catalogue suffix means the legacy Lace variant. Do not convert an unattached L into that suffix. If the context is unclear, leave type empty for Match & Check instead of guessing. Do not carry a marker past a new one.
 Sizes are from 6 7 8 9 10 11 12 13 1 2 3 4 5 5.5. Entries may be grouped under Large/Big or Small headings - set "group":"LARGE" or "SMALL" on each line under that heading.
 If S/L or Small/Large is written, preserve it. If it is not written, preserve the entries in their exact reading order: the factory writes every Small size first and every Large size after it. For example 7, 8, 1, 2, 3 means Small 7, Small 8, then Large 1, 2, 3. Do not sort or regroup the lines.
@@ -191,6 +193,10 @@ WORKED EXAMPLE - a sheet that reads: "1) Jindal Mahroli" / "Gola BLK  Large  8-o
 {"date":"","orders":[{"party":"Jindal Mahroli","category":"Gola","color":"Black","lines":[{"sizes":["8"],"cartons":2,"group":"LARGE"},{"sizes":["9"],"cartons":3,"group":"LARGE"},{"sizes":["8"],"cartons":1,"group":"SMALL"},{"sizes":["4"],"cartons":2,"group":"SMALL"}]},{"party":"Paras Indore","category":"Armour","color":"Black","lines":[{"sizes":["1"],"cartons":1,"group":"LARGE","type":"LACE"},{"sizes":["2"],"cartons":1,"group":"LARGE","type":"LACE"},{"sizes":["3"],"cartons":1,"group":"LARGE","type":"LACE"}]}]}}
 Two customers, each with their own order. Jindal's four lines total 2+3+1+2 = 8 and Paras's three total 3 - both match their stated totals, so the read is correct.
 
+WORKED EXAMPLE 2 - RANGES AND SINGLE SIZES ON THE SAME SHEET, which is the read that goes wrong most often. A sheet that reads: "Bansal Barnala" / "Gola V BLACK" / then five stacks written across one line: 7X10-over-5 , 11X13-over-4 , 11-over-2 , 2-over-5 , 6-over-7
+{"date":"","orders":[{"party":"Bansal Barnala","category":"REX GOLA (V)","color":"Black","lines":[{"sizes":["7","10"],"cartons":5},{"sizes":["11","13"],"cartons":4},{"sizes":["11"],"cartons":2},{"sizes":["2"],"cartons":5},{"sizes":["6"],"cartons":7}]}]}
+Five stacks, five lines - never fewer. The first two have a RANGE on top (7-to-10, 11-to-13) and the last three have a SINGLE size on top; in all five the number under the bar is the carton count. Note what is NOT returned: not size 7 with 10 cartons, not the pair 11-and-2 from reading the third stack's bar as a joiner, and not one merged line holding 11, 2 and 6. No S/L is written anywhere, so "group" is omitted on every line and the app applies the ascending Small-then-Large rule itself - do not invent a group.
+
 Return ONLY valid JSON, no prose, no code fences:
 {"date":"YYYY-MM-DD or empty","orders":[{"party":"customer for THIS order, or empty","category":"Smart Boy","color":"Black","lines":[{"sizes":["6","8"],"cartons":2,"group":null,"type":"LACE or VELCRO or empty"}]}]}`; };
 
@@ -198,6 +204,20 @@ Return ONLY valid JSON, no prose, no code fences:
    Otherwise the size uses its selected range's pairs/carton, including an
    inherited ARMOUR/GOLA range. Returning the source keeps the rules screen
    and order entry able to explain the value rather than merely showing it. */
+/* Which run a size belongs to, read off the range it was costed against.
+   A range prints its kids sizes with an "s" (8s) and its adult repeat bare
+   (8), so the range's own spelling of THIS size is the evidence — no closure,
+   no roll position, no article name needed. Returns "" when the size has no
+   range yet, and the caller falls back. */
+function adultBandRun(article, combo, articleType, size){
+  if(!combo) return "";
+  const own = comboSizesForArticle(article, combo, articleType);
+  const wanted = String(size).toLowerCase();
+  const hit = own.find(s => String(s).toLowerCase() === wanted);
+  if(hit == null) return "";
+  return /[0-9]s$/i.test(String(hit)) ? "KIDS" : "ADULT";
+}
+
 export function singlePackingRule(article,size,articleType="",combo=""){
   const ref = reference();
   const raw = String(size).trim();
@@ -240,18 +260,21 @@ export function singlePackingRule(article,size,articleType="",combo=""){
   const bandSize = isKids ? sourceSize.slice(0,-1) : sourceSize;
   let pos = ROLL_KY.indexOf(bandSize);
   if(pos >= 0 && !(isKids && pos > 7)){
-    const type=String(articleType||"").trim().toUpperCase();
   // kids run: positions 0-7 (6..13); adult run: 8-13 (1..5,5.5) then the
   // repeated adult roll printed again as 6..12 further along the sheet.
     let ppc=null;
   if(chart.kids != null || chart.adult != null){
-      /* "kids" and "adult" are SIZE BANDS, not closures. The Large roll needs
-         the override because it prints 6..13 bare as adult sizes, where the
-         position alone would read them as kids. The Small roll does not: its
-         6..13 really are kids and its 1..5 really are adult, so position is
-         already right — forcing kids there charged 2X5 at 24 pairs a carton
-         when its own range says 18. */
-      if(type.startsWith("L")) ppc=chart.adult ?? null;
+      /* "kids" and "adult" are SIZE BANDS, not closures, and the band comes
+         from the RANGE the size was costed against — that range knows which
+         run it is, because it prints its own sizes either 8s..13s (kids) or
+         6..13 bare (the adult repeat). Deciding it from the closure instead
+         said every Velcro article was kids, so a bare 6 ordered against REX
+         GOLA (V)'s adult 6X7B was packed 24/carton where its own range says
+         18 — 7 cartons became 168 pairs instead of 126. The closure is only
+         the fallback for a size that has not been given a range yet. */
+      const bandRun = adultBandRun(article, combo, articleType, sourceSize);
+      if(bandRun) ppc = bandRun === "ADULT" ? (chart.adult ?? null) : (chart.kids ?? null);
+      else if(String(articleType||"").trim().toUpperCase().startsWith("L")) ppc=chart.adult ?? null;
       else ppc=pos <= 7 ? chart.kids : chart.adult;
     }else if(pos <= 7) ppc=chart["6-13"] ?? null;
     else if(pos <= 12) ppc=chart["1-5"] ?? chart["5.5-12"] ?? null;

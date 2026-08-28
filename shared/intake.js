@@ -72,6 +72,12 @@ const sizeSpellings = (size, runHint="") => {
 
    A tie is reported, never broken: on REX GOLA (L) a bare "8" fits both 8X10
    (as 8s) and 8X10B (as 8), and picking one silently changes the BOM. */
+/* THE ASCENDING RULE DECIDES THE RUN. The factory writes every Small size
+   before every Large one, so an unmarked 8X10 with no Large size yet written
+   is the Small 8s..10s — not an open question between 8X10 and 8X10B. This
+   used to be suppressed whenever a CLOSURE was written, because knowing a line
+   was Velcro was mistaken for knowing its run; the two are independent, and
+   the sheet had already answered the run. */
 function exactCombo(article, type, sizes,runHint=""){
   const combos = articleTypeCombos(article, type);
   const hits = [];
@@ -93,8 +99,15 @@ function exactCombo(article, type, sizes,runHint=""){
   return { combo:null, sizes:null, candidates:hits.map(h => h.combo) };
 }
 
+/* Two lines are the SAME line only when they resolved to the same real range.
+   `null === null` used to make every unresolved single size one row, so a slip
+   writing 11, 2 and 6 as three separate stacks arrived as a single "11s, 2, 6"
+   line whose carton count was the sum divided by one size's packing rate. An
+   unresolved size is precisely a size we cannot key, so it can never be
+   merged with another. */
 function mergeSpecific(lines, incoming){
-  const existing = lines.find(line => line.combo === incoming.combo && line.sizes && incoming.sizes);
+  const existing = incoming.combo
+    && lines.find(line => line.combo === incoming.combo && line.sizes && incoming.sizes);
   if(!existing){ lines.push(incoming); return; }
   for(const [size, qty] of Object.entries(incoming.sizes))
     existing.sizes[size] = (Number(existing.sizes[size]) || 0) + Number(qty || 0);
@@ -158,7 +171,7 @@ export function buildPhotoCards(parsed, reference){
         const explicitRuns=[...new Set(rawSizes.map(size=>parseSizeToken(size).run).filter(Boolean))];
         let runHint=explicitRuns.length===1?explicitRuns[0]:"";
         if(!runHint) runHint=cleanRun(rawLine.run||rawLine.group||order.run||order.group);
-        if(!runHint&&!written){
+        if(!runHint){
           const state=sizeSequence.get(article)||{largeStarted:false};
           const first=parseSizeToken(rawSizes[0]);
           if(first.bare){
@@ -177,9 +190,12 @@ export function buildPhotoCards(parsed, reference){
         }).filter(Boolean);
         const cartons = Math.max(0, Number(rawLine.cartons) || 0);
         if(!sizes.length || cartons <= 0) continue;
-        const match = exactCombo(article, type, sizes,runHint);
+        const match = exactCombo(article, type, sizes, runHint);
         const combo = match.combo;
-        const raw = sizes.join("|") + (type ? ` (${type})` : "");
+        /* PROVENANCE, not a label the invoice prints. It must read back as the
+           slip wrote it — "11X13", not the "11s|13s" the run inference chose,
+           which looked like a value the clerk could correct by typing. */
+        const raw = rawSizes.map(size => parseSizeToken(size).bare || String(size)).join("X");
 
         // Once a range is known IT decides the type — the section heading only
         // has to get us to the right range.

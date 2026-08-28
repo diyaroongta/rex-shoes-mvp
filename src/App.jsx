@@ -981,6 +981,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       const pairs = Math.max(0, Math.round(Number(raw) || 0));
       return { ...c, lines: c.lines.map(l => {
         if(l.combo !== line.combo) return l;
+        // Unresolved lines all carry combo null, so the combo alone does not
+        // identify one of them. Such a line is only addressable by a size it
+        // actually holds.
+        if(!l.combo && !(l.sizes && line.size in l.sizes)) return l;
         if(l.sizes){
           const sizes = { ...l.sizes, [line.size]: pairs };
           const total = Object.values(sizes).reduce((a,b)=>a+(Number(b)||0),0);
@@ -1223,10 +1227,21 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
             {c.lines.map((l,k)=>(
               <div key={k} className="grid gap-2 items-center px-1 py-1" style={{gridTemplateColumns:"1fr 90px 90px 90px 28px"}}>
                 <div>
-                  <input value={l.raw} onChange={e=>setLine(i,k,{raw:e.target.value})} placeholder="as written, e.g. Big 8"
-                    className="text-sm font-semibold w-full bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-white rounded-md px-1.5 py-1 -ml-1.5 outline-none"/>
+                  {/* PROVENANCE, NOT A FIELD. This was a free-text box holding
+                      an inferred spelling like "11s|13s", and it looked like the
+                      thing to correct — but the invoice prints the RANGE and the
+                      SIZES, never this string, so every correction typed here
+                      came out of the printer unchanged. What the line is costed
+                      and printed as is the range picker below and the per-size
+                      boxes beneath it; both of those do reach the PI. */}
+                  <div className="text-sm font-semibold px-1.5 py-1 -ml-1.5 flex items-baseline gap-1.5 flex-wrap">
+                    {l.combo
+                      ? <span>{l.combo}</span>
+                      : <span className="text-amber-700">Not matched to a range</span>}
+                    {l.raw && <span className="mono font-normal text-slate-400" style={{fontSize:10}}>as written: {l.raw}</span>}
+                  </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="mono text-slate-400" style={{fontSize:9}}>{l.raw?"rates from:":"combo:"}</span>
+                    <span className="mono text-slate-400" style={{fontSize:9}}>rate basis:</span>
                     {/* The WHOLE shoe's ranges, each labelled with its roll. One
                         article, both rolls — picking a Lace range simply makes
                         that line Lace. */}
@@ -1388,6 +1403,25 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       {previewStale && <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
         Match &amp; Check has changed since this PI was generated. Press <b>Regenerate PI with latest edits</b> before printing or saving.
       </div>}
+      {/* A line with cartons but no range — or no pairs/carton — computes to
+          zero pairs, so the invoice below simply has no row for it. The cartons
+          are still on the sheet and still load the machines, so an invoice that
+          quietly leaves them out is worse than one that will not print. Save
+          already refuses these; say so HERE, where the clerk is looking at an
+          invoice that appears complete. */}
+      {(() => {
+        const dropped = sourceCards.flatMap(c => (c.lines||[])
+          .filter(l => !c.fromPi && (Number(l.cartons)||0) > 0 && (!l.combo || !(Number(l.ppc)>0)))
+          .map(l => `${c.article} ${l.raw || l.single || "?"} — ${l.cartons} ctn (${l.combo ? "no pairs/carton" : "no range"})`));
+        if(!dropped.length) return null;
+        return <div className="text-xs rounded-lg border border-rose-300 bg-rose-50 text-rose-900 px-3 py-2 mb-3">
+          <b>{dropped.length} line{dropped.length===1?"":"s"} will not appear on this invoice.</b> Pick a range
+          in Match &amp; Check (or set the cartons to 0 to leave them off deliberately):
+          <ul className="mt-1 ml-4 list-disc mono" style={{fontSize:10.5}}>
+            {dropped.map((d,n)=><li key={n}>{d}</li>)}
+          </ul>
+        </div>;
+      })()}
       <div className="grid gap-2 mb-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))"}}>
         <label className="text-xs text-slate-500">Attach screenshot
           <input type="file" accept="image/*" capture={undefined} onChange={async e=>{
@@ -1433,12 +1467,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   {Object.keys(l.sizes||{}).map(sz=>(
                     <label key={sz} className="text-xs text-slate-500">
                       <span className="mono">{sz}</span>
+                      {/* Goes through editPiCell, which writes to the cards,
+                          this review block AND the generated preview together.
+                          Writing to piCards alone left the invoice underneath
+                          showing the old figure, so a quantity corrected here
+                          printed as whatever it had been before. */}
                       <input type="number" min={0} value={l.sizes[sz]}
-                        onChange={e=>{
-                          const v=Number(e.target.value)||0;
-                          setPiCards(pcs=>pcs.map((c2,ci2)=>ci2!==ci?c2:{...c2,lines:c2.lines.map((l2,li2)=>li2!==li?l2:
-                            {...l2, sizes:{...l2.sizes,[sz]:v}, qty:Object.values({...l2.sizes,[sz]:v}).reduce((a,b)=>a+(Number(b)||0),0)})}));
-                        }}
+                        aria-label={`${c.article} ${l.combo} size ${sz} pairs`}
+                        onChange={e=>editPiCell(c,{combo:l.combo,size:sz},"qty",e.target.value)}
                         className="block mt-0.5 w-16 text-sm border border-slate-300 rounded px-1 py-0.5 mono" /></label>))}
                   <span className="text-xs text-slate-400 ml-1">= {l.qty} pairs</span>
                 </div>
