@@ -668,6 +668,65 @@ describe("per-PI prices",()=>{
   });
 });
 
+/* Releasing a PI is all-or-nothing only by default. A PI carrying three
+   articles where one is waiting on material must be able to send the other two
+   to the machines, with the rest staying on the PI untouched. */
+describe("partial PI scheduling",()=>{
+  const snapshot=(...arts)=>({orders:arts.map(([no,art])=>({order_no:no,order_date:"2026-08-22",
+    article_code:art,party:"Buyer",priority:2,lines:[{combo:"1X2",qty:12}],pi:{pi_no:"PI77"}}))});
+  const ref={articles:{A:{combo_order:["1X2"],combos:{"1X2":{}}},B:{combo_order:["1X2"],combos:{"1X2":{}}},
+                       C:{combo_order:["1X2"],combos:{"1X2":{}}}}};
+  const setup=snap=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("select snapshot from proforma_invoices")) return {rows:[{snapshot:snap}]};
+      if(t.includes("reference_data")) return {rows:[{value:ref}]};
+      return {rows:[]};
+    });
+    const client={query:vi.fn(async sql=>String(sql).includes("returning order_no")
+      ?{rows:[{order_no:"X"}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    return client;
+  };
+
+  it("inserts only the named orders and reports what it left behind",async()=>{
+    const client=setup(snapshot(["JO1","A"],["JO2","B"],["JO3","C"]));
+    const res=response();
+    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:["JO1"]}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.partial).toBe(true);
+    expect(res.body.skipped.sort()).toEqual(["JO2","JO3"]);
+    const inserts=client.query.mock.calls.filter(([s])=>String(s).includes("insert into orders"));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0][1][0]).toBe("JO1");
+  });
+
+  it("still releases the whole PI when no subset is named",async()=>{
+    const client=setup(snapshot(["JO1","A"],["JO2","B"]));
+    const res=response();
+    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.partial).toBe(false);
+    expect(client.query.mock.calls.filter(([s])=>String(s).includes("insert into orders"))).toHaveLength(2);
+  });
+
+  it("refuses an order number that is not on this PI, rather than silently ignoring it",async()=>{
+    setup(snapshot(["JO1","A"]));
+    const res=response();
+    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:["JO1","JO9"]}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/not part of PI77: JO9/);
+  });
+
+  it("refuses an empty selection instead of releasing everything",async()=>{
+    const client=setup(snapshot(["JO1","A"],["JO2","B"]));
+    const res=response();
+    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:[]}},res);
+    expect(res.statusCode).toBe(400);
+    expect(client.query.mock.calls.some(([s])=>String(s).includes("insert into orders"))).toBe(false);
+  });
+});
+
 /* A manual planning override is a SHOP-FLOOR decision, not a commercial one.
    It is stored on the order, validated against the live work-centre list, and
    must not reissue the invoice — bumping the PI revision every time somebody

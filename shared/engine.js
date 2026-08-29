@@ -293,6 +293,69 @@ export function slaEval(sched, riskWindow=3, targets=TARGETS){
   }
   return out;
 }
+/* ------------------- SHORTFALL, ATTRIBUTED TO AN ORDER ---------------------
+   `netting` answers "what must the factory buy". This answers the different
+   question a planner asks about ONE PI: "can this order actually run?"
+
+   Stock is shared, so a shortfall cannot be attributed by dividing it up. It is
+   attributed by CONSUMPTION ORDER: orders are walked in the sequence the plan
+   runs them, each takes what it needs from what is left, and the order that
+   finds the cupboard empty is the one carrying the shortfall. That is what
+   actually happens on the floor, and it means the answer changes — correctly —
+   when a planner re-sequences the queue. */
+export function netByOrder(orders, articles, materials, sequence){
+  const left={};
+  for(const [key,mat] of Object.entries(materials||{})) left[key]=Number(mat.stock)||0;
+  const order=sequence&&sequence.length?sequence:orders.map(o=>o.order_no);
+  const byOrder={};
+  for(const no of order){
+    const o=orders.find(x=>x.order_no===no);
+    if(!o||byOrder[no]) continue;
+    const art=articles[o.article_code];
+    const req=art?orderReq(o,art):{};
+    const rows=[];
+    for(const [key,need] of Object.entries(req)){
+      if(!(need>1e-9)) continue;
+      const have=Math.max(0,left[key]==null?0:left[key]);
+      const covered=Math.min(have,need);
+      left[key]=have-covered;
+      rows.push({material_key:key,name:(materials[key]||{}).name||key,uom:(materials[key]||{}).uom||"",
+        required:round2(need,2),covered:round2(covered,2),shortfall:round2(Math.max(0,need-covered),2)});
+    }
+    rows.sort((a,b)=>b.shortfall-a.shortfall||a.name.localeCompare(b.name));
+    const short=rows.filter(r=>r.shortfall>1e-6);
+    byOrder[no]={order_no:no,pi_no:String((o.pi||{}).pi_no||"").trim(),
+      materials:rows,short:short,can_run:short.length===0};
+  }
+  return byOrder;
+}
+
+/* The same figures rolled onto the commercial document the customer sees. An
+   order with no PI number is grouped under "" rather than dropped — unfiled
+   work still eats the same stock. */
+export function shortfallByPi(byOrder){
+  const out={};
+  for(const row of Object.values(byOrder)){
+    const key=row.pi_no||"";
+    const g=out[key]||(out[key]={pi_no:key,orders:[],materials:{},short_count:0,can_run:true});
+    g.orders.push(row.order_no);
+    for(const m of row.materials){
+      const acc=g.materials[m.material_key]||(g.materials[m.material_key]=
+        {material_key:m.material_key,name:m.name,uom:m.uom,required:0,covered:0,shortfall:0});
+      acc.required=round2(acc.required+m.required,2);
+      acc.covered=round2(acc.covered+m.covered,2);
+      acc.shortfall=round2(acc.shortfall+m.shortfall,2);
+    }
+  }
+  for(const g of Object.values(out)){
+    g.materials=Object.values(g.materials).sort((a,b)=>b.shortfall-a.shortfall||a.name.localeCompare(b.name));
+    g.short=g.materials.filter(m=>m.shortfall>1e-6);
+    g.short_count=g.short.length;
+    g.can_run=g.short_count===0;
+  }
+  return out;
+}
+
 export function compute(orders, articles, materials, wcs, origin, opts={}){
   const targets={...TARGETS, ...(opts.targets||{})};
   const riskWindow=opts.riskWindow==null?3:opts.riskWindow;
@@ -301,6 +364,9 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const problems=validateSchedule(sched,wcs);
   const sla=slaEval(sched, riskWindow, targets);
   const netted=netting(rollup(orders,articles),materials);
+  /* Attributed in the order the plan actually runs, so re-sequencing the queue
+     moves the shortfall onto whichever PI now waits for the stock. */
+  const byOrder=netByOrder(orders,articles,materials,queueOrder(orders,overrides).map(o=>o.order_no));
   const procurement=netted.filter(n=>n.shortfall>1e-6).sort((a,b)=>b.shortfall-a.shortfall);
   const orderViews=orders.map(o=>{
     const sr=sched.orders[o.order_no], sl=sla[o.order_no];
@@ -342,6 +408,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   loadSummary.sort((a,b)=>b.avg_util_pct-a.avg_util_pct);
   return {orders:orderViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,daily_load:sched.load,
     plan_warnings:sched.warnings, forced_load:sched.forced_load,
+    procurement_by_order:byOrder, procurement_by_pi:shortfallByPi(byOrder),
     totals:{orders:orders.length,total_pairs:orders.reduce((s,o)=>s+o.lines.reduce((a,l)=>a+l.qty,0),0),
       last_dispatch:orderViews.length?fromDay(Math.max(...orderViews.map(o=>o.dispatch_day)),origin):null,
       sla:{on_track:orderViews.filter(o=>o.sla==="on_track").length,at_risk:orderViews.filter(o=>o.sla==="at_risk").length,breach:orderViews.filter(o=>o.sla==="breach").length}}};

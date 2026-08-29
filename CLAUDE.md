@@ -55,6 +55,21 @@ order back to the automatic planner.
 
 ---
 
+**Shortfall is attributed by consumption order, not divided up.** Stock is
+shared, so "what is this PI short of" only has an answer once you fix who takes
+the stock first. `netByOrder` walks orders in the sequence the plan runs them;
+each takes what it needs from what is left, and the order that finds the
+cupboard empty carries the shortfall. Re-sequencing the queue therefore moves
+the shortfall onto whichever PI now waits behind — which is what actually
+happens on the floor. `shortfallByPi` rolls the same figures onto the
+commercial document. Both are pure and tested.
+
+**A PI can be released into production in parts.** `POST /api/pis` takes an
+optional `order_nos` array; without it the whole PI is released, exactly as
+before. What is left off stays on the PI master untouched and can be released
+later by sending the request again — the invoice is not altered either way, and
+the response names what it skipped so nothing looks lost.
+
 ## Layout
 
 ```
@@ -189,6 +204,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | Reading a colour as a duplicate row | The client's BOM sheet has a COLOUR column per material. Read as one material, `REXINE-54" BLACK` and `REXINE-54" blue` were "duplicate BOM material" and the whole upload was rejected. Colour belongs to material identity. |
 | Losing a column to its own heading | The shipped template writes `Size Run (optional)`; the header key kept `optional`, so the column was ignored. `key()` now strips it. |
 | A hard-coded default colour | The PI screen started every order at sole colour "Black" — invented factory data on every invoice. It starts empty; the article master supplies the real colour. |
+| A control shipped where nobody can see it | The Adjust button went at the far right of the gantt row, inside a horizontally scrolling 860px-wide box. The order-number column is `position:sticky;left:0`; the button was not, so on a laptop it sat off the right edge and the feature read as "never deployed". A control at the end of a scrolling row must be pinned too. |
 | An override the plan never saw | `plan_override` was added to the schema, selected by both order endpoints and stored correctly — then dropped by the list endpoint's `row()` mapper, so the browser fed `{}` back into `compute()` every time. A column is not wired until something asserts it arrives. |
 | A queue position treated as a score | `seq` must be a POSITION in the natural queue. Sorting by `seq ?? Infinity` made "run this fifth" jump ahead of every un-pinned order, so the one control meant to push work later pulled it earlier. |
 | Re-planning reissuing the invoice | Patching an order bumps the PI revision. A queue position is a shop-floor decision, so an override-only patch skips that — otherwise moving a job up the board filled the commercial audit trail with scheduling noise. |

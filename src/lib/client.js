@@ -28,7 +28,10 @@ export const setPlanOverride = (no, ov)    => patchOrder(no, { plan_override:ov|
 export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponent(no)}`, { method:"DELETE" });
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
 export const listPis         = ()          => j("/api/pis");
-export const schedulePi      = pi_no       => post("/api/pis", { pi_no });
+/* Omit order_nos to release the whole PI; pass a subset to release only
+   those orders and leave the rest of the PI unscheduled. */
+export const schedulePi      = (pi_no, order_nos) =>
+  post("/api/pis", order_nos ? { pi_no, order_nos } : { pi_no });
 export const listArchivedPis = ()          => j("/api/pis?archived=1");
 /* Archiving hides a PI and takes its orders off the schedule; restoring puts
    them back. Deleting is permanent and refuses while any order has shipped. */

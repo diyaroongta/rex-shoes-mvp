@@ -65,11 +65,29 @@ export default wrap(async (req,res)=>{
     const restored=ordersFromPiSnapshot(rows[0].snapshot,await reference());
     if(restored.errors.length) return fail(res,409,restored.errors.join("; "));
 
+    /* PARTIAL SCHEDULING. A PI often carries several articles and the factory
+       is ready to start only some of them — the rest are waiting on material,
+       or on the customer. `order_nos` names the ones to release now; the rest
+       stay in the PI master, untouched, and can be released later by sending
+       the same request again. Omitting it releases the whole PI, which is what
+       every existing caller does. */
+    const asked=req.body&&req.body.order_nos;
+    let selected=restored.orders, skipped=[];
+    if(asked!=null){
+      if(!Array.isArray(asked)) return fail(res,400,"order_nos must be an array of order numbers");
+      const wanted=new Set(asked.map(n=>String(n||"").trim()).filter(Boolean));
+      const unknown=[...wanted].filter(n=>!restored.orders.some(o=>o.order_no===n));
+      if(unknown.length) return fail(res,400,`not part of ${piNo}: ${unknown.join(", ")}`);
+      selected=restored.orders.filter(o=>wanted.has(o.order_no));
+      if(!selected.length) return fail(res,400,"order_nos matched none of this PI's orders");
+      skipped=restored.orders.filter(o=>!wanted.has(o.order_no)).map(o=>o.order_no);
+    }
+
     const client=await db().connect();
     const inserted=[],reactivated=[],already=[];
     try{
       await client.query("begin");
-      const ids=restored.orders.map(o=>o.order_no);
+      const ids=selected.map(o=>o.order_no);
       const existingRows=ids.length ? (await client.query(
         "select order_no, active, coalesce(pi->>'pi_no','') as pi_no from orders where order_no = any($1::text[]) for update",[ids])).rows : [];
       const conflicts=existingRows.filter(r=>r.pi_no&&r.pi_no!==piNo);
@@ -78,7 +96,7 @@ export default wrap(async (req,res)=>{
         return fail(res,409,`Order number already belongs to another PI: ${conflicts.map(r=>r.order_no).join(", ")}`);
       }
       const byNo=new Map(existingRows.map(r=>[r.order_no,r]));
-      for(const order of restored.orders){
+      for(const order of selected){
         const old=byNo.get(order.order_no);
         if(old){
           if(old.active) already.push(order.order_no);
@@ -106,7 +124,8 @@ export default wrap(async (req,res)=>{
       await client.query("commit");
     }catch(e){await client.query("rollback");throw e;}
     finally{client.release();}
-    return res.status(200).json({pi_no:piNo,restored:inserted,reactivated,already_linked:already});
+    return res.status(200).json({pi_no:piNo,restored:inserted,reactivated,already_linked:already,
+      skipped, partial:asked!=null});
   }
 
   /* Permanent deletion. Archiving is the safe operation and the default; this

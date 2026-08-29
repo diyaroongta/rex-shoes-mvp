@@ -178,9 +178,50 @@ describe("critical UI contracts",()=>{
     const user=userEvent.setup();
     render(<App/>);
     await user.click(await screen.findByRole("button",{name:"PI database"}));
-    await user.click(await screen.findByRole("button",{name:"Add 1 to schedule"}));
-    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI77"));
-    expect(await screen.findByText(/1 missing order added to the production schedule/)).toBeInTheDocument();
+    // One article on the PI, so there is nothing to choose between.
+    await user.click(await screen.findByRole("button",{name:"Add to schedule"}));
+    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI77",undefined));
+    expect(await screen.findByText(/1 order added to the production schedule/)).toBeInTheDocument();
+  });
+
+  /* A PI regularly carries several articles and the factory can start only
+     some of them — the rest are waiting on material or on the customer.
+     Releasing all of a PI puts work on the machines that cannot be made. */
+  it("releases only the chosen articles of a multi-article PI",async()=>{
+    const order=(no,art)=>({order_no:no,order_date:"2026-08-22",article_code:art,party:"Buyer",
+      priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI78"}});
+    mocks.listPis.mockResolvedValue([{pi_no:"PI78",pi_date:"2026-08-22",party:"Buyer",
+      status:"produced",revision:0,
+      snapshot:{orders:[order("JO78","SPIKE"),order("JO79","ARMOUR"),order("JO80","JILL")]}}]);
+    mocks.schedulePi.mockResolvedValue({restored:["JO78"],reactivated:[],already_linked:[],
+      skipped:["JO79","JO80"],partial:true});
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await user.click(await screen.findByRole("button",{name:"Schedule 3…"}));
+
+    // Everything is ticked by default; untick the two that cannot start yet.
+    await user.click(screen.getByLabelText("Schedule JO79"));
+    await user.click(screen.getByLabelText("Schedule JO80"));
+    await user.click(screen.getByRole("button",{name:"Schedule 1 of 3"}));
+
+    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI78",["JO78"]));
+    // What was NOT released has to be said, or it looks like it was lost.
+    expect(await screen.findByText(/2 left unscheduled/)).toBeInTheDocument();
+  });
+
+  it("sends no subset when every article is chosen, so the whole PI is released",async()=>{
+    const order=(no,art)=>({order_no:no,order_date:"2026-08-22",article_code:art,party:"Buyer",
+      priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI79"}});
+    mocks.listPis.mockResolvedValue([{pi_no:"PI79",pi_date:"2026-08-22",party:"Buyer",
+      status:"produced",revision:0,snapshot:{orders:[order("JO81","SPIKE"),order("JO82","ARMOUR")]}}]);
+    mocks.schedulePi.mockResolvedValue({restored:["JO81","JO82"],reactivated:[],already_linked:[],skipped:[]});
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await user.click(await screen.findByRole("button",{name:"Schedule 2…"}));
+    await user.click(screen.getByRole("button",{name:"Schedule 2 of 2"}));
+    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI79",undefined));
   });
 
   /* The schedule is computed from the capacities saved in settings. The

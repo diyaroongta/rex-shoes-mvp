@@ -3,7 +3,8 @@
    If these pass, the planner is behaving. If test D fails, the scheduler is
    wrong no matter how plausible the dates look. */
 import assert from "node:assert/strict";
-import { compute, queueOrder, normalizeOverride, hasOverride, extraLeadDays } from "../shared/engine.js";
+import { compute, queueOrder, normalizeOverride, hasOverride, extraLeadDays,
+         netByOrder, shortfallByPi } from "../shared/engine.js";
 import { INPUTS } from "../shared/inputs.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
@@ -259,6 +260,67 @@ test("procurement and SLA follow the overridden plan, not the automatic one", ()
   const before = run(orders).orders.find(o=>o.order_no==="JOB").dispatch_day;
   assert.ok(moved.orders.find(o=>o.order_no==="JOB").dispatch_day <= before,
     "an order pinned to the front cannot dispatch later than it did behind");
+});
+
+console.log("\nG — shortfall attributed to the PI that will actually feel it");
+
+/* Two identical orders and enough stock for roughly one. The shortfall belongs
+   to whichever runs SECOND — that is the one that finds the cupboard empty. */
+const twoPis = () => ([
+  { order_no:"JO1", order_date:"2026-07-06", article_code:"REX GOLA (V)", priority:2, party:"A",
+    pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:3000 }] },
+  { order_no:"JO2", order_date:"2026-07-07", article_code:"REX GOLA (V)", priority:2, party:"B",
+    pi:{pi_no:"PI-2"}, lines:[{ combo:"11X13", qty:3000 }] },
+]);
+
+test("stock is counted out in queue order, not divided up", () => {
+  const s = run(twoPis());
+  const first = s.procurement_by_pi["PI-1"], second = s.procurement_by_pi["PI-2"];
+  assert.ok(first && second);
+  assert.ok(second.short_count >= first.short_count,
+    "the order behind carries at least as much shortfall as the one in front");
+  // Every material's covered+short must equal what it required, or pairs of
+  // material have gone missing in the attribution.
+  for(const g of [first, second])
+    for(const m of g.materials)
+      assert.ok(Math.abs((m.covered + m.shortfall) - m.required) < 0.02,
+        `${g.pi_no} ${m.name}: ${m.covered} + ${m.shortfall} != ${m.required}`);
+});
+
+test("re-sequencing the queue moves the shortfall with it", () => {
+  const before = run(twoPis()).procurement_by_pi;
+  const after  = run(twoPis(), {JO2:{seq:1}}).procurement_by_pi;
+  assert.deepEqual(after["PI-2"].short_count, before["PI-1"].short_count,
+    "PI-2 pinned to the front now carries what PI-1 used to");
+  assert.deepEqual(after["PI-1"].short_count, before["PI-2"].short_count);
+});
+
+test("per-order requirement still sums to the factory-wide netting", () => {
+  const orders = twoPis();
+  const s = run(orders);
+  const perOrder = {};
+  for(const row of Object.values(s.procurement_by_order))
+    for(const m of row.materials) perOrder[m.material_key] = (perOrder[m.material_key]||0) + m.required;
+  for(const n of s.netted){
+    if(!(perOrder[n.material_key] > 0)) continue;
+    assert.ok(Math.abs(perOrder[n.material_key] - n.required) < 0.02,
+      `${n.name}: per-order total ${perOrder[n.material_key]} != factory total ${n.required}`);
+  }
+});
+
+test("an order with everything in stock reports that it can run", () => {
+  const tiny = [{ order_no:"JO1", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+                  priority:2, party:"A", pi:{pi_no:"PI-9"}, lines:[{ combo:"11X13", qty:18 }] }];
+  const g = run(tiny).procurement_by_pi["PI-9"];
+  assert.equal(g.can_run, true);
+  assert.equal(g.short_count, 0);
+});
+
+test("orders with no PI number are grouped, never dropped", () => {
+  const loose = [{ order_no:"JO1", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+                   priority:2, party:"A", pi:{}, lines:[{ combo:"11X13", qty:18 }] }];
+  const groups = shortfallByPi(netByOrder(loose, articles, materials, ["JO1"]));
+  assert.deepEqual(groups[""].orders, ["JO1"], "unfiled work eats the same stock");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

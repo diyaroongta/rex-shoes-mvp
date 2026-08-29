@@ -411,7 +411,8 @@ export default function App(){
         <div style={{display:tab==="intake"?"block":"none"}}><NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} /></div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
           onRefresh={syncAll} />}
-        {tab==="pis" && <PiDatabaseTab orders={orders} onScheduled={syncAll} onChanged={syncAll} />}
+        {tab==="pis" && <PiDatabaseTab orders={orders} shortfall={state?state.procurement_by_pi:null}
+          onScheduled={syncAll} onChanged={syncAll} />}
         {tab==="orders" && <>
           <OrdersTab state={state} ledger={ledger} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
           <div className="flex gap-2 mt-3">
@@ -424,7 +425,7 @@ export default function App(){
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
-        {tab==="plan" && <PlanTab state={state} caps={caps} />}
+        {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
@@ -1618,7 +1619,7 @@ function Pill({status}){
   return <span className="mono text-xs font-semibold px-2 py-0.5 rounded-full" style={{color:SLA_COLOR[status],background:status==="on_track"?"#ecfdf5":status==="at_risk"?"#fff7ed":"#fef2f2"}}>{SLA_LABEL[status]}</span>;
 }
 
-function PiDatabaseTab({orders=[],onScheduled,onChanged}){
+function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
   const [pis,setPis]=useState(null);
   const [selectedPi,setSelectedPi]=useState(null);
   const [editingOrder,setEditingOrder]=useState(null);
@@ -1629,6 +1630,9 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
   const [showArchived,setShowArchived]=useState(false);
   const [busyPi,setBusyPi]=useState("");
   const [deletePi,setDeletePi]=useState(null);
+  const [shortfallPi,setShortfallPi]=useState(null);
+  const [releasing,setReleasing]=useState(null);      // pi_no whose picker is open
+  const [picked,setPicked]=useState({});              // order_no -> boolean
   const reloadPis=()=>(showArchived?api.listArchivedPis():api.listPis()).then(setPis);
 
   /* Archive hides a PI and takes its orders off the schedule; restore puts them
@@ -1659,14 +1663,23 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
     .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[showArchived]);
   if(!pis) return <div className="text-sm text-slate-500">Loading the PI master…</div>;
   const liveOrderNos=new Set((orders||[]).map(o=>o.order_no));
-  async function linkToSchedule(piNo){
+  /* orderNos omitted = release the whole PI. Passing a subset releases only
+     those articles and leaves the rest of the PI where it is, ready to be
+     released later — the factory is regularly able to start one article of a
+     PI while another waits on material. */
+  async function linkToSchedule(piNo, orderNos){
     setLinking(piNo);setErr("");setMsg("");
     try{
-      const result=await api.schedulePi(piNo);
+      const result=await api.schedulePi(piNo, orderNos);
       if(onScheduled) await onScheduled();
       await reloadPis();
-      const count=(result.restored||[]).length;
-      setMsg(count?`${piNo}: ${count} missing order${count===1?"":"s"} added to the production schedule.`:`${piNo} is already linked to the production schedule.`);
+      setReleasing(null); setPicked({});
+      const count=(result.restored||[]).length+(result.reactivated||[]).length;
+      const left=(result.skipped||[]).length;
+      setMsg(count
+        ? `${piNo}: ${count} order${count===1?"":"s"} added to the production schedule.`
+          + (left?` ${left} left unscheduled — release ${left===1?"it":"them"} whenever you are ready.`:"")
+        : `${piNo} is already linked to the production schedule.`);
     }catch(e){setErr(e.message||String(e));}
     finally{setLinking("");}
   }
@@ -1701,17 +1714,38 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
         <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
           <th className="text-left py-2">PI</th><th className="text-left">Date</th><th className="text-left">Party</th>
           <th className="text-left">Articles</th><th className="text-right">Pairs</th><th className="text-center">Revision</th>
-          <th className="text-left">Status</th><th className="text-left">Schedule</th><th></th>
+          <th className="text-left">Status</th><th className="text-left">Materials</th><th className="text-left">Schedule</th><th></th>
         </tr></thead>
         <tbody>{pis.map(p=>{const os=(p.snapshot&&p.snapshot.orders)||[];const missing=os.filter(o=>!liveOrderNos.has(o.order_no));return <tr key={p.pi_no} className="border-t border-slate-100">
           <td className="py-2 mono font-semibold">{p.pi_no}</td><td className="mono text-slate-600">{p.pi_date}</td>
           <td>{p.party||"—"}</td><td className="text-xs text-slate-600">{[...new Set(os.map(o=>o.article_code))].join(", ")}</td>
           <td className="text-right mono">{fmt(os.reduce((a,o)=>a+(o.lines||[]).reduce((b,l)=>b+(Number(l.qty)||0),0),0))}</td>
           <td className="text-center mono">{p.revision||0}</td><td className="capitalize">{p.status}</td>
+          {/* Shortfall for THIS PI, after every PI ahead of it in the queue has
+              taken its stock. An order that cannot be made is worth knowing
+              about on the commercial record, not only on the buying list. */}
+          <td>{(()=>{
+            const g=(shortfall||{})[p.pi_no];
+            if(!g) return <span className="text-xs text-slate-400">—</span>;
+            if(g.can_run) return <span className="text-xs font-semibold text-emerald-700">In stock</span>;
+            return <button onClick={()=>setShortfallPi(shortfallPi===p.pi_no?null:p.pi_no)}
+              className="text-xs font-semibold text-orange-800 border border-orange-300 bg-orange-50 rounded-lg px-2 py-0.5">
+              {g.short_count} short</button>;
+          })()}</td>
           <td>{missing.length
-            ? <button disabled={linking===p.pi_no} onClick={()=>linkToSchedule(p.pi_no)}
-                className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
-                {linking===p.pi_no?"Linking…":`Add ${missing.length} to schedule`}</button>
+            ? (missing.length===1
+                ? <button disabled={linking===p.pi_no} onClick={()=>linkToSchedule(p.pi_no)}
+                    className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
+                    {linking===p.pi_no?"Linking…":"Add to schedule"}</button>
+                /* More than one article on the PI, so ASK which. Releasing all
+                   of a PI whose second article is waiting on material puts work
+                   on the machines that cannot actually be made. */
+                : <button disabled={linking===p.pi_no}
+                    onClick={()=>{ const open=releasing===p.pi_no;
+                      setReleasing(open?null:p.pi_no);
+                      setPicked(open?{}:Object.fromEntries(missing.map(o=>[o.order_no,true]))); }}
+                    className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
+                    {linking===p.pi_no?"Linking…":`Schedule ${missing.length}…`}</button>)
             : <span className="text-xs font-semibold text-emerald-700">Linked</span>}</td>
           <td className="text-right whitespace-nowrap">
             <button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button>
@@ -1729,6 +1763,68 @@ function PiDatabaseTab({orders=[],onScheduled,onChanged}){
           </td>
         </tr>;})}</tbody>
       </table>}
+      {releasing && (()=>{
+        const pi=pis.find(x=>x.pi_no===releasing);
+        const missing=((pi&&pi.snapshot&&pi.snapshot.orders)||[]).filter(o=>!liveOrderNos.has(o.order_no));
+        const chosen=missing.filter(o=>picked[o.order_no]).map(o=>o.order_no);
+        return <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50/70 px-3 py-3">
+          <div className="text-sm font-semibold text-amber-900 mb-1">Release {releasing} into production</div>
+          <p className="text-xs text-amber-900 mb-2 leading-relaxed">
+            Tick only what the factory is ready to start. Anything left unticked stays on the PI and
+            can be released later — nothing is lost, and the invoice is not changed either way.
+          </p>
+          <div className="space-y-1 mb-2">
+            {missing.map(o=>{
+              const pairs=(o.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0);
+              return <label key={o.order_no} className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={!!picked[o.order_no]}
+                  aria-label={`Schedule ${o.order_no}`}
+                  onChange={e=>setPicked(x=>({...x,[o.order_no]:e.target.checked}))} />
+                <span className="mono font-semibold">{o.order_no}</span>
+                <span>{o.article_code}</span>
+                <span className="mono text-slate-500">{fmt(pairs)} pr</span>
+              </label>;})}
+          </div>
+          <div className="flex gap-2 flex-wrap items-center">
+            <button disabled={!chosen.length||linking===releasing}
+              onClick={()=>linkToSchedule(releasing, chosen.length===missing.length?undefined:chosen)}
+              className="text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-40">
+              {linking===releasing?"Scheduling…":`Schedule ${chosen.length} of ${missing.length}`}</button>
+            <button onClick={()=>{setReleasing(null);setPicked({});}}
+              className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Cancel</button>
+            {!chosen.length && <span className="text-xs text-amber-900">Tick at least one article.</span>}
+          </div>
+        </div>;
+      })()}
+      {shortfallPi && (shortfall||{})[shortfallPi] && (
+        <div className="mt-3 rounded-xl border border-orange-300 bg-orange-50/60 px-3 py-3">
+          <div className="text-sm font-semibold text-orange-900 mb-1">
+            Material shortfall for {shortfallPi}</div>
+          <p className="text-xs text-orange-900 mb-2 leading-relaxed">
+            Stock is shared, so it is counted out in the order the plan runs: every PI ahead of this
+            one in the queue takes what it needs first, and what is missing here is what would be
+            left when this one starts. Move this PI earlier in <b>Schedule → Adjust</b> and the
+            shortfall moves to whichever PI now waits behind it.
+          </p>
+          <table className="text-xs" style={{borderCollapse:"collapse",minWidth:420}}>
+            <thead><tr className="text-slate-500">
+              <th className="text-left py-1 pr-4">Material</th>
+              <th className="text-right py-1 pr-4">Needs</th>
+              <th className="text-right py-1 pr-4">Available</th>
+              <th className="text-right py-1 pr-4">Short</th>
+              <th className="text-left py-1">UOM</th>
+            </tr></thead>
+            <tbody>{(shortfall[shortfallPi].short||[]).map(m=>(
+              <tr key={m.material_key} style={{borderTop:"1px solid #f3d8bd"}}>
+                <td className="py-1 pr-4">{m.name}</td>
+                <td className="py-1 pr-4 text-right mono">{fmt(m.required,1)}</td>
+                <td className="py-1 pr-4 text-right mono text-slate-500">{fmt(m.covered,1)}</td>
+                <td className="py-1 pr-4 text-right mono font-semibold text-orange-800">{fmt(m.shortfall,1)}</td>
+                <td className="py-1 mono text-slate-500">{m.uom}</td>
+              </tr>))}</tbody>
+          </table>
+          <p className="text-xs text-slate-500 mt-2">Stock figures are placeholders until the client supplies real ones.</p>
+        </div>)}
       {deletePi && <div className="mt-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-3">
         <div className="text-sm font-semibold text-rose-900 mb-1">Permanently delete {deletePi}?</div>
         <div className="text-xs text-rose-800 leading-relaxed mb-2">
@@ -2163,7 +2259,13 @@ function EditOrder({o,onSave,onCancel}){
 
 /* Day-by-day production plan: what runs on which machine on which date.
    Built entirely from the computed stage allocations — nothing new is inferred. */
-function PlanTab({state,caps}){
+function PlanTab({state,caps,setPlanOverride}){
+  // Same editor as the Schedule board. A planner looking at "Tuesday is
+  // overloaded" wants to move THAT job, on the screen where they can see it.
+  const [editing,setEditing]=React.useState(null);
+  const editOrder = state.orders.find(o=>o.order_no===editing);
+  const queue = queueOrder(state.orders,
+    Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]))).map(o=>o.order_no);
   const centres = Object.keys(INPUTS.workcenters);
   // The schedule was built from the edited capacities; reading the seed here
   // made this screen disagree with Machine load the moment one was changed.
@@ -2194,6 +2296,13 @@ function PlanTab({state,caps}){
       </div>
       <button onClick={()=>window.print()} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Print / save PDF</button>
     </div>
+    {setPlanOverride && <p className="text-xs text-slate-500 -mt-2 mb-3">
+      Click any order number below to overrule its plan — run it earlier or later, pin its start
+      date, move a stage to another machine, or force a stage into a set number of days.</p>}
+    {editOrder && setPlanOverride && (
+      <PlanOverrideEditor order={editOrder} queue={queue}
+        onChange={ov=>setPlanOverride(editOrder.order_no,ov)}
+        onClose={()=>setEditing(null)} />)}
     <div className="overflow-x-auto">
       <table className="w-full text-sm border-collapse">
         <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
@@ -2221,7 +2330,12 @@ function PlanTab({state,caps}){
                   {!jobs.length ? <span className="text-slate-300 text-xs">—</span> : <>
                     {jobs.map((j,i)=>(
                       <div key={i} className="text-xs mb-1">
-                        <span className="mono font-semibold">{j.order_no}</span>
+                        {setPlanOverride
+                          ? <button onClick={()=>setEditing(editing===j.order_no?null:j.order_no)}
+                              aria-label={`Adjust the plan for ${j.order_no}`}
+                              className="mono font-semibold text-indigo-800 underline decoration-dotted underline-offset-2">
+                              {j.order_no}</button>
+                          : <span className="mono font-semibold">{j.order_no}</span>}
                         <span className="text-slate-500"> · {fmt(Math.round(j.pairs))} pr</span>
                         <div className="text-slate-400">{j.article}</div>
                       </div>))}
@@ -2410,7 +2524,7 @@ function ScheduleTab({state,setPlanOverride}){
           {state.plan_warnings.length>6 && <li>…and {state.plan_warnings.length-6} more.</li>}
         </ul>
       </div>)}
-    <p className="text-sm text-slate-500 mb-1"><b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
+    <p className="text-sm text-slate-500 mb-1"><b>Press Adjust on any row</b> to overrule the plan for that order — run it first or later, pin its start date, move a stage to another machine, or force a stage to finish in a set number of days. <b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
     <details className="mb-3">
       <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>
       <div className="text-xs text-slate-500 mt-1 leading-relaxed">
@@ -2430,7 +2544,7 @@ function ScheduleTab({state,setPlanOverride}){
             <span key={d} className="mono absolute text-slate-400" style={{left:`${100*(d-minDay)/span}%`,fontSize:9,whiteSpace:"nowrap"}}>{niceDate(fromDay(d,INPUTS.origin))}</span>))}
           {showToday && <span className="mono absolute font-semibold" style={{left:`${100*(todayIdx-minDay)/span}%`,fontSize:9,color:"#0f766e",transform:"translateX(-50%)"}}>today</span>}
         </div>
-        <div className="flex-none" style={{width:58}}/>
+        <div className="flex-none" style={{width:setPlanOverride?128:58}}/>
       </div>
       {rows.map(o=>{
         const rel=dayIndex(o.order_date, INPUTS.origin);
@@ -2471,12 +2585,20 @@ function ScheduleTab({state,setPlanOverride}){
                 color:"#fff",textShadow:"0 0 3px rgba(0,0,0,.6)",pointerEvents:"none"}}>{STAGE_ABBR[s.stage]||s.stage[0]}</span>))}
             {showToday && <div className="absolute" style={{left:`${100*(todayIdx-minDay)/span}%`,top:0,bottom:0,width:2,background:"#0f766e",opacity:.45,pointerEvents:"none"}}/>}
           </div>
-          <div className="mono flex-none text-right" style={{width:58,fontSize:11,color:SLA_COLOR[o.sla]}}>{niceDate(o.dispatch_date)}</div>
-          {setPlanOverride && <button
-            onClick={()=>setEditing(editing===o.order_no?null:o.order_no)}
-            aria-label={`Adjust the plan for ${o.order_no}`}
-            className="flex-none text-xs font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white hover:bg-slate-50">
-            {editing===o.order_no?"Done":"Adjust"}</button>}
+          {/* PINNED, like the order number on the left. The gantt scrolls
+              sideways inside an 860px-minimum box, so an unpinned control at
+              the end of the row is simply off the screen on a laptop — which
+              is exactly how the Adjust button came to look like it was never
+              shipped at all. */}
+          <div className="flex-none flex items-center gap-1.5"
+            style={{position:"sticky",right:0,background:"#fff",zIndex:2,paddingLeft:6}}>
+            <div className="mono text-right" style={{width:58,fontSize:11,color:SLA_COLOR[o.sla]}}>{niceDate(o.dispatch_date)}</div>
+            {setPlanOverride && <button
+              onClick={()=>setEditing(editing===o.order_no?null:o.order_no)}
+              aria-label={`Adjust the plan for ${o.order_no}`}
+              className="flex-none text-xs font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-800 bg-indigo-50 hover:bg-indigo-100">
+              {editing===o.order_no?"Done":"Adjust"}</button>}
+          </div>
         </div>
         {editing===o.order_no && setPlanOverride && (
           <PlanOverrideEditor order={o} queue={rows.map(r=>r.order_no)}
