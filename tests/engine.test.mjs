@@ -3,11 +3,12 @@
    If these pass, the planner is behaving. If test D fails, the scheduler is
    wrong no matter how plausible the dates look. */
 import assert from "node:assert/strict";
-import { compute, extraLeadDays } from "../shared/engine.js";
+import { compute, queueOrder, normalizeOverride, hasOverride, extraLeadDays } from "../shared/engine.js";
 import { INPUTS } from "../shared/inputs.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
-const run = orders => compute(orders, articles, materials, wcs, origin);
+const run = (orders, overrides) => compute(orders, articles, materials, wcs, origin,
+  overrides ? { overrides } : {});
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -146,6 +147,118 @@ test("an unknown combo is visible, not silent", () => {
   assert.deepEqual(o.unknown_combos, ["NOT-A-COMBO"]);
   assert.equal(o.qty, 1200, "capacity is still consumed");
   assert.equal(s.procurement.length, 0, "but no material is ordered — hence the API rejects these");
+});
+
+console.log("\nF — manual planning overrides: obeyed, then accounted for");
+
+/* Two identical orders, so nothing but the override can separate them. */
+const pair = () => ([
+  { order_no:"JOA", order_date:"2026-07-06", article_code:"REX GOLA (V)", priority:2, party:"A",
+    lines:[{ combo:"11X13", qty:1800 }] },
+  { order_no:"JOB", order_date:"2026-07-06", article_code:"REX GOLA (V)", priority:2, party:"B",
+    lines:[{ combo:"1X3", qty:1800 }] },
+]);
+
+test("with no override the plan is exactly what it was", () => {
+  assert.deepEqual(run(pair()).orders.map(o=>o.order_no+o.dispatch_date),
+                   run(pair(), {}).orders.map(o=>o.order_no+o.dispatch_date),
+                   "an empty override map must not change a single date");
+});
+
+test("a pinned queue position outranks priority and date", () => {
+  const auto = queueOrder(pair(), {});
+  assert.deepEqual(auto.map(o=>o.order_no), ["JOA","JOB"]);
+  assert.deepEqual(queueOrder(pair(), {JOB:{seq:1}}).map(o=>o.order_no), ["JOB","JOA"],
+    "seq 1 means run this one first");
+  // A higher priority still loses to an explicit position — that is the point
+  // of an override.
+  const p1 = pair(); p1[0].priority = 1;
+  assert.deepEqual(queueOrder(p1, {JOB:{seq:1}}).map(o=>o.order_no), ["JOB","JOA"]);
+});
+
+test("seq is a position, not a score — 2 means second", () => {
+  const three = [...pair(), { order_no:"JOC", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+    priority:2, party:"C", lines:[{ combo:"4X5", qty:600 }] }];
+  assert.deepEqual(queueOrder(three, {JOC:{seq:2}}).map(o=>o.order_no), ["JOA","JOC","JOB"]);
+});
+
+test("a pinned start date moves the order, in both directions", () => {
+  const late = run(pair(), {JOA:{start_on:"2026-07-20"}}).orders.find(o=>o.order_no==="JOA");
+  assert.equal(late.release_date, "2026-07-20");
+  // Pulling an order in FRONT of its own order date is allowed, and reported.
+  const early = run(pair(), {JOA:{start_on:"2026-07-01"}}).orders.find(o=>o.order_no==="JOA");
+  assert.equal(early.release_date, "2026-07-01");
+  assert.ok(early.plan_warnings.some(w=>w.kind==="starts_before_order_date"),
+    "starting before the order's own date must be said out loud");
+});
+
+test("a forced duration is carried out even when capacity cannot support it", () => {
+  const big = [{ order_no:"JOA", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+                 priority:2, party:"A", lines:[{ combo:"11X13", qty:9000 }] }];
+  const auto = run(big).orders[0].stages.find(s=>s.stage==="CUTTING");
+  assert.ok(auto.duration_days > 1, "this order genuinely needs more than a day of cutting");
+
+  const forced = run(big, {JOA:{days:{CUTTING:1}}});
+  const cut = forced.orders[0].stages.find(s=>s.stage==="CUTTING");
+  assert.equal(cut.duration_days, 1, "one day was asked for and one day was given");
+  assert.equal(cut.alloc[cut.start], 9000, "the whole order is booked into that day");
+
+  const warn = forced.plan_warnings.find(w=>w.kind==="over_capacity");
+  assert.ok(warn, "an instruction capacity cannot meet must come back as a warning");
+  assert.ok(warn.message.includes("9000 pairs a day"), warn.message);
+
+  /* AND IT IS NOT ALSO A FAULT. An overbooked day that was ordered is a
+     decision; reporting it in schedule_problems as well lit the red banner on
+     every deliberate override. */
+  assert.deepEqual(forced.schedule_problems, [],
+    "a day overbooked on purpose is a warning, never a schedule problem");
+  // A day overbooked by accident is still a fault.
+  assert.ok(forced.forced_load.CUTTING[cut.start], "the forced cell is recorded");
+});
+
+test("a stage can be pinned to a named machine", () => {
+  const one = [{ order_no:"JOA", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+                 priority:2, party:"A", lines:[{ combo:"11X13", qty:600 }] }];
+  const auto = run(one).orders[0].stages.find(s=>s.stage==="MOLDING");
+  assert.equal(auto.work_center, "MOLDING_PVC_ROTARY");
+  const moved = run(one, {JOA:{machine:{MOLDING:"MOLDING_PVC_VERTICAL"}}});
+  const st = moved.orders[0].stages.find(s=>s.stage==="MOLDING");
+  assert.equal(st.work_center, "MOLDING_PVC_VERTICAL");
+  assert.ok(moved.plan_warnings.some(w=>w.kind==="machine_forced"));
+  // The load follows the override, or the machine-load screen would lie.
+  assert.ok(Object.keys(moved.daily_load.MOLDING_PVC_VERTICAL||{}).length>0);
+});
+
+test("a machine that does not exist falls back and says so", () => {
+  const one = [{ order_no:"JOA", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+                 priority:2, party:"A", lines:[{ combo:"11X13", qty:600 }] }];
+  const r = run(one, {JOA:{machine:{MOLDING:"NO_SUCH_MACHINE"}}});
+  const st = r.orders[0].stages.find(s=>s.stage==="MOLDING");
+  assert.equal(st.work_center, "MOLDING_PVC_ROTARY", "the plan must still be buildable");
+  assert.ok(r.plan_warnings.some(w=>w.kind==="unknown_machine"));
+});
+
+test("rubbish in an override is dropped, not obeyed", () => {
+  assert.deepEqual(normalizeOverride(null), {seq:null,start_on:null,machine:{},days:{}});
+  assert.deepEqual(normalizeOverride({seq:0,start_on:"soon",days:{CUTTING:0},machine:{CUTTING:"  "}}),
+    {seq:null,start_on:null,machine:{},days:{}},
+    "a zero-day run, a position of 0 and an unparseable date are not instructions");
+  assert.equal(normalizeOverride({seq:"3"}).seq, 3);
+  assert.equal(hasOverride({}), false);
+  assert.equal(hasOverride({seq:1}), true);
+});
+
+test("procurement and SLA follow the overridden plan, not the automatic one", () => {
+  const orders = pair();
+  const moved = run(orders, {JOB:{seq:1}});
+  // The same pairs are still ordered — resequencing moves work, never creates it.
+  assert.equal(moved.totals.total_pairs, run(orders).totals.total_pairs);
+  assert.deepEqual(moved.procurement.map(m=>m.material_key).sort(),
+                   run(orders).procurement.map(m=>m.material_key).sort());
+  // …but the dates did move, and the SLA is evaluated on the moved dates.
+  const before = run(orders).orders.find(o=>o.order_no==="JOB").dispatch_day;
+  assert.ok(moved.orders.find(o=>o.order_no==="JOB").dispatch_day <= before,
+    "an order pinned to the front cannot dispatch later than it did behind");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

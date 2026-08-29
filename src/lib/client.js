@@ -22,6 +22,9 @@ export const patchOrder      = (no, patch) => j(`/api/orders/${encodeURIComponen
                                                 { method:"PATCH", headers:{"Content-Type":"application/json"},
                                                   body:JSON.stringify(patch) });
 export const setPriority     = (no, p)     => patchOrder(no, { priority:p });
+/* Manual planning override for one order. `{}` hands the order back to the
+   automatic planner. */
+export const setPlanOverride = (no, ov)    => patchOrder(no, { plan_override:ov||{} });
 export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponent(no)}`, { method:"DELETE" });
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
 export const listPis         = ()          => j("/api/pis");

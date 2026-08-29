@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
-import { compute, fromDay, dayIndex } from "../shared/engine.js";
+import { compute, fromDay, dayIndex, queueOrder } from "../shared/engine.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
@@ -99,6 +99,16 @@ export default function App(){
     try{ await api.setPriority(no,next); }catch(e){ setLoadErr(e.message||String(e)); }
     refresh();
   };
+  /* Optimistic like bump(): the planner recomputes the whole board from the
+     new override, so the gantt moves under the planner's hand instead of after
+     a round trip. The server is still the source of truth on refresh. */
+  const setPlanOverride = async (no, ov) => {
+    const clean = ov && Object.keys(ov).length ? ov : {};
+    setOrders(os=>os.map(o=>o.order_no===no?{...o,plan_override:clean}:o));
+    try{ await api.setPlanOverride(no, clean); }
+    catch(e){ setLoadErr(e.message||String(e)); }
+    refresh();
+  };
   const removeOrder = async no =>{
     setOrders(os=>os.filter(o=>o.order_no!==no));                       // optimistic
     try{ await api.deleteOrder(no); setFlash(`${no} removed from the schedule.`); }
@@ -156,14 +166,22 @@ export default function App(){
     Object.defineProperty(w,"_lead_time_rules",{value:INPUTS.lead_time_rules||null,enumerable:false});
     return w;
   },[caps,refTick]);
+  /* Manual planning overrides, one per order, straight off the order row. The
+     plan stays fully recomputed from them, so procurement, machine load, SLA
+     and the dashboard all move together when a planner reorders the queue —
+     nothing is patched onto a stale schedule. */
+  const planOverrides = useMemo(()=>Object.fromEntries(
+    (orders||[]).filter(o=>o.plan_override&&Object.keys(o.plan_override).length)
+                .map(o=>[o.order_no,o.plan_override])),[orders]);
   const state = useMemo(()=> orders
     ? compute(
         // stitching/printing live on the pi blob; lift them so the engine sees them
         orders.map(o=>({ ...o,
           stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
           printing:(o.pi&&o.pi.printing)||o.printing||false })),
-        INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin, targets?{targets}:{})
-    : null, [orders,wcs,refTick,targets]);
+        INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
+        {...(targets?{targets}:{}), overrides:planOverrides})
+    : null, [orders,wcs,refTick,targets,planOverrides]);
 
   /* Ordered versus dispatched, from the same shared ledger the dispatch screen
      renders. An order that has shipped in full — or been closed short — is
@@ -405,7 +423,7 @@ export default function App(){
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
-        {tab==="schedule" && <ScheduleTab state={state} />}
+        {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
@@ -2195,7 +2213,11 @@ function PlanTab({state,caps}){
                 const jobs = byDay[d][c] || [];
                 const cap = capacityOf(c);
                 const used = jobs.reduce((a,j)=>a+j.pairs,0);
-                return <td key={c} className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>
+                // Booked past capacity because a planner said so. Shown, not
+                // hidden — the line still has to find the extra pairs.
+                const forced = !!((state.forced_load||{})[c]||{})[d];
+                return <td key={c} className="py-2 px-2"
+                  style={{borderTop:"1px solid #eef0f4",background:forced?"#fffbeb":undefined}}>
                   {!jobs.length ? <span className="text-slate-300 text-xs">—</span> : <>
                     {jobs.map((j,i)=>(
                       <div key={i} className="text-xs mb-1">
@@ -2203,14 +2225,15 @@ function PlanTab({state,caps}){
                         <span className="text-slate-500"> · {fmt(Math.round(j.pairs))} pr</span>
                         <div className="text-slate-400">{j.article}</div>
                       </div>))}
-                    <div className="text-xs text-slate-400 mono">{Math.round(100*used/cap)}% of {fmt(cap)}</div>
+                    <div className="text-xs mono" style={{color:forced?"#b45309":"#94a3b8"}}>
+                      {Math.round(100*used/cap)}% of {fmt(cap)}{forced?" · forced":""}</div>
                   </>}
                 </td>;})}
             </tr>;})}
         </tbody>
       </table>
     </div>
-    <p className="text-xs text-slate-400 mt-3">Each molding machine takes one order at a time, so a molding column never shows two orders on the same day — but the molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
+    <p className="text-xs text-slate-400 mt-3"><span style={{background:"#fffbeb",padding:"1px 4px",borderRadius:3,color:"#b45309"}}>Amber</span> is a day booked past capacity because a stage was pinned to a shorter run in Schedule → Adjust. Each molding machine takes one order at a time, so a molding column never shows two orders on the same day — but the molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
   </div>;
 }
 
@@ -2244,10 +2267,131 @@ function PlanningLogic({orders}){
   </div>;
 }
 
-function ScheduleTab({state}){
+/* MANUAL PLANNING CONTROLS for one order.
+
+   The plan is automatic and stays automatic; this panel is how a planner
+   overrules it on the four things they actually ask for — run this one first,
+   do not start before this date, run this stage on that machine, get this
+   stage done in N days. Every control writes the whole override object, so
+   "back to automatic" is always one button away, and nothing here is refused:
+   an instruction the capacity cannot support is carried out and the cost of it
+   is printed underneath. */
+function PlanOverrideEditor({order, queue, onChange, onClose}){
+  const ov = order.override || {seq:null,start_on:null,machine:{},days:{}};
+  const pos = Math.max(1, queue.indexOf(order.order_no)+1);
+  const patch = next => onChange({...ov, machine:{...ov.machine}, days:{...ov.days}, ...next});
+  const stages = order.stages.filter(s=>!s.instant);
+  // Only the centres that serve this stage: a planner may choose between the
+  // molding machines, never send Cutting to one.
+  const optionsFor = stage => Object.entries(INPUTS.workcenters)
+    .filter(([,wc])=>wc.stage===stage);
+  const setStage = (map,stage,value) => {
+    const next={...ov[map]};
+    if(value==="" || value==null) delete next[stage]; else next[stage]=value;
+    return patch({[map]:next});
+  };
+  const BTN="text-xs font-semibold rounded-lg px-2.5 py-1 border border-slate-300 bg-white hover:bg-slate-50";
+  return <div className="border border-indigo-200 bg-indigo-50/40 rounded-xl p-3 mb-2">
+    <div className="flex items-center gap-2 flex-wrap mb-2">
+      <span className="text-sm font-semibold text-indigo-900">Adjust {order.order_no}</span>
+      <span className="text-xs text-slate-500">currently #{pos} in the queue · dispatch {niceDate(order.dispatch_date)}</span>
+      <button onClick={onClose} className="ml-auto text-xs text-slate-500 px-1.5">close</button>
+    </div>
+
+    <div className="grid gap-3" style={{gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))"}}>
+      <div>
+        <div className="text-xs font-semibold text-slate-600 mb-1">Queue position</div>
+        <div className="flex gap-1.5 flex-wrap">
+          <button className={BTN} onClick={()=>patch({seq:1})}>Run first</button>
+          <button className={BTN} onClick={()=>patch({seq:Math.max(1,pos-1)})}>Earlier</button>
+          <button className={BTN} onClick={()=>patch({seq:pos+1})}>Later</button>
+          <button className={BTN} onClick={()=>patch({seq:null})} disabled={ov.seq==null}>Automatic</button>
+        </div>
+        <div className="text-xs text-slate-500 mt-1">
+          {ov.seq==null
+            ? `Automatic — P${order.priority}, then order date.`
+            : `Pinned to position ${ov.seq}.`}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs font-semibold text-slate-600 mb-1">Release on</div>
+        <div className="flex gap-1.5 items-center">
+          <input type="date" value={ov.start_on||""} aria-label={`${order.order_no} release date`}
+            onChange={e=>patch({start_on:e.target.value||null})}
+            className="text-sm border border-slate-300 rounded-lg px-2 py-1 bg-white"/>
+          <button className={BTN} onClick={()=>patch({start_on:null})} disabled={!ov.start_on}>Automatic</button>
+        </div>
+        <div className="text-xs text-slate-500 mt-1">
+          {ov.start_on ? `Pinned. Automatic would release ${niceDate(order.release_date)}.`
+                         : `Automatic — releases ${niceDate(order.release_date)}.`}
+        </div>
+      </div>
+    </div>
+
+    <div className="mt-3">
+      <div className="text-xs font-semibold text-slate-600 mb-1">Stage by stage</div>
+      <div className="overflow-x-auto">
+        <table className="text-xs" style={{borderCollapse:"collapse",minWidth:520}}>
+          <thead><tr className="text-slate-500">
+            <th className="text-left py-1 pr-3">Stage</th>
+            <th className="text-left py-1 pr-3">Machine</th>
+            <th className="text-left py-1 pr-3">Run in (days)</th>
+            <th className="text-left py-1">Planned</th>
+          </tr></thead>
+          <tbody>
+            {stages.map(st=>{
+              const opts=optionsFor(st.stage);
+              return <tr key={st.stage} style={{borderTop:"1px solid #e6e9f0"}}>
+                <td className="py-1 pr-3 font-semibold whitespace-nowrap">{st.stage}</td>
+                <td className="py-1 pr-3">
+                  {opts.length>1
+                    ? <select value={ov.machine[st.stage]||""} aria-label={`${order.order_no} ${st.stage} machine`}
+                        onChange={e=>setStage("machine",st.stage,e.target.value)}
+                        className="border border-slate-300 rounded px-1.5 py-0.5 bg-white" style={{fontSize:11}}>
+                        <option value="">Automatic ({(INPUTS.workcenters[st.work_center]||{}).name||st.work_center})</option>
+                        {opts.map(([code,wc])=><option key={code} value={code}>{wc.name||code}</option>)}
+                      </select>
+                    : <span className="text-slate-400">{(INPUTS.workcenters[st.work_center]||{}).name||st.work_center}</span>}
+                </td>
+                <td className="py-1 pr-3">
+                  <input type="number" min="1" step="1" value={ov.days[st.stage]??""}
+                    placeholder={String(st.duration_days)}
+                    aria-label={`${order.order_no} ${st.stage} days`}
+                    onChange={e=>setStage("days",st.stage,e.target.value===""?"":Math.max(1,Number(e.target.value)||1))}
+                    className="w-20 border border-slate-300 rounded px-1.5 py-0.5 bg-white mono" style={{fontSize:11}}/>
+                </td>
+                <td className="py-1 mono text-slate-500 whitespace-nowrap">
+                  {niceDate(st.start_date)} → {niceDate(st.end_date)}
+                </td>
+              </tr>;})}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {/* WARNINGS, NOT REFUSALS. The instruction has already been applied to the
+        plan above; this says what it cost. */}
+    {!!(order.plan_warnings||[]).length && <div className="mt-3 text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 px-2.5 py-2">
+      <b>Applied, with these consequences:</b>
+      <ul className="mt-1 ml-4 list-disc">
+        {order.plan_warnings.map((w,i)=><li key={i}>{w.message}</li>)}
+      </ul>
+    </div>}
+
+    <div className="mt-3 flex gap-2 flex-wrap">
+      <button onClick={()=>onChange({})} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
+        Clear all overrides — plan this automatically</button>
+    </div>
+  </div>;
+}
+
+function ScheduleTab({state,setPlanOverride}){
+  const [editing,setEditing]=React.useState(null);
   const STAGE_COLOR = {CUTTING:"#2563eb",STITCHING:"#7c3aed",PRINTING:"#0891b2",MOLDING:"#059669",ASSEMBLY:"#0d9488",PACKING:"#d97706"};
   const PRI_STYLE = {1:{bg:"#fee2e2",fg:"#b91c1c"},2:{bg:"#f1f5f9",fg:"#475569"},3:{bg:"#f8fafc",fg:"#94a3b8"}};
-  const rows=[...state.orders].sort((a,b)=>a.priority-b.priority||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)||String(a.order_no).localeCompare(String(b.order_no)));
+  const overrides=Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]));
+  const rows=queueOrder(state.orders, overrides);
   const maxDay=Math.max(...rows.map(o=>o.dispatch_day),1);
   const minDay=Math.min(...rows.map(o=>Math.min(...o.stages.map(s=>s.start))),0);
   const span=maxDay-minDay+1;
@@ -2257,11 +2401,20 @@ function ScheduleTab({state}){
   const tickEvery=span>90?14:7;
   const ticks=days.filter(d=>((d-minDay)%tickEvery)===0);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+    {!!(state.plan_warnings||[]).length && (
+      <div className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
+        <b>{state.plan_warnings.length} manual planning instruction{state.plan_warnings.length===1?"":"s"} in force.</b>{" "}
+        The plan below already follows them. Press Adjust on an order to see or undo its own.
+        <ul className="mt-1 ml-4 list-disc">
+          {state.plan_warnings.slice(0,6).map((w,i)=><li key={i}><span className="mono">{w.order_no}</span> — {w.message}</li>)}
+          {state.plan_warnings.length>6 && <li>…and {state.plan_warnings.length-6} more.</li>}
+        </ul>
+      </div>)}
     <p className="text-sm text-slate-500 mb-1"><b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
     <details className="mb-3">
       <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>
       <div className="text-xs text-slate-500 mt-1 leading-relaxed">
-        1. Orders queue by <b>priority first</b>, then earliest order date, then order number. Every order starts at P2, so in practice that is first-in first-out until someone sets P1 to jump the queue or P3 to yield.<br/>
+        1. Orders queue by <b>priority first</b>, then earliest order date, then order number. Every order starts at P2, so in practice that is first-in first-out until someone sets P1 to jump the queue or P3 to yield. <b>Adjust</b> on any row overrules all of that — a pinned queue position, start date, machine or stage duration is obeyed exactly, and what it costs is shown at the top.<br/>
         2. Each order follows its article route. A stage starts on the next planning day after the previous stage finishes; in-house Preparation appears once in that route and is not added again as a buffer.<br/>
         3. Each machine line has a daily capacity in pairs. An order takes whatever is free each day - rows higher in the queue get first claim, which is why lower rows show hatched waiting.<br/>
         4. An order never starts before its own order date (faint grey zone).<br/>
@@ -2290,9 +2443,12 @@ function ScheduleTab({state}){
         });
         const pri=PRI_STYLE[o.priority]||PRI_STYLE[3];
         return (
-        <div key={o.order_no} className="flex items-center gap-2 mb-2">
+        <React.Fragment key={o.order_no}>
+        <div className="flex items-center gap-2 mb-2">
           <div className="mono flex-none" style={{width:112,fontSize:11,position:"sticky",left:0,background:"#fff",zIndex:2,lineHeight:1.35}}>
-            {o.order_no} <span className="font-semibold rounded px-1" style={{fontSize:9,background:pri.bg,color:pri.fg}}>P{o.priority}</span><br/>
+            {o.order_no} <span className="font-semibold rounded px-1" style={{fontSize:9,background:pri.bg,color:pri.fg}}>P{o.priority}</span>
+            {o.overridden && <span className="font-semibold rounded px-1 ml-0.5" title="Planned by hand, not automatically"
+              style={{fontSize:9,background:"#e0e7ff",color:"#3730a3"}}>manual</span>}<br/>
             <span className="text-slate-400" style={{fontSize:9}}>{o.article.length>15?o.article.slice(0,14)+"…":o.article}</span></div>
           <div className="relative flex flex-1" style={{height:24,borderRadius:4,overflow:"hidden",background:"#f6f8fb"}}>
             {days.map(d=>{
@@ -2316,7 +2472,17 @@ function ScheduleTab({state}){
             {showToday && <div className="absolute" style={{left:`${100*(todayIdx-minDay)/span}%`,top:0,bottom:0,width:2,background:"#0f766e",opacity:.45,pointerEvents:"none"}}/>}
           </div>
           <div className="mono flex-none text-right" style={{width:58,fontSize:11,color:SLA_COLOR[o.sla]}}>{niceDate(o.dispatch_date)}</div>
-        </div>);
+          {setPlanOverride && <button
+            onClick={()=>setEditing(editing===o.order_no?null:o.order_no)}
+            aria-label={`Adjust the plan for ${o.order_no}`}
+            className="flex-none text-xs font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white hover:bg-slate-50">
+            {editing===o.order_no?"Done":"Adjust"}</button>}
+        </div>
+        {editing===o.order_no && setPlanOverride && (
+          <PlanOverrideEditor order={o} queue={rows.map(r=>r.order_no)}
+            onChange={ov=>setPlanOverride(o.order_no,ov)}
+            onClose={()=>setEditing(null)} />)}
+        </React.Fragment>);
       })}
     </div>
     </div>

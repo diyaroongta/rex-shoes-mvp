@@ -28,6 +28,12 @@ alter table orders alter column party set not null;
 alter table orders drop constraint if exists orders_priority_check;
 alter table orders add constraint orders_priority_check check (priority between 1 and 3);
 
+-- Manual planning overrides for this order: an explicit queue position, a
+-- pinned start date, a forced work centre per stage, a forced duration per
+-- stage. The planner obeys all of them and reports what each one cost; see
+-- shared/engine.js. Empty {} means "plan this automatically".
+alter table orders add column if not exists plan_override jsonb not null default '{}'::jsonb;
+
 create index if not exists orders_priority_date_idx on orders (priority, order_date, order_no);
 
 -- Issued PI master. Snapshot is deliberately independent of the live order

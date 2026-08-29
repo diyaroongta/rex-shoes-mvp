@@ -10,12 +10,12 @@ const mocks=vi.hoisted(()=>({
   schedulePi:vi.fn(),patchOrder:vi.fn(),deleteAllOrders:vi.fn(),
   listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
-  previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),
+  previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),setPlanOverride:vi.fn(),
 }));
 
 vi.mock("../../src/lib/client.js",()=>({
   ...mocks,
-  setPriority:vi.fn(),deleteOrder:vi.fn(),deleteAllOrders:mocks.deleteAllOrders,patchOrder:mocks.patchOrder,
+  setPriority:vi.fn(),setPlanOverride:mocks.setPlanOverride,deleteOrder:vi.fn(),deleteAllOrders:mocks.deleteAllOrders,patchOrder:mocks.patchOrder,
   schedulePi:mocks.schedulePi,listDispatches:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
   readOrderPhoto:vi.fn(),readPi:mocks.readPi,askCopilot:vi.fn(),
@@ -45,6 +45,7 @@ beforeEach(()=>{
   mocks.deletePi.mockResolvedValue({deleted:"PI77",orders:["JO77"]});
   mocks.patchOrder.mockResolvedValue({});
   mocks.nextPiNumber.mockResolvedValue({pi_no:"PI-2026-000001"});
+  mocks.setPlanOverride.mockResolvedValue({});
   mocks.previewPartyTerms.mockResolvedValue({orders:0,pis:[],changing:0,terms:{discount_pct:40}});
   mocks.applyPartyTerms.mockResolvedValue({updated:0,pis:[],terms:{discount_pct:40}});
 });
@@ -423,6 +424,71 @@ describe("tabs stay in step with one another",()=>{
     // Both lists must be re-read, not just the PI list this screen owns.
     await waitFor(()=>expect(mocks.listOrders.mock.calls.length).toBeGreaterThan(ordersBefore));
     await waitFor(()=>expect(mocks.listDispatches.mock.calls.length).toBeGreaterThan(dispatchesBefore));
+  });
+});
+
+/* The plan is automatic, but the planner outranks it. These assert the whole
+   loop: the control exists, it writes the override, and the recomputed board
+   moves — an override that is stored but never reaches the plan is worthless. */
+describe("the production plan can be overruled by hand",()=>{
+  const twoOrders=[
+    {order_no:"JOA",order_date:"2026-08-22",article_code:"SPIKE",priority:2,party:"Buyer A",
+     lines:[{combo:"7X10S",qty:2400}],pi:{},plan_override:{},version:1},
+    {order_no:"JOB",order_date:"2026-08-22",article_code:"SPIKE",priority:2,party:"Buyer B",
+     lines:[{combo:"7X10S",qty:2400}],pi:{},plan_override:{},version:1},
+  ];
+
+  it("sends an order to the front of the queue and re-plans the board",async()=>{
+    // A faithful fake of the server: the override is stored and comes back on
+    // the next read, which is what makes the board settle on the new plan.
+    let rows=twoOrders.map(o=>({...o}));
+    mocks.listOrders.mockImplementation(async()=>rows);
+    mocks.setPlanOverride.mockImplementation(async(no,ov)=>{
+      rows=rows.map(o=>o.order_no===no?{...o,plan_override:ov}:o); return {};
+    });
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Schedule"}));
+
+    // Rows are drawn in queue order, so the Adjust buttons ARE the queue.
+    const queue=()=>screen.getAllByRole("button",{name:/Adjust the plan for/})
+      .map(b=>b.getAttribute("aria-label").replace("Adjust the plan for ",""));
+    // Same priority and same date, so the order number decides: JOA runs first.
+    expect(queue()).toEqual(["JOA","JOB"]);
+
+    await user.click(screen.getByRole("button",{name:"Adjust the plan for JOB"}));
+    await user.click(await screen.findByRole("button",{name:"Run first"}));
+
+    await waitFor(()=>expect(mocks.setPlanOverride).toHaveBeenCalledWith("JOB",
+      expect.objectContaining({seq:1})));
+    // The board is recomputed from the override, not merely recorded.
+    await waitFor(()=>expect(queue()).toEqual(["JOB","JOA"]));
+    expect(screen.getAllByText("manual").length).toBe(1);
+  });
+
+  it("carries out a forced stage duration and prints what it cost",async()=>{
+    mocks.listOrders.mockResolvedValue([{...twoOrders[0],
+      lines:[{combo:"7X10S",qty:20000}], plan_override:{days:{CUTTING:1}}}]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Schedule"}));
+
+    // The consequence is stated on the board itself, not buried in a console.
+    expect(await screen.findByText(/manual planning instruction/)).toBeInTheDocument();
+    expect(screen.getByText(/CUTTING pinned to 1 day/)).toBeInTheDocument();
+    // …and it is a WARNING, not a refusal: the red schedule-problem banner,
+    // which fires on a genuinely broken plan, must stay silent.
+    expect(screen.queryByText(/over capacity/)).not.toBeInTheDocument();
+  });
+
+  it("hands an order back to the automatic planner",async()=>{
+    mocks.listOrders.mockResolvedValue([{...twoOrders[0],plan_override:{seq:1}},twoOrders[1]]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Schedule"}));
+    await user.click(await screen.findByRole("button",{name:"Adjust the plan for JOA"}));
+    await user.click(await screen.findByRole("button",{name:/Clear all overrides/}));
+    await waitFor(()=>expect(mocks.setPlanOverride).toHaveBeenCalledWith("JOA",{}));
   });
 });
 

@@ -23,6 +23,10 @@ const row = r => ({
   party: r.party,
   lines: r.lines,
   pi: r.pi,
+  // Manual planning instructions for this order. The browser feeds them
+  // straight back into compute(), so an override that is not mapped here is an
+  // override the plan never sees.
+  plan_override: r.plan_override || {},
   version: r.version,
 });
 
@@ -67,7 +71,7 @@ function validate(o, INPUTS){
 export default wrap(async (req, res) => {
   if(req.method === "GET"){
     const { rows } = await q(
-      `select order_no, order_date, article_code, priority, party, lines, pi
+      `select order_no, order_date, article_code, priority, party, lines, pi, plan_override
          , version from orders where active order by order_no`);
     return res.status(200).json(rows.map(row));
   }

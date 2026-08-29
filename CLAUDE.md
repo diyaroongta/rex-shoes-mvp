@@ -32,6 +32,27 @@ calculation goes in `shared/` with a test, and the component calls it.
 Everything reads from the **orders** table. Schedule, procurement, machine load and
 dispatch all derive from it. Nothing else is visible to the planner.
 
+**The plan is automatic; the planner outranks it.** Each order carries a
+`plan_override` blob (`orders.plan_override`), fed into `compute()` as
+`opts.overrides`. Four things can be forced, all optional:
+
+| Field | Means |
+|---|---|
+| `seq` | queue POSITION, not a score — `1` runs first, `2` runs second |
+| `start_on` | pin the release date, in either direction |
+| `machine` | `{STAGE: WORK_CENTRE}` — which machine a stage runs on |
+| `days` | `{STAGE: n}` — finish that stage in exactly n days |
+
+**Nothing here is ever refused.** A stage pinned to one day gets one day even
+when that needs 9,000 pairs from a 2,500-pair line; the engine carries it out
+and returns the cost in `plan_warnings`. A day overbooked *because it was told
+to* is recorded in `forced_load` and is deliberately NOT a
+`schedule_problem` — leaving it in both lit the red "broken plan" banner on
+every deliberate override. Because the whole plan is recomputed from the
+overrides, procurement, machine load, SLA and the dashboard all move together;
+nothing is patched onto a stale schedule. Clearing the blob to `{}` hands the
+order back to the automatic planner.
+
 ---
 
 ## Layout
@@ -168,6 +189,9 @@ Each of these was a real bug found in production. Most have a regression test no
 | Reading a colour as a duplicate row | The client's BOM sheet has a COLOUR column per material. Read as one material, `REXINE-54" BLACK` and `REXINE-54" blue` were "duplicate BOM material" and the whole upload was rejected. Colour belongs to material identity. |
 | Losing a column to its own heading | The shipped template writes `Size Run (optional)`; the header key kept `optional`, so the column was ignored. `key()` now strips it. |
 | A hard-coded default colour | The PI screen started every order at sole colour "Black" — invented factory data on every invoice. It starts empty; the article master supplies the real colour. |
+| An override the plan never saw | `plan_override` was added to the schema, selected by both order endpoints and stored correctly — then dropped by the list endpoint's `row()` mapper, so the browser fed `{}` back into `compute()` every time. A column is not wired until something asserts it arrives. |
+| A queue position treated as a score | `seq` must be a POSITION in the natural queue. Sorting by `seq ?? Infinity` made "run this fifth" jump ahead of every un-pinned order, so the one control meant to push work later pulled it earlier. |
+| Re-planning reissuing the invoice | Patching an order bumps the PI revision. A queue position is a shop-floor decision, so an override-only patch skips that — otherwise moving a job up the board filled the commercial audit trail with scheduling noise. |
 | Reading a fraction bar as a range joiner | The slip stacks its entries: `11X13` over `4` is the range with 4 cartons, `11` over `2` is size 11 with 2 cartons. The reader's own prompt offered `12/1` as an example of a size-pair, which is what a stacked `11/2` looks like transcribed flat — so stacks became pairs and pairs became stacks. Only `X`, `×`, `\|` or `-` join two sizes; **a bar with a number beneath it is always size-over-cartons**, and the top of a stack is often itself a range. |
 | Merging every unresolved line into one | `mergeSpecific` matched on `line.combo === incoming.combo`, and `null === null` — so three separate stacks (11, 2, 6) arrived as a single row labelled "11s, 2, 6" carrying 12.75 cartons, the sum divided by one size's packing rate. An unresolved size is precisely one that cannot be keyed, so it can never merge. |
 | Letting the closure switch off the size run | The ascending Small-then-Large inference only ran when no V/L had been read. Knowing a line was Velcro says nothing about whether its numerals are the kids run or the adult repeat, so a sheet that named its closure never spelled a single size `11s`, and its ranges came back for the clerk to pick by hand. |

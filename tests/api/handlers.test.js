@@ -668,6 +668,80 @@ describe("per-PI prices",()=>{
   });
 });
 
+/* A manual planning override is a SHOP-FLOOR decision, not a commercial one.
+   It is stored on the order, validated against the live work-centre list, and
+   must not reissue the invoice — bumping the PI revision every time somebody
+   moved a job up the queue would have filled the commercial audit trail with
+   scheduling noise. */
+describe("manual planning overrides",()=>{
+  const setup=()=>{
+    const current={order_no:"JO1",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,
+      party:"Buyer",lines:[{combo:"1X2",qty:12}],pi:{pi_no:"PI1",revision:3},plan_override:{},version:0};
+    const live={articles:{CUSTOM:{combos:{"1X2":{}},combo_order:["1X2"]}},
+      workcenters:{CUTTING:{stage:"CUTTING"},MOLDING_PU:{stage:"MOLDING"}}};
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from orders where order_no")) return {rows:[current]};
+      if(t.includes("reference_data")) return {rows:[{value:live}]};
+      return {rows:[]};
+    });
+    const client={query:vi.fn(async sql=>String(sql).startsWith("update orders")
+      ?{rows:[{...current,version:1}]}:{rows:[]}),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    return client;
+  };
+
+  it("stores a normalised override and leaves the PI revision alone",async()=>{
+    const client=setup();
+    const res=response();
+    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+      body:{plan_override:{seq:"2",start_on:"2026-09-01",days:{CUTTING:3},
+                           machine:{MOLDING:"MOLDING_PU"},junk:"ignored"}}},res);
+    expect(res.statusCode).toBe(200);
+    const call=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"));
+    const written=JSON.parse(call[1][0]);
+    expect(written).toEqual({seq:2,start_on:"2026-09-01",days:{CUTTING:3},machine:{MOLDING:"MOLDING_PU"}});
+    // Re-planning must not touch the commercial record.
+    expect(String(call[0])).not.toContain("pi =");
+    // syncPiMaster still runs — the master must mirror the order rows — but the
+    // revision lock that REISSUES the invoice must not.
+    expect(client.query.mock.calls.some(([s])=>
+      String(s).includes("select revision from proforma_invoices"))).toBe(false);
+  });
+
+  /* The column was selected and stored but dropped by the list endpoint's row
+     mapper, so every override was written correctly and then invisible to the
+     planner that had to act on it. */
+  it("returns the stored override to the browser",async()=>{
+    const {default:ordersHandler}=await import("../../api/orders/index.js");
+    dbMocks.q.mockImplementation(async sql=>String(sql).includes("from orders where active")
+      ?{rows:[{order_no:"JO1",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"B",
+               lines:[],pi:{},plan_override:{seq:1},version:1}]}:{rows:[]});
+    const res=response();
+    await ordersHandler({method:"GET",url:"/api/orders",query:{}},res);
+    expect(res.body[0].plan_override).toEqual({seq:1});
+  });
+
+  it("refuses a work centre that does not exist, before writing anything",async()=>{
+    setup();
+    const res=response();
+    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+      body:{plan_override:{machine:{MOLDING:"MOLDING_IMAGINARY"}}}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/is not a work centre/);
+  });
+
+  it("hands an order back to the automatic planner with an empty object",async()=>{
+    const client=setup();
+    const res=response();
+    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+      body:{plan_override:{}}},res);
+    expect(res.statusCode).toBe(200);
+    const call=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"));
+    expect(JSON.parse(call[1][0])).toEqual({seq:null,start_on:null,machine:{},days:{}});
+  });
+});
+
 /* Archiving is reversible and is the safe default. Permanent deletion exists
    for a PI raised in error, but must never destroy shipment evidence. */
 describe("PI archive and permanent delete",()=>{

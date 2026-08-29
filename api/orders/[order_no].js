@@ -3,6 +3,7 @@ import { fail, wrap } from "../_lib/http.js";
 import { INPUTS as SEED } from "../../shared/inputs.js";
 import { ensurePiTable, syncPiMaster } from "../_lib/pis.js";
 import { comboSizesForArticle, setReference } from "../../shared/bridge.js";
+import { normalizeOverride } from "../../shared/engine.js";
 
 /* Same reason as the create endpoint: edit an order for an article that was
    uploaded through Data & BOM and seed-based validation would reject it. */
@@ -82,6 +83,20 @@ function validatePatch(body, current, INPUTS){
     }
     out.pi = { ...(current.pi || {}), ...body.pi };
   }
+  /* A manual planning override. The planner deliberately accepts instructions
+     it disagrees with, so this is not the place to argue with the figures —
+     normalizeOverride only drops what the planner cannot read at all (a bad
+     date, a duration below one day), and the warnings come from the engine. */
+  if("plan_override" in body){
+    const raw = body.plan_override;
+    if(raw != null && (typeof raw !== "object" || Array.isArray(raw)))
+      return { err:"plan_override must be an object" };
+    const clean = normalizeOverride(raw);
+    for(const stage of Object.keys(clean.machine))
+      if(!INPUTS.workcenters[clean.machine[stage]])
+        return { err:`plan_override: "${clean.machine[stage]}" is not a work centre` };
+    out.plan_override = clean;
+  }
   if(!Object.keys(out).length) return { err:"nothing to update" };
   return { patch: out };
 }
@@ -92,7 +107,7 @@ export default wrap(async (req, res) => {
 
   if(req.method === "PATCH"){
     const { rows } = await q(
-      `select order_no, order_date, article_code, priority, party, lines, pi, version
+      `select order_no, order_date, article_code, priority, party, lines, pi, plan_override, version
          from orders where order_no = $1 and active`, [order_no]);
     if(!rows.length) return fail(res, 404, `no such order: ${order_no}`);
 
@@ -108,7 +123,11 @@ export default wrap(async (req, res) => {
     try{
       await client.query("begin");
       const livePatch={...patch};
-      const piNo=String(rows[0].pi?.pi_no||"").trim();
+      /* Re-planning is not a commercial event. Bumping the PI revision for a
+         queue position would reissue the invoice every time the shop floor
+         moved a job, so an override-only patch leaves the PI untouched. */
+      const planOnly=Object.keys(patch).length===1&&"plan_override" in patch;
+      const piNo=planOnly?"":String(rows[0].pi?.pi_no||"").trim();
       if(piNo){
         await ensurePiTable(client);
         const {rows:master}=await client.query("select revision from proforma_invoices where pi_no=$1 for update",[piNo]);
@@ -118,10 +137,11 @@ export default wrap(async (req, res) => {
       }
       const cols = Object.keys(livePatch);
       const set  = [...cols.map((c,i) => `${c} = $${i+1}`),"version = version + 1","updated_at = now()"].join(", ");
-      const vals = cols.map(c => (c === "lines" || c === "pi") ? JSON.stringify(livePatch[c]) : livePatch[c]);
+      const vals = cols.map(c => (c === "lines" || c === "pi" || c === "plan_override")
+        ? JSON.stringify(livePatch[c]) : livePatch[c]);
       const { rows: out } = await client.query(
         `update orders set ${set} where order_no = $${cols.length+1} and version = $${cols.length+2}
-         returning order_no, order_date, article_code, priority, party, lines, pi, version`,
+         returning order_no, order_date, article_code, priority, party, lines, pi, plan_override, version`,
         [...vals, order_no, expected]);
       if(!out.length){await client.query("rollback");return fail(res,409,"This order changed in another session. Reload it before saving your edits.");}
       await syncPiMaster(client); await client.query("commit");
