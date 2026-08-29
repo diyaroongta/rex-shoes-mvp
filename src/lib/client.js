@@ -32,6 +32,10 @@ export const listPis         = ()          => j("/api/pis");
    those orders and leave the rest of the PI unscheduled. */
 export const schedulePi      = (pi_no, order_nos) =>
   post("/api/pis", order_nos ? { pi_no, order_nos } : { pi_no });
+/* Release PART of a PI: parts = [{order_no, qty:{combo: pairs}}]. Omitting qty
+   on a part releases everything still owed on that PI order. Each part becomes
+   its own production order, so one PI order can be made in several runs. */
+export const releasePiParts  = (pi_no, parts) => post("/api/pis", { pi_no, parts });
 export const listArchivedPis = ()          => j("/api/pis?archived=1");
 /* Archiving hides a PI and takes its orders off the schedule; restoring puts
    them back. Deleting is permanent and refuses while any order has shipped. */

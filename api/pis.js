@@ -2,6 +2,7 @@ import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
 import { INPUTS as SEED } from "../shared/inputs.js";
+import { remainingForOrder, releasedBySource, buildRunLines, nextRunNo } from "../shared/pi-split.js";
 import { ordersFromPiSnapshot } from "../shared/pi-schedule.js";
 
 async function reference(){
@@ -64,6 +65,79 @@ export default wrap(async (req,res)=>{
     if(!rows.length) return fail(res,404,`no such PI: ${piNo}`);
     const restored=ordersFromPiSnapshot(rows[0].snapshot,await reference());
     if(restored.errors.length) return fail(res,409,restored.errors.join("; "));
+
+    /* RELEASING PART OF A QUANTITY. A large order for one shoe is routinely
+       made in several runs, so a PI order is a CEILING, not the thing that gets
+       scheduled. Each run becomes its own production order carrying
+       `pi.source_order`, and what is still owed is always DERIVED from the runs
+       that exist — never stored, so it cannot drift out of step with them. */
+    const parts=req.body&&req.body.parts;
+    if(parts!=null){
+      if(!Array.isArray(parts)||!parts.length) return fail(res,400,"parts must be a non-empty array");
+      const bySnapshotNo=new Map(restored.orders.map(o=>[o.order_no,o]));
+      const {rows:live}=await q(
+        "select order_no, lines, pi from orders where pi->>'pi_no' = $1 and active",[piNo]);
+      const released=releasedBySource(live,piNo);
+      const runCount={};
+      for(const o of live){
+        const src=String((o.pi||{}).source_order||o.order_no);
+        runCount[src]=(runCount[src]||0)+1;
+      }
+
+      const toCreate=[],errors=[];
+      for(const part of parts){
+        const base=String((part&&part.order_no)||"").trim();
+        const snap=bySnapshotNo.get(base);
+        if(!snap){ errors.push("not part of "+piNo+": "+(base||"(blank)")); continue; }
+        const remaining=remainingForOrder(snap,released[base]||{});
+        // No quantities named for this part means "everything still owed".
+        const want=part.qty&&typeof part.qty==="object"
+          ? part.qty
+          : Object.fromEntries(remaining.lines.map(l=>[l.combo,l.remaining]));
+        const built=buildRunLines(remaining,want);
+        if(built.errors.length){ errors.push(...built.errors); continue; }
+        const runNo=nextRunNo(base,runCount[base]||0);
+        runCount[base]=(runCount[base]||0)+1;
+        toCreate.push({snap,base,runNo,lines:built.lines});
+      }
+      if(errors.length) return fail(res,400,errors.join("; "));
+      if(!toCreate.length) return fail(res,400,"nothing was selected to release");
+
+      const client=await db().connect();
+      const created=[];
+      try{
+        await client.query("begin");
+        for(const {snap,base,runNo,lines} of toCreate){
+          const pi={...snap.pi,pi_no:piNo,source_order:base,
+            production_status:snap.pi.production_status||"produced"};
+          const {rows:made}=await client.query(
+            "insert into orders (order_no, order_date, article_code, priority, party, lines, pi)"
+            +" values ($1,$2,$3,$4,$5,$6,$7) on conflict (order_no) do nothing returning order_no",
+            [runNo,snap.order_date,snap.article_code,snap.priority,snap.party,
+             JSON.stringify(lines),JSON.stringify(pi)]);
+          if(made.length) created.push({order_no:made[0].order_no,source_order:base,
+            pairs:lines.reduce((a,l)=>a+l.qty,0)});
+        }
+        await client.query(`select setval('order_no_seq', greatest(
+          (select last_value from order_no_seq),
+          coalesce((select max(substring(order_no from '([0-9]+)$')::bigint)
+                      from orders where order_no ~ '[0-9]+$'),2000)), true)`);
+        await syncPiMaster(client);
+        await client.query("commit");
+      }catch(e){await client.query("rollback");throw e;}
+      finally{client.release();}
+
+      /* What is STILL owed, recomputed from the rows that now exist, so the
+         caller never has to guess whether more can be released. */
+      const {rows:after}=await q(
+        "select order_no, lines, pi from orders where pi->>'pi_no' = $1 and active",[piNo]);
+      const now=releasedBySource(after,piNo);
+      const outstanding=restored.orders
+        .map(o=>remainingForOrder(o,now[o.order_no]||{}))
+        .filter(r=>r.remaining>0)
+        .map(r=>({order_no:r.order_no,article_code:r.article_code,remaining:r.remaining}));
+      return res.status(200).json({pi_no:piNo,created,outstanding,partial:true});
+    }
 
     /* PARTIAL SCHEDULING. A PI often carries several articles and the factory
        is ready to start only some of them — the rest are waiting on material,

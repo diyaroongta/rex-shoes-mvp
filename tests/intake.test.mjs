@@ -203,4 +203,55 @@ assert.ok(readPrompt().includes("THE TOP OF A STACK IS OFTEN A RANGE"));
 assert.ok(readPrompt().includes('"sizes":["7","10"],"cartons":5'),
   "the reader is shown a worked slip that mixes ranges and single sizes");
 
+/* ---- K.P. Gurgaon, "Spike N.Blue/S.Blue" --------------------------------
+   The slip writes two ROWS of columns under one product, the second marked
+   "(2)", each with its own subtotal and a grand total of 14 CTN:
+
+       10  12  13  1  3  4  5   = 9        (2)  6  8  10  11   = 5
+        1   1   2  2  1  1  1                   2  1   1   1        = 14 CTN
+
+   1. Eleven columns are eleven lines. "(2)" is the second LOT of the same
+      Spike, not a second customer — the reader used to drop that whole row.
+   2. Cartons are ADDED, never re-derived. 11X1 holds 12s and 13s at 24 to a
+      carton and size 1 at 18, so 1+2+2 = 5 written cartons came back as
+      108 pairs / 24 = 4.5, and the sheet's own total stopped adding up.
+   3. The stated total is CHECKED, because a dropped row otherwise produces
+      lines that each look perfectly reasonable. */
+const kpLines=[
+  {sizes:["10"],cartons:1},{sizes:["12"],cartons:1},{sizes:["13"],cartons:2},
+  {sizes:["1"],cartons:2},{sizes:["3"],cartons:1},{sizes:["4"],cartons:1},{sizes:["5"],cartons:1},
+  {sizes:["6"],cartons:2},{sizes:["8"],cartons:1},{sizes:["10"],cartons:1},{sizes:["11"],cartons:1},
+];
+const kp=buildPhotoCards({orders:[{party:"K.P. Gurgaon",category:"Spike",
+  color:"N.Blue / S.Blue",stated_cartons:14,lines:kpLines}]},INPUTS);
+assert.deepEqual(kp.issues,[],kp.issues.join(" | "));
+const kpCard=kp.cards[0];
+assert.equal(kpCard.lines.reduce((a,l)=>a+Number(l.cartons),0),14,
+  "the cartons the slip wrote must survive to the card — they are counted, not re-derived");
+const oneToOne=kpCard.lines.find(l=>l.combo==="11X1");
+assert.equal(oneToOne.cartons,5,"1 + 2 + 2 written cartons is 5, whatever the sizes pack at");
+assert.deepEqual(oneToOne.sizes,{"12s":24,"13s":48,"1":36},
+  "each size still uses its OWN packing rate for pairs: 24, 24, and 18");
+// The same numeral in both runs is two different sizes, and both are kept.
+assert.ok(kpCard.lines.some(l=>l.sizes&&l.sizes["10s"]),"the Small 10 from the first row");
+assert.ok(kpCard.lines.some(l=>l.sizes&&l.sizes["10"]), "the Large 10 from the second row");
+
+/* THE CHECKSUM EARNS ITS KEEP. Drop the second lot, exactly as the reader did,
+   and the lines that remain are individually plausible — only the total says
+   the read is short. */
+const dropped=buildPhotoCards({orders:[{party:"K.P. Gurgaon",category:"Spike",
+  color:"N.Blue / S.Blue",stated_cartons:14,lines:kpLines.slice(0,7)}]},INPUTS);
+assert.ok(dropped.issues.some(i=>i.includes("totals 14 cartons but only 9")),
+  "a dropped row must be caught by the sheet's own total: "+dropped.issues.join(" | "));
+// With no total written there is nothing to check, and nothing is invented.
+const noTotal=buildPhotoCards({orders:[{party:"K.P. Gurgaon",category:"Spike",
+  color:"N.Blue / S.Blue",lines:kpLines.slice(0,7)}]},INPUTS);
+assert.deepEqual(noTotal.issues,[],"no stated total means no checksum, not a guessed one");
+
+assert.ok(readPrompt().includes("A BARE NUMBER IN BRACKETS IS NOT A CUSTOMER"),
+  "a row headed (2) is the second lot of the product above, not a new party");
+assert.ok(readPrompt().includes("A ROW OF COLUMNS IS THE SAME THING, REPEATED"));
+assert.ok(readPrompt().includes('"stated_cartons"'),
+  "the reader must hand back the total so the app can check it independently");
+
 console.log("  pass  photo stacks retain exact sizes, type and packing rate; unknown articles are blocked\n");

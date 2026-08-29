@@ -11,12 +11,13 @@ const mocks=vi.hoisted(()=>({
   listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),setPlanOverride:vi.fn(),
+  releasePiParts:vi.fn(),
 }));
 
 vi.mock("../../src/lib/client.js",()=>({
   ...mocks,
   setPriority:vi.fn(),setPlanOverride:mocks.setPlanOverride,deleteOrder:vi.fn(),deleteAllOrders:mocks.deleteAllOrders,patchOrder:mocks.patchOrder,
-  schedulePi:mocks.schedulePi,listDispatches:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
+  schedulePi:mocks.schedulePi,releasePiParts:mocks.releasePiParts,listDispatches:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
   readOrderPhoto:vi.fn(),readPi:mocks.readPi,askCopilot:vi.fn(),
 }));
@@ -46,6 +47,7 @@ beforeEach(()=>{
   mocks.patchOrder.mockResolvedValue({});
   mocks.nextPiNumber.mockResolvedValue({pi_no:"PI-2026-000001"});
   mocks.setPlanOverride.mockResolvedValue({});
+  mocks.releasePiParts.mockResolvedValue({created:[],outstanding:[]});
   mocks.previewPartyTerms.mockResolvedValue({orders:0,pis:[],changing:0,terms:{discount_pct:40}});
   mocks.applyPartyTerms.mockResolvedValue({updated:0,pis:[],terms:{discount_pct:40}});
 });
@@ -172,56 +174,61 @@ describe("critical UI contracts",()=>{
     expect(mocks.listParties.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("links a PI database snapshot to the schedule only through the explicit action",async()=>{
-    mocks.listPis.mockResolvedValue([{pi_no:"PI77",pi_date:"2026-08-22",party:"Buyer",status:"produced",revision:0,
-      snapshot:{orders:[{order_no:"JO77",order_date:"2026-08-22",article_code:"SPIKE",party:"Buyer",priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI77"}}]}}]);
+  /* RELEASING PART OF A QUANTITY. A large order for one shoe is made in
+     several runs, so a PI order is a ceiling and each release is its own
+     production order. Asking "is it on the schedule" answered yes while half
+     the pairs had never been made. */
+  const piWith=(pi_no,lines)=>({pi_no,pi_date:"2026-08-22",party:"Buyer",status:"produced",revision:0,
+    snapshot:{orders:[{order_no:"JO77",order_date:"2026-08-22",article_code:"SPIKE",
+      party:"Buyer",priority:2,lines,pi:{pi_no}}]}});
+
+  it("releases only part of a quantity and keeps the rest owed", async()=>{
+    mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:2400,label:"7X10S"}])]);
+    mocks.releasePiParts.mockResolvedValue({created:[{order_no:"JO77",pairs:600}],
+      outstanding:[{order_no:"JO77",article_code:"SPIKE",remaining:1800}],partial:true});
     const user=userEvent.setup();
     render(<App/>);
     await user.click(await screen.findByRole("button",{name:"PI database"}));
-    // One article on the PI, so there is nothing to choose between.
-    await user.click(await screen.findByRole("button",{name:"Add to schedule"}));
-    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI77",undefined));
-    expect(await screen.findByText(/1 order added to the production schedule/)).toBeInTheDocument();
+    // The button offers the pairs still owed, not "is this linked".
+    await user.click(await screen.findByRole("button",{name:"Release production runs for PI77"}));
+
+    const box=await screen.findByLabelText("Pairs of 7X10S to release from JO77");
+    expect(box).toHaveValue(2400);                 // defaults to everything owed
+    await user.clear(box); await user.type(box,"600");
+    await user.click(screen.getByRole("button",{name:/Release 600 pairs/}));
+
+    await waitFor(()=>expect(mocks.releasePiParts).toHaveBeenCalledWith("PI77",
+      [{order_no:"JO77",qty:{"7X10S":600}}]));
+    expect(await screen.findByText(/1,800 pairs still unreleased/)).toBeInTheDocument();
   });
 
-  /* A PI regularly carries several articles and the factory can start only
-     some of them — the rest are waiting on material or on the customer.
-     Releasing all of a PI puts work on the machines that cannot be made. */
-  it("releases only the chosen articles of a multi-article PI",async()=>{
-    const order=(no,art)=>({order_no:no,order_date:"2026-08-22",article_code:art,party:"Buyer",
-      priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI78"}});
-    mocks.listPis.mockResolvedValue([{pi_no:"PI78",pi_date:"2026-08-22",party:"Buyer",
-      status:"produced",revision:0,
-      snapshot:{orders:[order("JO78","SPIKE"),order("JO79","ARMOUR"),order("JO80","JILL")]}}]);
-    mocks.schedulePi.mockResolvedValue({restored:["JO78"],reactivated:[],already_linked:[],
-      skipped:["JO79","JO80"],partial:true});
+  it("counts runs already made, so a half-released PI still offers the balance", async()=>{
+    // 600 of 2400 already on the schedule, as its own production order.
+    mocks.listOrders.mockResolvedValue([{order_no:"JO77",order_date:"2026-08-22",
+      article_code:"SPIKE",priority:2,party:"Buyer",lines:[{combo:"7X10S",qty:600}],
+      pi:{pi_no:"PI77",source_order:"JO77"},plan_override:{},version:1}]);
+    mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:2400,label:"7X10S"}])]);
     const user=userEvent.setup();
     render(<App/>);
     await user.click(await screen.findByRole("button",{name:"PI database"}));
-    await user.click(await screen.findByRole("button",{name:"Schedule 3…"}));
-
-    // Everything is ticked by default; untick the two that cannot start yet.
-    await user.click(screen.getByLabelText("Schedule JO79"));
-    await user.click(screen.getByLabelText("Schedule JO80"));
-    await user.click(screen.getByRole("button",{name:"Schedule 1 of 3"}));
-
-    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI78",["JO78"]));
-    // What was NOT released has to be said, or it looks like it was lost.
-    expect(await screen.findByText(/2 left unscheduled/)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button",{name:"Release production runs for PI77"}));
+    expect(await screen.findByLabelText("Pairs of 7X10S to release from JO77")).toHaveValue(1800);
   });
 
-  it("sends no subset when every article is chosen, so the whole PI is released",async()=>{
-    const order=(no,art)=>({order_no:no,order_date:"2026-08-22",article_code:art,party:"Buyer",
-      priority:2,lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI79"}});
-    mocks.listPis.mockResolvedValue([{pi_no:"PI79",pi_date:"2026-08-22",party:"Buyer",
-      status:"produced",revision:0,snapshot:{orders:[order("JO81","SPIKE"),order("JO82","ARMOUR")]}}]);
-    mocks.schedulePi.mockResolvedValue({restored:["JO81","JO82"],reactivated:[],already_linked:[],skipped:[]});
+  it("refuses to release more than is owed", async()=>{
+    mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:100,label:"7X10S"}])]);
     const user=userEvent.setup();
     render(<App/>);
     await user.click(await screen.findByRole("button",{name:"PI database"}));
-    await user.click(await screen.findByRole("button",{name:"Schedule 2…"}));
-    await user.click(screen.getByRole("button",{name:"Schedule 2 of 2"}));
-    await waitFor(()=>expect(mocks.schedulePi).toHaveBeenCalledWith("PI79",undefined));
+    await user.click(await screen.findByRole("button",{name:"Release production runs for PI77"}));
+    const box=await screen.findByLabelText("Pairs of 7X10S to release from JO77");
+    await user.clear(box); await user.type(box,"500");
+    expect(screen.getByText(/More than is owed/)).toBeInTheDocument();
+    // The release button is disabled, so an over-release cannot be sent at all.
+    const go=screen.getByRole("button",{name:/^Release \d/});
+    expect(go).toBeDisabled();
+    await user.click(go);
+    expect(mocks.releasePiParts).not.toHaveBeenCalled();
   });
 
   /* The schedule is computed from the capacities saved in settings. The

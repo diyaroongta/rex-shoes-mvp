@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { compute, fromDay, dayIndex, queueOrder } from "../shared/engine.js";
+import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
@@ -1340,7 +1341,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   </div>; })()}
                 {l.sizes && <div className="col-span-full flex gap-2 flex-wrap rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5">
                   <span className="text-xs text-slate-500 self-center">Cartons and calculated pairs by size:</span>
-                  {Object.entries(l.sizes).map(([size,qty])=>{const sizeCartons=Number(l.ppc)?+(Number(qty)/Number(l.ppc)).toFixed(4):0;
+                  {Object.entries(l.sizes).map(([size,qty])=>{
+                    /* EACH SIZE'S OWN RATE. Sizes inside one range do not all
+                       pack alike — on SPIKE's 11X1, 12s and 13s go 24 to a
+                       carton and size 1 goes 18 — so dividing by the LINE's
+                       rate showed the clerk "1.5 ctn" where the slip plainly
+                       said 2. */
+                    const sizePpc=Number(singlePackQty(c.article,size,l.type||c.vl,l.combo))||Number(l.ppc)||0;
+                    const sizeCartons=sizePpc?+(Number(qty)/sizePpc).toFixed(4):0;
                     const options=l.size_order||comboSizesForArticle(c.article,l.combo);
                     return <label key={size} className="text-xs text-slate-500">
                     {/* The size itself, not just its quantity. Correcting a
@@ -1355,12 +1363,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     <input type="number" min="0" step="any" value={sizeCartons} aria-label={`${c.article} size ${size} cartons`}
                       onChange={e=>{
                         const cartons=Math.max(0,Number(e.target.value)||0);
-                        const next={...l.sizes,[size]:Number(l.ppc)?cartons*Number(l.ppc):0};
+                        const next={...l.sizes,[size]:sizePpc?cartons*sizePpc:0};
                         const pairs=Object.values(next).reduce((a,b)=>a+(Number(b)||0),0);
                         setLine(i,k,{sizes:next,qty:pairs,cartons:l.ppc?+(pairs/Number(l.ppc)).toFixed(4):l.cartons});
                       }}
                       className="block w-20 text-sm border border-slate-300 rounded px-1.5 py-0.5 mono bg-white" />
-                    <span className="mono block mt-0.5" style={{fontSize:9}}>{sizeCartons} ctn × {l.ppc||0} = <b>{fmt(qty)} pairs</b></span>
+                    <span className="mono block mt-0.5" style={{fontSize:9}}>{sizeCartons} ctn × {sizePpc||0} = <b>{fmt(qty)} pairs</b></span>
                   </label>})}
                 </div>}
               </div>))}
@@ -1662,24 +1670,34 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
     .then(([rows,cfg])=>{setPis(rows);setSettings(cfg||{});})
     .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[showArchived]);
   if(!pis) return <div className="text-sm text-slate-500">Loading the PI master…</div>;
-  const liveOrderNos=new Set((orders||[]).map(o=>o.order_no));
+  /* WHAT IS STILL OWED, not what is absent. A PI order released in two runs
+     has a production order against it from the first run, so asking "is it on
+     the schedule" answers yes while half the pairs have never been made. The
+     remainder is derived from the runs that exist. */
+  const outstandingFor=pi=>remainingForPi(
+    (pi.snapshot&&pi.snapshot.orders)||[], orders||[], pi.pi_no);
+  /* A PI order can have several production runs against it, so it is "on the
+     schedule" when ANY run exists — not when a row carries its own number. */
+  const runsFor=sourceNo=>(orders||[]).filter(o=>sourceOrderOf(o)===sourceNo);
   /* orderNos omitted = release the whole PI. Passing a subset releases only
      those articles and leaves the rest of the PI where it is, ready to be
      released later — the factory is regularly able to start one article of a
      PI while another waits on material. */
-  async function linkToSchedule(piNo, orderNos){
+  /* Release production runs. `parts` is [{order_no, qty:{combo: pairs}}] — one
+     production order per part, so the same shoe can be made in several runs. */
+  async function releaseRuns(piNo, parts){
     setLinking(piNo);setErr("");setMsg("");
     try{
-      const result=await api.schedulePi(piNo, orderNos);
+      const result=await api.releasePiParts(piNo, parts);
       if(onScheduled) await onScheduled();
       await reloadPis();
       setReleasing(null); setPicked({});
-      const count=(result.restored||[]).length+(result.reactivated||[]).length;
-      const left=(result.skipped||[]).length;
-      setMsg(count
-        ? `${piNo}: ${count} order${count===1?"":"s"} added to the production schedule.`
-          + (left?` ${left} left unscheduled — release ${left===1?"it":"them"} whenever you are ready.`:"")
-        : `${piNo} is already linked to the production schedule.`);
+      const made=result.created||[];
+      const pairs=made.reduce((a,c)=>a+(Number(c.pairs)||0),0);
+      const left=(result.outstanding||[]).reduce((a,o)=>a+(Number(o.remaining)||0),0);
+      setMsg(`${piNo}: ${made.length} production order${made.length===1?"":"s"} `
+        + `(${fmt(pairs)} pairs) added to the schedule — ${made.map(m=>m.order_no).join(", ")}.`
+        + (left?` ${fmt(left)} pairs still unreleased on this PI.`:" This PI is now fully released."));
     }catch(e){setErr(e.message||String(e));}
     finally{setLinking("");}
   }
@@ -1716,7 +1734,10 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
           <th className="text-left">Articles</th><th className="text-right">Pairs</th><th className="text-center">Revision</th>
           <th className="text-left">Status</th><th className="text-left">Materials</th><th className="text-left">Schedule</th><th></th>
         </tr></thead>
-        <tbody>{pis.map(p=>{const os=(p.snapshot&&p.snapshot.orders)||[];const missing=os.filter(o=>!liveOrderNos.has(o.order_no));return <tr key={p.pi_no} className="border-t border-slate-100">
+        <tbody>{pis.map(p=>{const os=(p.snapshot&&p.snapshot.orders)||[];
+          const owed=outstandingFor(p);
+          const owedPairs=owed.reduce((a,r)=>a+r.remaining,0);
+          return <tr key={p.pi_no} className="border-t border-slate-100">
           <td className="py-2 mono font-semibold">{p.pi_no}</td><td className="mono text-slate-600">{p.pi_date}</td>
           <td>{p.party||"—"}</td><td className="text-xs text-slate-600">{[...new Set(os.map(o=>o.article_code))].join(", ")}</td>
           <td className="text-right mono">{fmt(os.reduce((a,o)=>a+(o.lines||[]).reduce((b,l)=>b+(Number(l.qty)||0),0),0))}</td>
@@ -1732,21 +1753,18 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
               className="text-xs font-semibold text-orange-800 border border-orange-300 bg-orange-50 rounded-lg px-2 py-0.5">
               {g.short_count} short</button>;
           })()}</td>
-          <td>{missing.length
-            ? (missing.length===1
-                ? <button disabled={linking===p.pi_no} onClick={()=>linkToSchedule(p.pi_no)}
-                    className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
-                    {linking===p.pi_no?"Linking…":"Add to schedule"}</button>
-                /* More than one article on the PI, so ASK which. Releasing all
-                   of a PI whose second article is waiting on material puts work
-                   on the machines that cannot actually be made. */
-                : <button disabled={linking===p.pi_no}
-                    onClick={()=>{ const open=releasing===p.pi_no;
-                      setReleasing(open?null:p.pi_no);
-                      setPicked(open?{}:Object.fromEntries(missing.map(o=>[o.order_no,true]))); }}
-                    className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
-                    {linking===p.pi_no?"Linking…":`Schedule ${missing.length}…`}</button>)
-            : <span className="text-xs font-semibold text-emerald-700">Linked</span>}</td>
+          {/* Owed pairs, not "is it on the schedule". A PI half-released still
+              has work to send, and the old existence check called it Linked. */}
+          <td>{owedPairs>0
+            ? <button disabled={linking===p.pi_no}
+                aria-label={`Release production runs for ${p.pi_no}`}
+                onClick={()=>{ const open=releasing===p.pi_no;
+                  setReleasing(open?null:p.pi_no);
+                  setPicked(open?{}:Object.fromEntries(owed.flatMap(r=>
+                    r.lines.filter(l=>l.remaining>0).map(l=>[`${r.order_no}|${l.combo}`,String(l.remaining)])))); }}
+                className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
+                {linking===p.pi_no?"Releasing…":`Release ${fmt(owedPairs)} pr…`}</button>
+            : <span className="text-xs font-semibold text-emerald-700">Fully released</span>}</td>
           <td className="text-right whitespace-nowrap">
             <button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button>
             {showArchived
@@ -1765,34 +1783,70 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
       </table>}
       {releasing && (()=>{
         const pi=pis.find(x=>x.pi_no===releasing);
-        const missing=((pi&&pi.snapshot&&pi.snapshot.orders)||[]).filter(o=>!liveOrderNos.has(o.order_no));
-        const chosen=missing.filter(o=>picked[o.order_no]).map(o=>o.order_no);
+        if(!pi) return null;
+        const owed=outstandingFor(pi).filter(r=>r.remaining>0);
+        const key=(o,c)=>`${o}|${c}`;
+        const asked=(o,c)=>Math.max(0,Math.round(Number(picked[key(o,c)])||0));
+        const parts=owed.map(r=>({order_no:r.order_no,
+          qty:Object.fromEntries(r.lines.filter(l=>l.remaining>0&&asked(r.order_no,l.combo)>0)
+            .map(l=>[l.combo,Math.min(asked(r.order_no,l.combo),l.remaining)]))}))
+          .filter(pt=>Object.keys(pt.qty).length);
+        const totalAsked=parts.reduce((a,pt)=>a+Object.values(pt.qty).reduce((x,y)=>x+y,0),0);
+        const over=owed.flatMap(r=>r.lines.filter(l=>asked(r.order_no,l.combo)>l.remaining)
+          .map(l=>`${r.order_no} ${l.combo}`));
         return <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50/70 px-3 py-3">
           <div className="text-sm font-semibold text-amber-900 mb-1">Release {releasing} into production</div>
           <p className="text-xs text-amber-900 mb-2 leading-relaxed">
-            Tick only what the factory is ready to start. Anything left unticked stays on the PI and
-            can be released later — nothing is lost, and the invoice is not changed either way.
+            Enter how many pairs of each size range to make <b>now</b>. A large order is normally
+            made in several runs, so each release becomes its own production order that schedules
+            and dispatches on its own. Anything you leave behind stays on the PI and can be
+            released later — the invoice is not changed either way.
           </p>
-          <div className="space-y-1 mb-2">
-            {missing.map(o=>{
-              const pairs=(o.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0);
-              return <label key={o.order_no} className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={!!picked[o.order_no]}
-                  aria-label={`Schedule ${o.order_no}`}
-                  onChange={e=>setPicked(x=>({...x,[o.order_no]:e.target.checked}))} />
-                <span className="mono font-semibold">{o.order_no}</span>
-                <span>{o.article_code}</span>
-                <span className="mono text-slate-500">{fmt(pairs)} pr</span>
-              </label>;})}
+          <div className="overflow-x-auto">
+            <table className="text-xs" style={{borderCollapse:"collapse",minWidth:520}}>
+              <thead><tr className="text-slate-600">
+                <th className="text-left py-1 pr-3">Article</th>
+                <th className="text-left py-1 pr-3">Size range</th>
+                <th className="text-right py-1 pr-3">On the PI</th>
+                <th className="text-right py-1 pr-3">Already made</th>
+                <th className="text-right py-1 pr-3">Still owed</th>
+                <th className="text-left py-1">Release now</th>
+              </tr></thead>
+              <tbody>
+                {owed.flatMap(r=>r.lines.filter(l=>l.remaining>0).map((l,li)=>(
+                  <tr key={key(r.order_no,l.combo)} style={{borderTop:"1px solid #f3d8bd"}}>
+                    <td className="py-1 pr-3">{li===0?<><span className="mono font-semibold">{r.order_no}</span> {r.article_code}</>:""}</td>
+                    <td className="py-1 pr-3 mono">{l.combo}</td>
+                    <td className="py-1 pr-3 text-right mono text-slate-500">{fmt(l.ordered)}</td>
+                    <td className="py-1 pr-3 text-right mono text-slate-500">{fmt(l.released)}</td>
+                    <td className="py-1 pr-3 text-right mono font-semibold">{fmt(l.remaining)}</td>
+                    <td className="py-1">
+                      <input type="number" min="0" max={l.remaining} step="1"
+                        aria-label={`Pairs of ${l.combo} to release from ${r.order_no}`}
+                        value={picked[key(r.order_no,l.combo)]??""}
+                        onChange={e=>setPicked(x=>({...x,[key(r.order_no,l.combo)]:e.target.value}))}
+                        className="w-24 border rounded px-1.5 py-0.5 bg-white mono"
+                        style={{fontSize:11,borderColor:asked(r.order_no,l.combo)>l.remaining?"#dc2626":"#cbd5e1"}} />
+                    </td>
+                  </tr>)))}
+              </tbody>
+            </table>
           </div>
-          <div className="flex gap-2 flex-wrap items-center">
-            <button disabled={!chosen.length||linking===releasing}
-              onClick={()=>linkToSchedule(releasing, chosen.length===missing.length?undefined:chosen)}
+          <div className="flex gap-2 flex-wrap items-center mt-2">
+            <button disabled={!parts.length||!!over.length||linking===releasing}
+              onClick={()=>releaseRuns(releasing,parts)}
               className="text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-40">
-              {linking===releasing?"Scheduling…":`Schedule ${chosen.length} of ${missing.length}`}</button>
+              {linking===releasing?"Releasing…":`Release ${fmt(totalAsked)} pairs`}</button>
+            <button onClick={()=>setPicked(Object.fromEntries(owed.flatMap(r=>
+                r.lines.filter(l=>l.remaining>0).map(l=>[key(r.order_no,l.combo),String(l.remaining)]))))}
+              className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">All remaining</button>
+            <button onClick={()=>setPicked({})}
+              className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">None</button>
             <button onClick={()=>{setReleasing(null);setPicked({});}}
               className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Cancel</button>
-            {!chosen.length && <span className="text-xs text-amber-900">Tick at least one article.</span>}
+            {!!over.length && <span className="text-xs font-semibold text-rose-700">
+              More than is owed on {over.join(", ")}.</span>}
+            {!over.length && !parts.length && <span className="text-xs text-amber-900">Enter a quantity on at least one range.</span>}
           </div>
         </div>;
       })()}
@@ -1846,13 +1900,18 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
         <button onClick={()=>window.print()} className="ml-auto text-xs font-semibold border border-slate-300 rounded-lg px-3 py-1.5 bg-white">Print / save PDF</button></div>
       <div data-noprint className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 mb-3">
         <div className="text-xs font-semibold text-slate-700 mb-2">Orders on this PI — editable after issue</div>
-        <div className="flex gap-2 flex-wrap">{saved.map(o=>liveOrderNos.has(o.order_no)?<button key={o.order_no}
-          onClick={()=>setEditingOrder(editingOrder===o.order_no?null:o.order_no)}
-          className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-1.5 bg-white text-indigo-700">
-          {editingOrder===o.order_no?"Close editor":`Edit ${o.order_no} · ${o.article_code}`}
-        </button>:<span key={o.order_no} className="text-xs border border-amber-200 rounded-lg px-3 py-1.5 bg-amber-50 text-amber-800">
-          {o.order_no} · add to schedule before editing
-        </span>)}</div>
+        <div className="flex gap-2 flex-wrap">{saved.flatMap(o=>{
+          const runs=runsFor(o.order_no);
+          if(!runs.length) return [<span key={o.order_no} className="text-xs border border-amber-200 rounded-lg px-3 py-1.5 bg-amber-50 text-amber-800">
+            {o.order_no} · release into production before editing</span>];
+          // One button per RUN, so a PI order made in three runs is editable
+          // as the three orders the factory actually has.
+          return runs.map(r=><button key={r.order_no}
+            onClick={()=>setEditingOrder(editingOrder===r.order_no?null:r.order_no)}
+            className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-1.5 bg-white text-indigo-700">
+            {editingOrder===r.order_no?"Close editor":`Edit ${r.order_no} · ${o.article_code}`}
+          </button>);
+        })}</div>
       </div>
       {editingOrder&&<div data-noprint className="mb-4">{saved.filter(o=>o.order_no===editingOrder).map(o=><EditOrder key={o.order_no} o={o}
         onCancel={()=>setEditingOrder(null)}

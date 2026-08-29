@@ -112,7 +112,12 @@ function mergeSpecific(lines, incoming){
   for(const [size, qty] of Object.entries(incoming.sizes))
     existing.sizes[size] = (Number(existing.sizes[size]) || 0) + Number(qty || 0);
   existing.qty = Object.values(existing.sizes).reduce((sum, qty) => sum + Number(qty || 0), 0);
-  existing.cartons = existing.ppc ? +(existing.qty / existing.ppc).toFixed(4) : existing.cartons + incoming.cartons;
+  /* ADD THE CARTONS THE SLIP WROTE. Dividing merged pairs by ONE size's rate
+     re-derives a number the sheet already states, and sizes inside a range do
+     not all pack alike: on SPIKE's 11X1, 12s and 13s pack 24 to a carton and
+     size 1 packs 18, so 1+2+2 = 5 written cartons came back as 108/24 = 4.5
+     and the slip's own "= 14 CTN" no longer added up. */
+  existing.cartons = +(Number(existing.cartons || 0) + Number(incoming.cartons || 0)).toFixed(4);
   existing.raw = [existing.raw, incoming.raw].filter(Boolean).join(", ");
 }
 
@@ -243,6 +248,22 @@ export function buildPhotoCards(parsed, reference){
           size_order: combo ? comboSizesForArticle(article, combo, lineType) : sizes,
         });
         if(!combo) issues.push(`${article} ${type || ""}: ${sizes.join("×")} is not an exact configured size range.`);
+      }
+
+      /* The sheet writes its own carton total ("= 14 CTN"). It is the one
+         independent check on the whole read, so it is CHECKED, not trusted: a
+         reader that drops a whole block of entries produces lines that look
+         perfectly reasonable on their own, and only the total gives it away. */
+      const stated = Number(order.stated_cartons);
+      if(Number.isFinite(stated) && stated > 0){
+        let counted = 0;
+        for(const group of byArticle.values())
+          for(const line of group) counted += Number(line.cartons) || 0;
+        if(Math.abs(counted - stated) > 0.01)
+          issues.push(String(order.category || "this order").trim()
+            + ": the sheet totals " + stated + " cartons but only "
+            + (+counted.toFixed(2)) + " were read. Entries have been missed or misread"
+            + " — check the slip against the lines below before saving.");
       }
 
       for(const [article, lines] of byArticle){
