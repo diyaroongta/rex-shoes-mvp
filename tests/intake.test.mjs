@@ -248,8 +248,27 @@ const noTotal=buildPhotoCards({orders:[{party:"K.P. Gurgaon",category:"Spike",
   color:"N.Blue / S.Blue",lines:kpLines.slice(0,7)}]},INPUTS);
 assert.deepEqual(noTotal.issues,[],"no stated total means no checksum, not a guessed one");
 
-assert.ok(readPrompt().includes("A BARE NUMBER IN BRACKETS IS NOT A CUSTOMER"),
-  "a row headed (2) is the second lot of the product above, not a new party");
+/* THE MARKER ON THAT SECOND ROW IS "(L)" — the LARGE size run — not the
+   number 1 and not a lot number. Handwritten they are nearly identical, and
+   reading it as a customer number is what made the whole row disappear. An
+   explicit group must give the same answer the ascending rule works out on its
+   own, or the two disagree the moment a sheet marks only some of its rows. */
+const kpMarked=buildPhotoCards({orders:[{party:"K.P. Gurgaon",category:"Spike",
+  color:"N.Blue / S.Blue",stated_cartons:14,lines:[
+    ...kpLines.slice(0,7),
+    ...kpLines.slice(7).map(l=>({...l,group:"LARGE"})),
+  ]}]},INPUTS);
+assert.deepEqual(kpMarked.issues,[],kpMarked.issues.join(" | "));
+assert.deepEqual(
+  kpMarked.cards[0].lines.map(l=>[l.combo,l.cartons]),
+  kpCard.lines.map(l=>[l.combo,l.cartons]),
+  "an explicit (L) row must land exactly where the ascending rule already put it");
+
+assert.ok(readPrompt().includes("A MARKER IN BRACKETS AT THE START OF A ROW IS ABOUT THE ROW"),
+  "a bracketed marker describes its row — it never starts a new customer");
+assert.ok(readPrompt().includes("(L), (Lg) or (Big) means that whole row is the Large run"),
+  "a bracketed L is the Large SIZE RUN, not Lace and not the number 1");
+
 assert.ok(readPrompt().includes("A ROW OF COLUMNS IS THE SAME THING, REPEATED"));
 assert.ok(readPrompt().includes('"stated_cartons"'),
   "the reader must hand back the total so the app can check it independently");

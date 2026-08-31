@@ -267,10 +267,17 @@ describe("critical UI contracts",()=>{
     await user.selectOptions(article,"SPIKE");
     expect(screen.getAllByDisplayValue("SPIKE")).toHaveLength(1);
 
-    // The line's range picker lists the WHOLE shoe, each range labelled.
+    // The line's range picker lists the WHOLE shoe, each range labelled with
+    // its closure, its run, and the sizes it actually covers — without those
+    // last two, 8X10 and 8X10B are indistinguishable in a dropdown.
     const options=[...document.querySelectorAll("option")].map(o=>o.textContent);
-    expect(options).toContain("7X10S · Velcro");
-    expect(options).toContain("9X12 · Lace");
+    const velcro=options.find(o=>o.startsWith("7X10S · Velcro"));
+    expect(velcro).toBeTruthy();
+    expect(velcro).toContain("Small");
+    expect(velcro).toContain("7s");
+    const lace=options.find(o=>o.startsWith("9X12 · Lace"));
+    expect(lace).toBeTruthy();
+    expect(lace).toContain("Large");
 
     // Choosing a Lace range makes THAT line lace without splitting the article.
     const combo=selects().find(s=>[...s.options].some(o=>o.value==="9X12"));
@@ -444,6 +451,33 @@ describe("edits made in the review block reach the invoice",()=>{
     await waitFor(()=>expect(printed()).toContain("30"));
     expect(screen.queryByText(/Match & Check has changed since this PI was generated/))
       .not.toBeInTheDocument();
+  });
+});
+
+/* The whole read is somebody's handwriting, so the correction path matters as
+   much as the read. The two things a clerk most often has to fix are WHICH
+   RANGE a line landed in and WHICH RUN that range is — and until now the
+   screen showed neither: "8X10" and "8X10B" are indistinguishable in a
+   dropdown, and nothing said whether a line was Small or Large. */
+describe("a handwritten read can be corrected on screen",()=>{
+  it("names the run on every line and lists what each range covers",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+
+    // The run is stated, not left to be inferred from the size chips.
+    expect(screen.getAllByText(/SMALL run|LARGE run/).length).toBeGreaterThan(0);
+
+    // Every range option says which sizes it covers and which run it is, which
+    // is the only way to tell 8X10 from 8X10B by looking.
+    const labelled=[...document.querySelectorAll("option")]
+      .map(o=>o.textContent).filter(x=>/·\s*(Small|Large)\s*·/.test(x));
+    expect(labelled.length).toBeGreaterThan(0);
+    expect(labelled[0]).toMatch(/\d/);                      // the sizes themselves
+
+    // And the screen says outright that this is all editable.
+    expect(screen.getByText(/Everything below is editable/)).toBeInTheDocument();
   });
 });
 

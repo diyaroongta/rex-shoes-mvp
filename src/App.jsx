@@ -1217,6 +1217,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     {cards && <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-4 shadow-sm">
       <div className="serif text-lg font-semibold mb-1">2 · Match &amp; check</div>
       <p className="text-slate-500 text-xs mb-3">Each category is matched to a real factory article; each size entry to a real size range. Amber = mapped approximately, please confirm. Pairs = cartons × pairs/carton.</p>
+      <p className="text-slate-500 text-xs mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <b>Everything below is editable, and the invoice follows it.</b> The read is only a first
+        pass at someone's handwriting — change the <b>article</b>, the <b>size range</b> (each option
+        lists the sizes it covers, and whether it is the Small or Large run), the <b>cartons</b>,
+        the <b>pairs per carton</b>, or any <b>individual size</b> and its cartons. <b>+ Add combo</b>
+        and <b>Add a specific size</b> put back anything the reader missed; <b>−</b> removes a line
+        it invented. Only “as written” is fixed — it is the record of what was on the paper.
+      </p>
       {sheetHeader()}
       {cards.map((c,i)=>{
         const missingPacking=c.lines.filter(l=>l.combo&&!(Number(l.ppc)>0)).map(l=>l.combo);
@@ -1258,6 +1266,17 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                     {l.combo
                       ? <span>{l.combo}</span>
                       : <span className="text-amber-700">Not matched to a range</span>}
+                    {/* WHICH RUN. A numeral 6-13 exists twice on the roll — the
+                        kids size and the adult repeat — and which one a line
+                        landed in is the correction most often needed after a
+                        handwritten read. It is spelled out rather than left to
+                        be inferred from the size chips below. */}
+                    {(()=>{ const sz=l.size_order||[];
+                      if(!sz.length) return null;
+                      const small=/[0-9]s$/i.test(String(sz[0]));
+                      return <span className="font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
+                        background:small?"#ecfeff":"#fef3c7",color:small?"#0e7490":"#92400e"}}>
+                        {small?"SMALL run":"LARGE run"}</span>; })()}
                     {l.raw && <span className="mono font-normal text-slate-400" style={{fontSize:10}}>as written: {l.raw}</span>}
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -1271,7 +1290,11 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
                       {!l.combo && <option value="">— pick a combo —</option>}
                       {articleTypeCombos(c.article).map(cb=>{ const t=comboType(c.article,cb);
-                        return <option key={cb} value={cb}>{cb}{t?` · ${t[0]+t.slice(1).toLowerCase()}`:""}</option>; })}</select>
+                        const sz=comboSizesForArticle(c.article,cb,t);
+                        const run=sz.length?(/[0-9]s$/i.test(String(sz[0]))?"Small":"Large"):"";
+                        return <option key={cb} value={cb}>
+                          {cb}{t?` · ${t[0]+t.slice(1).toLowerCase()}`:""}{run?` · ${run}`:""}{sz.length?` · ${sz.join(" ")}`:""}
+                        </option>; })}</select>
                     {l.combo && comboType(c.article,l.combo) && (
                       <span className="text-xs font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
                         background:comboType(c.article,l.combo)==="LACE"?"#eef2ff":"#ecfdf5",
