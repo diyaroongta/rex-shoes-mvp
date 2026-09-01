@@ -15,6 +15,14 @@ import catalogueHandler from "../../api/catalogue.js";
 import referenceHandler from "../../api/reference.js";
 import pisHandler from "../../api/pis.js";
 import piNumbersHandler from "../../api/pi-numbers.js";
+import { COOKIE, signSession } from "../../api/_lib/auth.js";
+
+/* Every endpoint is behind the session guard in api/_lib/http.js, so a request
+   object without a signed cookie is a 401 and nothing else. These tests are
+   about what the handlers do once you are in, so each one carries a real
+   signed session — the guard itself is tested in tests/api/auth.test.js. */
+process.env.AUTH_SECRET = "test-only-secret-of-at-least-32-characters";
+const AUTH = { cookie: `${COOKIE}=${signSession({ username:"tester", role:"admin" })}` };
 
 function response(){
   return {statusCode:200,body:null,status(code){this.statusCode=code;return this;},json(body){this.body=body;return this;}};
@@ -26,7 +34,7 @@ describe("database API contracts",()=>{
   it("allocates collision-resistant PI numbers from a database sequence",async()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{n:"42"}]});
     const res=response();
-    await piNumbersHandler({method:"POST",url:"/api/pi-numbers",body:{}},res);
+    await piNumbersHandler({headers:AUTH,method:"POST",url:"/api/pi-numbers",body:{}},res);
     expect(res.statusCode).toBe(201);
     expect(res.body.pi_no).toMatch(/^PI-\d{4}-000042$/);
     expect(String(dbMocks.q.mock.calls[1][0])).toContain("nextval('pi_no_seq')");
@@ -37,7 +45,7 @@ describe("database API contracts",()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[{value:previous}]})
       .mockResolvedValueOnce({rows:[]});
     const res=response();
-    await settingsHandler({method:"PUT",url:"/api/settings",body:{capacities:{CUTTING:100}}},res);
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body:{capacities:{CUTTING:100}}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.capacities).toMatchObject({CUTTING:100,PREPARATION:77});
     expect(res.body.sla_targets.CUTTING).toBe(12);
@@ -48,7 +56,7 @@ describe("database API contracts",()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"7X10S",qty:100}]}]})
       .mockResolvedValueOnce({rows:[{dispatched:{"7X10S":80}}]});
     const res=response();
-    await dispatchHandler({method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":30}}},res);
+    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":30}}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/only 20 pairs remain/);
     expect(dbMocks.q).toHaveBeenCalledTimes(2);
@@ -60,7 +68,7 @@ describe("database API contracts",()=>{
       .mockResolvedValueOnce({rows:[]})
       .mockResolvedValueOnce({rows:[{id:1,order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":2},kind:"partial",dispatched_on:"2026-08-25",closes_order:false}]});
     const res=response();
-    await dispatchHandler({method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":999},kind:"partial",dispatched_on:"2026-08-25"}},res);
+    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":999},kind:"partial",dispatched_on:"2026-08-25"}},res);
     expect(res.statusCode).toBe(201);
     const insert=dbMocks.q.mock.calls.find(([sql])=>String(sql).includes("insert into dispatches"));
     expect(JSON.parse(insert[1][2])).toEqual({"7X10S":2});
@@ -68,7 +76,7 @@ describe("database API contracts",()=>{
 
   it("rejects an impossible dispatch date before reading an order",async()=>{
     const res=response();
-    await dispatchHandler({method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{A:1},dispatched_on:"2026-02-30"}},res);
+    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{A:1},dispatched_on:"2026-02-30"}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/real date/);
     expect(dbMocks.q).not.toHaveBeenCalled();
@@ -83,7 +91,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await ordersHandler({method:"POST",url:"/api/orders",body:{orders:[{order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",lines:[{combo:"1X2",qty:12}]}]}},res);
+    await ordersHandler({headers:AUTH,method:"POST",url:"/api/orders",body:{orders:[{order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",lines:[{combo:"1X2",qty:12}]}]}},res);
     expect(res.statusCode).toBe(201);
     expect(res.body[0].article_code).toBe("CUSTOM");
     expect(client.query).toHaveBeenCalledWith("commit");
@@ -93,7 +101,7 @@ describe("database API contracts",()=>{
     const live={articles:{CUSTOM:{combos:{"1X2":{rates:{CUTTING:{MAT:1}}}},combo_order:["1X2"]}}};
     dbMocks.q.mockResolvedValueOnce({rows:[{value:live}]});
     const res=response();
-    await ordersHandler({method:"POST",url:"/api/orders",body:{orders:[{
+    await ordersHandler({headers:AUTH,method:"POST",url:"/api/orders",body:{orders:[{
       order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",
       lines:[{combo:"1X2",qty:12,sizes:{"1":5,"2":5}}],
     }]}},res);
@@ -117,7 +125,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},body:{lines:[{
+    await orderHandler({headers:AUTH,method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},body:{lines:[{
       combo:"1X2",qty:12,sizes:{"1":12},size_order:["1","2"],ppc:12,
     }]}},res);
     expect(res.statusCode).toBe(200);
@@ -128,7 +136,7 @@ describe("database API contracts",()=>{
 
   it("validates party deductions before any database write",async()=>{
     const res=response();
-    await partiesHandler({method:"PUT",url:"/api/parties",body:{name:"Buyer",deductions:[{label:"",pct:200}]}},res);
+    await partiesHandler({headers:AUTH,method:"PUT",url:"/api/parties",body:{name:"Buyer",deductions:[{label:"",pct:200}]}},res);
     expect(res.statusCode).toBe(400);
     expect(dbMocks.q).not.toHaveBeenCalled();
   });
@@ -137,7 +145,7 @@ describe("database API contracts",()=>{
   // future PI for that customer at full MRP with nothing said.
   it("refuses a blank commercial term rather than storing it as zero",async()=>{
     const res=response();
-    await partiesHandler({method:"PUT",url:"/api/parties",body:{name:"Buyer",discount_pct:""}},res);
+    await partiesHandler({headers:AUTH,method:"PUT",url:"/api/parties",body:{name:"Buyer",discount_pct:""}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/discount_pct cannot be blank/);
     expect(dbMocks.q).not.toHaveBeenCalled();
@@ -146,7 +154,7 @@ describe("database API contracts",()=>{
   it("still applies the default when a term is simply not sent",async()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[{name:"Buyer"}]});
     const res=response();
-    await partiesHandler({method:"PUT",url:"/api/parties",body:{name:"Buyer"}},res);
+    await partiesHandler({headers:AUTH,method:"PUT",url:"/api/parties",body:{name:"Buyer"}},res);
     expect(res.statusCode).toBe(200);
     expect(dbMocks.q.mock.calls[0][1][2]).toBe(40);
   });
@@ -160,7 +168,7 @@ describe("database API contracts",()=>{
       .mockResolvedValueOnce({rows:[{order_no:"JO1",pi_no:"PI7",discount_pct:"40"},
                                     {order_no:"JO2",pi_no:"PI7",discount_pct:"35"}]});
     const res=response();
-    await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Buyer",preview:true}},res);
+    await partiesHandler({headers:AUTH,method:"POST",url:"/api/parties",body:{name:"Buyer",preview:true}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.orders).toBe(2);
     expect(res.body.changing).toBe(1);          // only JO1 was issued at a different discount
@@ -179,7 +187,7 @@ describe("database API contracts",()=>{
     const client={query:vi.fn(async sql=>String(sql).startsWith("update orders")?{rowCount:1,rows:[]}:{rows:[],rowCount:0}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Buyer"}},res);
+    await partiesHandler({headers:AUTH,method:"POST",url:"/api/parties",body:{name:"Buyer"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.updated).toBe(1);
     const [sql,params]=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"));
@@ -194,13 +202,13 @@ describe("database API contracts",()=>{
   it("refuses to re-price a party that does not exist",async()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[]});
     const res=response();
-    await partiesHandler({method:"POST",url:"/api/parties",body:{name:"Nobody"}},res);
+    await partiesHandler({headers:AUTH,method:"POST",url:"/api/parties",body:{name:"Nobody"}},res);
     expect(res.statusCode).toBe(404);
   });
 
   it("rejects invalid catalogue prices before writing",async()=>{
     const res=response();
-    await catalogueHandler({method:"PUT",url:"/api/catalogue",body:{article_code:"SPIKE",price:-1}},res);
+    await catalogueHandler({headers:AUTH,method:"PUT",url:"/api/catalogue",body:{article_code:"SPIKE",price:-1}},res);
     expect(res.statusCode).toBe(400);
     expect(dbMocks.q).not.toHaveBeenCalled();
   });
@@ -210,7 +218,7 @@ describe("database API contracts",()=>{
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await catalogueHandler({method:"PUT",url:"/api/catalogue",body:{article_code:" custom ",description:"Demo",price:500}},res);
+    await catalogueHandler({headers:AUTH,method:"PUT",url:"/api/catalogue",body:{article_code:" custom ",description:"Demo",price:500}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.article_code).toBe("CUSTOM");
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("catalogue_history"))).toBe(true);
@@ -227,7 +235,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await catalogueHandler({method:"PUT",url:"/api/catalogue",body:{
+    await catalogueHandler({headers:AUTH,method:"PUT",url:"/api/catalogue",body:{
       article_code:" thunder 27 ",description:"New model",price:799,sole_type:"PVC",create_catalogue_only:true,
     }},res);
     expect(res.statusCode).toBe(200);
@@ -250,7 +258,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await catalogueHandler({method:"DELETE",url:"/api/catalogue?article_code=EMPTY",query:{article_code:"EMPTY"}},res);
+    await catalogueHandler({headers:AUTH,method:"DELETE",url:"/api/catalogue?article_code=EMPTY",query:{article_code:"EMPTY"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({deleted:"EMPTY",removed_article:true});
     const referenceWrite=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
@@ -267,7 +275,7 @@ describe("database API contracts",()=>{
       ?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await catalogueHandler({method:"DELETE",url:"/api/catalogue?article_code=CUSTOM",query:{article_code:"CUSTOM"}},res);
+    await catalogueHandler({headers:AUTH,method:"DELETE",url:"/api/catalogue?article_code=CUSTOM",query:{article_code:"CUSTOM"}},res);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toMatch(/has a BOM/);
     expect(client.query).toHaveBeenCalledWith("rollback");
@@ -282,7 +290,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"PATCH",url:"/api/reference",body:{packing:{CUSTOM:{"1X2":12}}}},res);
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",body:{packing:{CUSTOM:{"1X2":12}}}},res);
     expect(res.statusCode).toBe(200);
     const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
     const saved=JSON.parse(saveCall[1][0]);
@@ -302,7 +310,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"PATCH",url:"/api/reference",body:{packing_singles:{CUSTOM:{"7S":null,"8S":40}}}},res);
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",body:{packing_singles:{CUSTOM:{"7S":null,"8S":40}}}},res);
     expect(res.statusCode).toBe(200);
     const saveCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
     const saved=JSON.parse(saveCall[1][0]);
@@ -319,7 +327,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{batch:{
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{batch:{
       boms:[{article:"THUNDER",soleType:"EVA",combo_order:["7X10","11X1"],
         materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},
         combos:{"7X10":{rates:{CUTTING:{"MAT||MTR":0.5}}},"11X1":{rates:{CUTTING:{"MAT||MTR":0.6}}}}}],
@@ -352,7 +360,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{batch:{
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{batch:{
       boms:[{article:"JILL",soleType:"EVA",soleColour:" Black ",upperColour:"N.Blue / S.Blue",
         combo_order:["6X8"],
         materials:{
@@ -380,7 +388,7 @@ describe("database API contracts",()=>{
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{parsed:{
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{parsed:{
       article:"JILL",soleType:"EVA",soleColour:"x".repeat(61),combo_order:["1X2"],
       materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},combos:{"1X2":{rates:{CUTTING:{"MAT||MTR":1}}}},
     }}},res);
@@ -394,7 +402,7 @@ describe("database API contracts",()=>{
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{parsed:{
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{parsed:{
       article:" custom ",soleType:"EVA",combo_order:["1X2"],materials:{"MAT||MTR":{name:"MAT",uom:"MTR"}},
       combos:{"1X2":{rates:{CUTTING:{"MAT||MTR":1}}}},
     }}},res);
@@ -415,7 +423,7 @@ describe("database API contracts",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{bom_mode:"merge",parsed:{
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{bom_mode:"merge",parsed:{
       article:"CUSTOM",soleType:"EVA",combo_order:["1X2"],
       materials:{"CHANGE||MTR":{name:"CHANGE",uom:"MTR"},"NEW||PCS":{name:"NEW",uom:"PCS"}},
       combos:{"1X2":{rates:{CUTTING:{"CHANGE||MTR":1.5,"NEW||PCS":1}}}},
@@ -436,7 +444,7 @@ describe("database API contracts",()=>{
     const client={query:vi.fn(async sql=>String(sql).includes("select value from reference_data")?{rows:[{value:ref}]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"PATCH",url:"/api/reference",body:{bom_remove:[{
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",body:{bom_remove:[{
       article:"CUSTOM",combo:"1X2",stage:"CUTTING",material:"WRONG||MTR",
     }]}},res);
     expect(res.statusCode).toBe(200);
@@ -456,7 +464,7 @@ describe("database API contracts",()=>{
       {revision_id:1,change_type:"bom-upload",article_code:"SPIKE",created_at:new Date("2026-08-22T09:00:00Z")},
     ]});
     const res=response();
-    await referenceHandler({method:"GET",url:"/api/reference?history=1",query:{history:"1"}},res);
+    await referenceHandler({headers:AUTH,method:"GET",url:"/api/reference?history=1",query:{history:"1"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body).toHaveLength(2);
     expect(res.body[0].change_type).toBe("master-upload");
@@ -471,7 +479,7 @@ describe("database API contracts",()=>{
       String(sql).includes("select value from reference_data") ? {rows:[{value:{articles:{OLD:{}}}}]} : {rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{restore_revision:1}},res);
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{restore_revision:1}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.restored_revision).toBe(1);
     expect(res.body.articles_total).toBe(1);
@@ -488,7 +496,7 @@ describe("database API contracts",()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[{value:snapshot,change_type:"master-upload",article_code:null,created_at:new Date()}]})
       .mockResolvedValueOnce({rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"7X10S",qty:24}]}]});
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{restore_revision:3}},res);
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{restore_revision:3}},res);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toMatch(/JO1: article SPIKE would disappear/);
     expect(dbMocks.connect).not.toHaveBeenCalled();
@@ -506,7 +514,7 @@ describe("database API contracts",()=>{
       combos:{"7X10S":{rates:{CUTTING:{"M||MTR":1}}}},materials:{"M||MTR":{name:"M",uom:"MTR"}}}]},
       confirm_replace:true};
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body},res);
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body},res);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toMatch(/REMOVES size ranges/);
     expect(res.body.error).toMatch(/11X1/);          // names what goes
@@ -523,7 +531,7 @@ describe("database API contracts",()=>{
       combos:{"7X10S":{rates:{CUTTING:{"M||MTR":1}}}},materials:{"M||MTR":{name:"M",uom:"MTR"}}}]},
       confirm_replace:true, confirm_remove_ranges:true};
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body},res);
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body},res);
     expect(res.statusCode).toBe(200);
     expect(client.query).toHaveBeenCalledWith("commit");
   });
@@ -531,7 +539,7 @@ describe("database API contracts",()=>{
   it("refuses to restore a revision that is not a reference document",async()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[{value:{not:"a reference"},change_type:"x",article_code:null,created_at:new Date()}]});
     const res=response();
-    await referenceHandler({method:"POST",url:"/api/reference",body:{restore_revision:9}},res);
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{restore_revision:9}},res);
     expect(res.statusCode).toBe(422);
     expect(dbMocks.connect).not.toHaveBeenCalled();
   });
@@ -549,10 +557,110 @@ describe("database API contracts",()=>{
     const client={query:vi.fn(async sql=>String(sql).includes("returning order_no")?{rows:[{order_no:"JO77"}]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77"}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{pi_no:"PI77"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.restored).toEqual(["JO77"]);
     expect(client.query).toHaveBeenCalledWith("commit");
+  });
+});
+
+/* Bulk BOM removal. The dangerous part is not the deletion, it is deleting
+   something different from what the clerk was shown, or stranding a live order
+   without saying so. */
+describe("bulk BOM removal",()=>{
+  const REF={articles:{
+    "REX GOLA (V)":{sole_type:"PVC",combo_order:["11X13","7X10S"],combos:{
+      "11X13":{rates:{CUTTING:{"REXINE BLACK":0.5,"FOAM":0.2}}},
+      "7X10S":{rates:{CUTTING:{"REXINE BLACK":0.4}}}}},
+    "SPIKE":{sole_type:"EVA",combo_order:["8X12"],combos:{
+      "8X12":{rates:{CUTTING:{"EVA SHEET":0.9}}}}}},
+    materials:{},packing:{},mrp:{}};
+  const refRow=()=>({rows:[{value:JSON.parse(JSON.stringify(REF))}]});
+
+  it("previews without writing anything, and names the orders at risk",async()=>{
+    dbMocks.q.mockResolvedValueOnce(refRow())                                   // current()
+      .mockResolvedValueOnce({rows:[{order_no:"JO3",article_code:"SPIKE",lines:[{combo:"8X12",qty:12}]}]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{bom_removal:{articles:["SPIKE"],dry_run:true}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.dry_run).toBe(true);
+    expect(res.body.plan.totals.rates).toBe(1);
+    expect(res.body.orders_at_risk[0].order_no).toBe("JO3");
+    // A preview that writes is not a preview.
+    expect(dbMocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("refuses by default when a live order depends on the selection",async()=>{
+    dbMocks.q.mockResolvedValueOnce(refRow())
+      .mockResolvedValueOnce({rows:[{order_no:"JO3",article_code:"SPIKE",lines:[{combo:"8X12",qty:12}]}]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{bom_removal:{articles:["SPIKE"]}}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/JO3/);
+    expect(dbMocks.connect).not.toHaveBeenCalled();     // nothing written
+  });
+
+  it("goes ahead when the caller confirms those specific orders",async()=>{
+    const client={query:vi.fn(),release:vi.fn()};
+    client.query.mockImplementation(sql=>{
+      if(/select value from reference_data/.test(sql)) return Promise.resolve(refRow());
+      if(/from catalogue/.test(sql)) return Promise.resolve({rows:[]});
+      return Promise.resolve({rows:[]});
+    });
+    dbMocks.connect.mockResolvedValue(client);
+    dbMocks.q.mockResolvedValueOnce(refRow())
+      .mockResolvedValueOnce({rows:[{order_no:"JO3",article_code:"SPIKE",lines:[{combo:"8X12",qty:12}]}]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{bom_removal:{articles:["SPIKE"],confirm_in_use:true}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.removed_articles).toEqual(["SPIKE"]);
+    expect(res.body.orders_affected[0].order_no).toBe("JO3");
+    const written=client.query.mock.calls.find(c=>/insert into reference_data \(/.test(c[0]));
+    expect(JSON.parse(written[1][0]).articles.SPIKE).toBeUndefined();
+    // Snapshotted first, so the whole removal can be undone from history.
+    expect(client.query.mock.calls.some(c=>/reference_data_history/.test(c[0]))).toBe(true);
+  });
+
+  it("removes several articles and ranges in ONE action",async()=>{
+    const client={query:vi.fn(),release:vi.fn()};
+    client.query.mockImplementation(sql=>{
+      if(/select value from reference_data/.test(sql)) return Promise.resolve(refRow());
+      if(/from catalogue/.test(sql)) return Promise.resolve({rows:[]});
+      return Promise.resolve({rows:[]});
+    });
+    dbMocks.connect.mockResolvedValue(client);
+    dbMocks.q.mockResolvedValueOnce(refRow()).mockResolvedValueOnce({rows:[]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{bom_removal:{articles:["SPIKE"],ranges:[{article:"REX GOLA (V)",combo:"11X13"}]}}},res);
+    expect(res.statusCode).toBe(200);
+    const written=JSON.parse(client.query.mock.calls.find(c=>/insert into reference_data \(/.test(c[0]))[1][0]);
+    expect(written.articles.SPIKE).toBeUndefined();
+    expect(written.articles["REX GOLA (V)"].combos["11X13"]).toBeUndefined();
+    expect(written.articles["REX GOLA (V)"].combos["7X10S"]).toBeTruthy();
+    expect(written.articles["REX GOLA (V)"].combo_order).toEqual(["7X10S"]);
+  });
+
+  it("reports every unknown selection at once instead of one per attempt",async()=>{
+    dbMocks.q.mockResolvedValueOnce(refRow());
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{bom_removal:{articles:["GLAMOUR"],ranges:[{article:"SPIKE",combo:"9X9"}]}}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/GLAMOUR/);
+    expect(res.body.error).toMatch(/9X9/);
+  });
+
+  it("refuses an empty selection rather than treating it as 'remove nothing'",async()=>{
+    dbMocks.q.mockResolvedValueOnce(refRow());
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{bom_removal:{articles:[],ranges:[],materials:[]}}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/Nothing was selected/);
   });
 });
 
@@ -565,7 +673,7 @@ describe("setup errors are diagnosable",()=>{
     const {wrap}=await import("../../api/_lib/http.js");
     const boom=wrap(async()=>{const e=new Error('column "active" does not exist');e.code="42703";throw e;});
     const res=response();
-    await boom({method:"POST",url:"/api/pis"},res);
+    await boom({headers:AUTH,method:"POST",url:"/api/pis"},res);
     expect(res.statusCode).toBe(500);
     expect(res.body.error).toMatch(/column "active" does not exist/);
     expect(res.body.error).toMatch(/db\/schema\.sql/);
@@ -575,7 +683,7 @@ describe("setup errors are diagnosable",()=>{
     const {wrap}=await import("../../api/_lib/http.js");
     const boom=wrap(async()=>{throw new TypeError("x is not a function");});
     const res=response();
-    await boom({method:"POST",url:"/api/pis"},res);
+    await boom({headers:AUTH,method:"POST",url:"/api/pis"},res);
     expect(res.body.error).toBe("Server error");
   });
 });
@@ -597,7 +705,7 @@ describe("catalogue deletion safety",()=>{
     const c=client(); client.orders=[{order_no:"JO2043"},{order_no:"JO2044"}];
     dbMocks.connect.mockResolvedValue(c);
     const res=response();
-    await catalogueHandler({method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE",confirm_bom:"1"}},res);
+    await catalogueHandler({headers:AUTH,method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE",confirm_bom:"1"}},res);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toMatch(/JO2043/);
     expect(c.query).toHaveBeenCalledWith("rollback");
@@ -607,7 +715,7 @@ describe("catalogue deletion safety",()=>{
     const c=client(); client.orders=[];
     dbMocks.connect.mockResolvedValue(c);
     const res=response();
-    await catalogueHandler({method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE"}},res);
+    await catalogueHandler({headers:AUTH,method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE"}},res);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toMatch(/has a BOM/);
   });
@@ -616,7 +724,7 @@ describe("catalogue deletion safety",()=>{
     const c=client(); client.orders=[];
     dbMocks.connect.mockResolvedValue(c);
     const res=response();
-    await catalogueHandler({method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE",confirm_bom:"1"}},res);
+    await catalogueHandler({headers:AUTH,method:"DELETE",url:"/api/catalogue",query:{article_code:"SPIKE",confirm_bom:"1"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.deleted).toBe("SPIKE");
     expect(c.query.mock.calls.some(([s])=>String(s).includes("reference_data_history"))).toBe(true);
@@ -648,7 +756,7 @@ describe("per-PI prices",()=>{
   it("stores a per-size price override on the PI, keeping the rest of the blob",async()=>{
     const client=setup();
     const res=response();
-    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+    await orderHandler({headers:AUTH,method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
       body:{pi:{mrp:{"1X2":699,"1X2::1":749}}}},res);
     expect(res.statusCode).toBe(200);
     const written=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"))[1][0];
@@ -661,7 +769,7 @@ describe("per-PI prices",()=>{
     setup();
     for(const bad of [{"1X2":-5},{"1X2":"free"}]){
       const res=response();
-      await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},body:{pi:{mrp:bad}}},res);
+      await orderHandler({headers:AUTH,method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},body:{pi:{mrp:bad}}},res);
       expect(res.statusCode).toBe(400);
       expect(res.body.error).toMatch(/0 or more/);
     }
@@ -692,7 +800,7 @@ describe("partial PI scheduling",()=>{
   it("inserts only the named orders and reports what it left behind",async()=>{
     const client=setup(snapshot(["JO1","A"],["JO2","B"],["JO3","C"]));
     const res=response();
-    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:["JO1"]}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:["JO1"]}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.partial).toBe(true);
     expect(res.body.skipped.sort()).toEqual(["JO2","JO3"]);
@@ -704,7 +812,7 @@ describe("partial PI scheduling",()=>{
   it("still releases the whole PI when no subset is named",async()=>{
     const client=setup(snapshot(["JO1","A"],["JO2","B"]));
     const res=response();
-    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77"}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{pi_no:"PI77"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.partial).toBe(false);
     expect(client.query.mock.calls.filter(([s])=>String(s).includes("insert into orders"))).toHaveLength(2);
@@ -713,7 +821,7 @@ describe("partial PI scheduling",()=>{
   it("refuses an order number that is not on this PI, rather than silently ignoring it",async()=>{
     setup(snapshot(["JO1","A"]));
     const res=response();
-    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:["JO1","JO9"]}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:["JO1","JO9"]}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/not part of PI77: JO9/);
   });
@@ -721,7 +829,7 @@ describe("partial PI scheduling",()=>{
   it("refuses an empty selection instead of releasing everything",async()=>{
     const client=setup(snapshot(["JO1","A"],["JO2","B"]));
     const res=response();
-    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:[]}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{pi_no:"PI77",order_nos:[]}},res);
     expect(res.statusCode).toBe(400);
     expect(client.query.mock.calls.some(([s])=>String(s).includes("insert into orders"))).toBe(false);
   });
@@ -753,7 +861,7 @@ describe("manual planning overrides",()=>{
   it("stores a normalised override and leaves the PI revision alone",async()=>{
     const client=setup();
     const res=response();
-    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+    await orderHandler({headers:AUTH,method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
       body:{plan_override:{seq:"2",start_on:"2026-09-01",days:{CUTTING:3},
                            machine:{MOLDING:"MOLDING_PU"},junk:"ignored"}}},res);
     expect(res.statusCode).toBe(200);
@@ -777,14 +885,14 @@ describe("manual planning overrides",()=>{
       ?{rows:[{order_no:"JO1",order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"B",
                lines:[],pi:{},plan_override:{seq:1},version:1}]}:{rows:[]});
     const res=response();
-    await ordersHandler({method:"GET",url:"/api/orders",query:{}},res);
+    await ordersHandler({headers:AUTH,method:"GET",url:"/api/orders",query:{}},res);
     expect(res.body[0].plan_override).toEqual({seq:1});
   });
 
   it("refuses a work centre that does not exist, before writing anything",async()=>{
     setup();
     const res=response();
-    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+    await orderHandler({headers:AUTH,method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
       body:{plan_override:{machine:{MOLDING:"MOLDING_IMAGINARY"}}}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/is not a work centre/);
@@ -793,7 +901,7 @@ describe("manual planning overrides",()=>{
   it("hands an order back to the automatic planner with an empty object",async()=>{
     const client=setup();
     const res=response();
-    await orderHandler({method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
+    await orderHandler({headers:AUTH,method:"PATCH",url:"/api/orders/JO1",query:{order_no:"JO1"},
       body:{plan_override:{}}},res);
     expect(res.statusCode).toBe(200);
     const call=client.query.mock.calls.find(([s])=>String(s).startsWith("update orders"));
@@ -806,7 +914,7 @@ describe("manual planning overrides",()=>{
 describe("PI archive and permanent delete",()=>{
   it("refuses a permanent delete without an explicit confirmation",async()=>{
     const res=response();
-    await pisHandler({method:"DELETE",url:"/api/pis",query:{pi_no:"PI77"}},res);
+    await pisHandler({headers:AUTH,method:"DELETE",url:"/api/pis",query:{pi_no:"PI77"}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/Archive it instead/);
     expect(dbMocks.connect).not.toHaveBeenCalled();
@@ -822,7 +930,7 @@ describe("PI archive and permanent delete",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await pisHandler({method:"DELETE",url:"/api/pis",query:{pi_no:"PI77",confirm:"1"}},res);
+    await pisHandler({headers:AUTH,method:"DELETE",url:"/api/pis",query:{pi_no:"PI77",confirm:"1"}},res);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toMatch(/JO78/);
     expect(res.body.error).toMatch(/never destroyed/);
@@ -840,7 +948,7 @@ describe("PI archive and permanent delete",()=>{
     }),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await pisHandler({method:"DELETE",url:"/api/pis",query:{pi_no:"PI77",confirm:"1"}},res);
+    await pisHandler({headers:AUTH,method:"DELETE",url:"/api/pis",query:{pi_no:"PI77",confirm:"1"}},res);
     expect(res.statusCode).toBe(200);
     const ran=client.query.mock.calls.map(([s])=>String(s));
     expect(ran.some(s=>s.startsWith("delete from orders"))).toBe(true);
@@ -853,7 +961,7 @@ describe("PI archive and permanent delete",()=>{
       ?{rowCount:1,rows:[]}:{rows:[{order_no:"JO77"}]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await pisHandler({method:"POST",url:"/api/pis",body:{pi_no:"PI77",action:"archive"}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{pi_no:"PI77",action:"archive"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.archived).toBe(true);
     const orderUpdate=client.query.mock.calls.find(([s])=>String(s).includes("update orders set active"));
@@ -875,7 +983,7 @@ describe("capacities validate against live reference data",()=>{
       return {rows:[]};
     });
     const res=response();
-    await settingsHandler({method:"PUT",url:"/api/settings",body:{capacities:{MOLDING:1200}}},res);
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body:{capacities:{MOLDING:1200}}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.capacities.MOLDING).toBe(1200);
   });
@@ -890,7 +998,7 @@ describe("capacities validate against live reference data",()=>{
       return {rows:[]};
     });
     const res=response();
-    await settingsHandler({method:"PUT",url:"/api/settings",
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",
       body:{capacities:{MOLDING:1200,NONSENSE:5}}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.capacities.MOLDING).toBe(1200);     // the real one still saves
@@ -909,7 +1017,7 @@ describe("removing a packing report",()=>{
       String(sql).includes("from dispatches where id")?{rows:[row]}:{rows:[]}),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await dispatchHandler({method:"DELETE",url:"/api/dispatches",query:{id:"7"}},res);
+    await dispatchHandler({headers:AUTH,method:"DELETE",url:"/api/dispatches",query:{id:"7"}},res);
     expect(res.statusCode).toBe(200);
     expect(res.body.pairs_returned).toBe(48);
     const ran=client.query.mock.calls.map(([s])=>String(s));
@@ -922,7 +1030,7 @@ describe("removing a packing report",()=>{
     const client={query:vi.fn(async()=>({rows:[]})),release:vi.fn()};
     dbMocks.connect.mockResolvedValue(client);
     const res=response();
-    await dispatchHandler({method:"DELETE",url:"/api/dispatches",query:{id:"999"}},res);
+    await dispatchHandler({headers:AUTH,method:"DELETE",url:"/api/dispatches",query:{id:"999"}},res);
     expect(res.statusCode).toBe(404);
     expect(client.query).toHaveBeenCalledWith("rollback");
     expect(client.query.mock.calls.some(([s])=>String(s).startsWith("delete from dispatches"))).toBe(false);

@@ -28,7 +28,7 @@ const fmt = (n,d=0)=>n==null||isNaN(n)?"—":Number(n).toLocaleString("en-IN",{m
 const niceDate = iso => iso ? new Date(String(iso).slice(0,10)+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 
 /* ------------- App shell ------------- */
-export default function App(){
+export default function App({ user=null, onSignOut=null }={}){
   const [orders, setOrders] = useState(null);   // null = loading
   const [dispatches, setDispatches] = useState([]);
   const [dispatchLoading, setDispatchLoading] = useState(true);
@@ -376,12 +376,31 @@ export default function App(){
               </h1>
               <div style={{fontSize:12,color:"#6B7C90",marginTop:1}}>{(VIEWS[tab]||{}).sub || ""}</div>
             </div>
-            <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap"}}>
+            <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap",alignItems:"center"}}>
               <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
               <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
                     tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />
               <Stat label="To procure" value={state.procurement.length}
                     tone={state.procurement.length?"#B45309":"#047857"} />
+              {user && (
+                <div style={{display:"flex",alignItems:"center",gap:9,paddingLeft:16,
+                             borderLeft:"1px solid #E4E9F0"}}>
+                  <div style={{textAlign:"right",lineHeight:1.25}}>
+                    <div style={{fontSize:12.5,fontWeight:600,color:"#1F3348"}}>
+                      {user.display_name || user.username}
+                    </div>
+                    <div style={{fontSize:10.5,color:"#8A9AAC",textTransform:"uppercase",letterSpacing:".04em"}}>
+                      {user.role}
+                    </div>
+                  </div>
+                  {onSignOut && (
+                    <button onClick={onSignOut} title="Sign out"
+                      style={{padding:"5px 10px",fontSize:12,fontWeight:600,color:"#33465C",
+                              background:"#F1F5F9",border:"1px solid #CBD5E1",borderRadius:7,
+                              cursor:"pointer"}}>Sign out</button>
+                  )}
+                </div>
+              )}
             </div>
           </header>
 

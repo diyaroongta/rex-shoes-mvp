@@ -55,6 +55,25 @@ order back to the automatic planner.
 
 ---
 
+**BOM removal is bulk, previewed, and undoable.** `shared/bom-removal.js` is a
+pure planner: give it the reference document and a selection of articles, size
+ranges and individual materials in any mix, and it returns exactly what would
+go. The browser calls it to keep the running count honest and the server calls
+it twice — once for the preview, once inside the locked transaction — so the
+list the clerk confirms is the list that is deleted, and a BOM uploaded in
+between cannot make a stale plan delete something nobody saw. A higher level
+absorbs the lower ones, so selecting an article and one of its ranges never
+double-counts. Materials are shared between articles and are never deleted with
+one. Every removal is snapshotted to `reference_data_history` first and restores
+cleanly, packing and MRP included.
+
+**Live orders block a removal, but the block is overridable.** `ordersAtRisk`
+names every active order that would lose its article or its size range; without
+`confirm_in_use` the endpoint refuses with those order numbers. The override is
+deliberate and was asked for — which is why `compute()` had to be made
+orphan-safe first, since before that an override would have taken every screen
+down rather than just the affected orders.
+
 **Shortfall is attributed by consumption order, not divided up.** Stock is
 shared, so "what is this PI short of" only has an answer once you fix who takes
 the stock first. `netByOrder` walks orders in the sequence the plan runs them;
@@ -79,6 +98,7 @@ shared/            imported by BOTH browser and server — pure, testable
   sizes.js         resolving one specific size to a range's BOM rates
   bridge.js        article matching + the handwriting-reading prompt
   bom-import.js    parsing the factory's BOM workbooks
+  bom-removal.js   what a bulk BOM removal would delete — pure, shared by preview and delete
   order-import.js  parsing bulk order spreadsheets
   intake.js        photo-read normalization; preserves exact sizes and V/L
   mis.js           pure executive MIS KPIs: health, dispatch gap, output/utilisation
@@ -88,6 +108,7 @@ src/
   App.jsx          ~1,800 lines. Still the largest refactoring/test target.
   *Tab.jsx         one file per screen
   PiDocument.jsx   the invoice, matching the factory's existing layout
+  BomRemovalPanel.jsx  bulk BOM removal: articles, ranges and materials in one action
   lib/refdata.js   hydrates live reference data over the seed at startup
   lib/client.js    the only thing the browser calls — never a provider directly
 api/
@@ -218,6 +239,12 @@ Each of these was a real bug found in production. Most have a regression test no
 | An editable label the invoice never printed | Match & Check showed `l.raw` — an inferred spelling such as "11s\|13s" — in a free-text box. The PI prints the range and its sizes; `raw` reached it only as an unused `label`, so every correction typed there came out of the printer unchanged. It is provenance now, and read-only. |
 | Review-block edits stopping at `piCards` | The "Review before saving" quantity boxes wrote to `piCards` while the invoice renders from `piPreviewCards`. Both go through `editPiCell`, which writes cards, review block and preview together and re-stamps the signature. |
 | An uncosted line silently leaving the invoice | A line with cartons but no range computes to zero pairs, so `buildLines` emits no row — an invoice that looked complete was short 5 cartons. Save already refused it; step 3 now says so where the clerk is actually looking. |
+| An arrow key inside a hidden password | The account script read keys one byte at a time and skipped control characters. An arrow key is not one byte — it is `ESC [ A` — so the ESC was dropped and `[A` was welded into the password, invisibly, because the prompt echoes nothing. The user then either got "the two passwords do not match" with no explanation, or set a password containing `[A` that cannot be typed into a browser field at all. Escape sequences must be parsed and swallowed WHOLE (`scripts/hidden-prompt.mjs`), and `hashPassword` refuses any control character as a backstop. |
+| A password that was never really stored | The account script reported success on the strength of the INSERT alone. A write against the wrong `DATABASE_URL` — local instead of Neon is the easy mistake — looked identical to a correct one, and the only symptom was "Incorrect username or password" at a login that could never work. It now reads the hash back and verifies the typed password against it before saying the account exists, and prints which database it wrote to. |
+| A wrong password that was actually a missing env var | An unset `AUTH_SECRET` surfaced through the generic 500 handler, so an unconfigured deployment was indistinguishable from a typo. Neither retyping nor resetting the account can fix it. Login now checks the secret FIRST and answers 503 with the fix, an empty `users` table answers "No accounts exist yet", and the login screen renders both as a setup fault rather than a rejected password. |
+| A mocked query that Postgres would refuse | The failed-attempt counter used `$2` in both `failed_attempts = $2` and a `case when $2 >= $3`, which real Postgres rejects outright (42P08). Every mocked test passed — they assert SQL text, not that a server accepts it — while in production a wrong password returned 500 and the lockout never advanced. Mocked API tests cannot catch parameter-type errors; anything non-trivial in SQL needs one run against a real database. |
+| An order that outlived its article | The article master is editable and a bulk BOM removal can be confirmed over a live order, so `articles[o.article_code]` can be undefined. `compute()` read `.routing` off it and threw — and because ONE call builds every screen, a single orphaned order blanked the whole app: dashboard, schedule, procurement and PI list together. Orphans are now set aside, listed at the top of the board with `article_missing`, counted in the pair totals and reported in `schedule_problems`. Never let one bad row take the planner down. |
+| A range emptied instead of removed | Removing the last material from a size range left the range in place with no rates. Orders could still be placed on it, and it then booked machine capacity while requiring zero material — the same silent failure as an unpriced line. `planRemoval` promotes that to removing the range itself, and says so in the preview rather than doing it quietly. Same rule one level up: an article whose every range is selected goes too. |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---
@@ -262,8 +289,38 @@ centres, 13 screens, 7 API endpoints.
 - Photos for PERCY and SPADE
 - "GLAMOUR" appears on order sheets but is not a known article at all
 
-**Not built:** authentication. There are no user accounts, so anyone with the URL can
-read and edit every order. This also blocks the audit trail the client asked for.
+**Authentication.** Built, single-account to start, designed for IAM to grow into.
+
+- `api/_lib/auth.js` — scrypt password hashing and HMAC-signed session cookies, both
+  from `node:crypto`. **No database import**, for the same reason `http.js` has none:
+  the guard runs on every request, so anything it imports lands in the AI endpoints'
+  cold start.
+- **The guard lives in `wrap()`**, not in each handler. An endpoint cannot be shipped
+  unprotected by forgetting a line; `wrap(handler, { public:true })` is the deliberate
+  opt-out and only `api/auth.js` takes it. A shape test in `tests/api/auth.test.js`
+  asserts this over the whole `api/` tree.
+- **Fails closed.** No `AUTH_SECRET` (or one under 32 characters) means every endpoint
+  answers 503 with that message — never "open because unconfigured".
+- The session is a 12-hour HttpOnly cookie, so the browser holds no token and no
+  script can read one. There is no sessions table: revoking everybody at once is done
+  by rotating `AUTH_SECRET` on Vercel.
+- `users.role` is `admin | planner | viewer` from the start. Only `admin` is issued
+  today and **no endpoint checks the role yet** — that is the next step, and the role
+  already rides in the verified cookie as `req.user.role`.
+- Accounts: `node scripts/create-user.mjs <username>`. The password is typed at a
+  hidden prompt — never an argument, never an environment variable, never logged.
+  Also `--list`, `--verify <user>` (checks a password against the stored hash with no
+  browser involved), `--unlock <user>` and `--secret`. Creating an account reads the
+  hash back and verifies it before reporting success, so "created" means "can sign in".
+- `scripts/hidden-prompt.mjs` owns the terminal key handling and is covered by
+  `tests/scripts.test.mjs`, which is in `npm run test:core`. Everything it gets wrong is
+  invisible — the prompt echoes nothing — so it is tested rather than eyeballed.
+
+**Still open:** the built SPA shell (`index.html` and its bundle) is served by Vercel
+as static files and is NOT behind the guard. It contains no factory data — every order,
+PI and reference read is an `/api` call and returns 401 — but the login screen is
+reachable by anyone with the URL. The audit trail the client asked for is now
+unblocked: `req.user.username` is available on every write.
 
 ---
 

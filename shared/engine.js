@@ -55,7 +55,10 @@ export function orderReq(order, article){
 }
 export function rollup(orders, articles){
   const t={};
-  for(const o of orders){ const r=orderReq(o, articles[o.article_code]);
+  for(const o of orders){
+    const art=articles[o.article_code];
+    if(!art) continue;                 // article deleted; compute() reports it
+    const r=orderReq(o, art);
     for(const [m,q] of Object.entries(r)) t[m]=(t[m]||0)+q; }
   return t;
 }
@@ -360,15 +363,29 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const targets={...TARGETS, ...(opts.targets||{})};
   const riskWindow=opts.riskWindow==null?3:opts.riskWindow;
   const overrides=opts.overrides||{};
-  const sched=schedule(orders,articles,wcs,origin,1500,overrides);
+
+  /* An order can outlive its article: the article master is editable, and a
+     bulk BOM removal can be confirmed over the top of a live order. Reading
+     articles[code].routing on one of those threw, and because compute() builds
+     EVERY screen from one call, a single orphaned order blanked the entire
+     app — dashboard, schedule, procurement and PI list together. It is set
+     aside here instead, and reported loudly: still listed, still counted, but
+     not planned, because there is nothing left to plan it from. */
+  const planned=[], orphaned=[];
+  for(const o of orders) (articles[o.article_code] ? planned : orphaned).push(o);
+
+  const sched=schedule(planned,articles,wcs,origin,1500,overrides);
   const problems=validateSchedule(sched,wcs);
+  for(const o of orphaned)
+    problems.push(`${o.order_no}: article ${o.article_code} no longer exists — `
+      +`this order cannot be planned until its article is restored or the order is re-articled`);
   const sla=slaEval(sched, riskWindow, targets);
-  const netted=netting(rollup(orders,articles),materials);
+  const netted=netting(rollup(planned,articles),materials);
   /* Attributed in the order the plan actually runs, so re-sequencing the queue
      moves the shortfall onto whichever PI now waits for the stock. */
-  const byOrder=netByOrder(orders,articles,materials,queueOrder(orders,overrides).map(o=>o.order_no));
+  const byOrder=netByOrder(planned,articles,materials,queueOrder(planned,overrides).map(o=>o.order_no));
   const procurement=netted.filter(n=>n.shortfall>1e-6).sort((a,b)=>b.shortfall-a.shortfall);
-  const orderViews=orders.map(o=>{
+  const orderViews=planned.map(o=>{
     const sr=sched.orders[o.order_no], sl=sla[o.order_no];
     const slBy={}; sl.stages.forEach(x=>slBy[x.stage]=x);
     const art=articles[o.article_code];
@@ -395,6 +412,24 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       dispatch_date:fromDay(sr.dispatch_day,origin),dispatch_day:sr.dispatch_day,
       lead_days:sr.dispatch_day-sr.release_day,sla:sl.overall,stages};
   }).sort((a,b)=>a.dispatch_day-b.dispatch_day);
+
+  /* Orphans are put back at the TOP of the board, not dropped. An order that
+     quietly disappears from the sheet is worse than one that cannot be
+     planned: the pairs are still owed to the customer either way, and only one
+     of those two states is visible to the person who has to fix it. */
+  const orphanViews=orphaned.map(o=>({
+    order_no:o.order_no,party:o.party,article:o.article_code,article_code:o.article_code,
+    article_missing:true,
+    override:normalizeOverride(overrides[o.order_no]), overridden:false,
+    plan_warnings:[], sole_type:null, pi:o.pi||{},
+    stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",
+    printing:!!(o.printing||((o.pi||{}).printing)),
+    qty:o.lines.reduce((s,l)=>s+l.qty,0),
+    priority:o.priority,order_date:o.order_date,lines:o.lines,
+    unknown_combos:o.lines.map(l=>l.combo),
+    release_date:null,release_delay_days:null,
+    dispatch_date:null,dispatch_day:null,lead_days:null,
+    sla:null,stages:[]}));
   const loadSummary=[];
   for(const [code,wc] of Object.entries(wcs)){
     const days=sched.load[code]||{}; const act=Object.entries(days).filter(([d,v])=>v>1e-9);
@@ -406,10 +441,11 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       busy_days:act.length,avg_util_pct:round2(100*booked/(wc.capacity_per_day*span),1)});
   }
   loadSummary.sort((a,b)=>b.avg_util_pct-a.avg_util_pct);
-  return {orders:orderViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,daily_load:sched.load,
+  return {orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,daily_load:sched.load,
     plan_warnings:sched.warnings, forced_load:sched.forced_load,
     procurement_by_order:byOrder, procurement_by_pi:shortfallByPi(byOrder),
     totals:{orders:orders.length,total_pairs:orders.reduce((s,o)=>s+o.lines.reduce((a,l)=>a+l.qty,0),0),
       last_dispatch:orderViews.length?fromDay(Math.max(...orderViews.map(o=>o.dispatch_day)),origin):null,
+      unplanned:orphanViews.length,
       sla:{on_track:orderViews.filter(o=>o.sla==="on_track").length,at_risk:orderViews.filter(o=>o.sla==="at_risk").length,breach:orderViews.filter(o=>o.sla==="breach").length}}};
 }

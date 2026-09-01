@@ -1,5 +1,9 @@
 /* Shared HTTP helpers. Deliberately free of any database or provider import so
-   the AI endpoints don't drag the Postgres driver into their cold start. */
+   the AI endpoints don't drag the Postgres driver into their cold start.
+   api/_lib/auth.js observes the same rule, which is why the session guard
+   below can live here at all. */
+import { authSecret, sessionOf } from "./auth.js";
+
 export function fail(res, status, message){
   return res.status(status).json({ error: message });
 }
@@ -16,9 +20,27 @@ const SETUP_CODES = new Set([
   "3F000",  // invalid_schema_name
 ]);
 
-export function wrap(handler){
+/* Every endpoint requires a signed-in user. The check lives HERE, not in each
+   handler, because the one thing that must not be possible is adding an
+   endpoint and forgetting to protect it — the whole order book, every PI and
+   the metered AI calls sit behind these functions on a public URL.
+   `wrap(handler, { public:true })` is the deliberate opt-out, and only
+   api/auth.js takes it. */
+export function wrap(handler, opts = {}){
   return async (req, res) => {
-    try { return await handler(req, res); }
+    try {
+      if(!opts.public){
+        /* A missing or too-short AUTH_SECRET is a deployment fault, not a
+           failed login. Saying so plainly is the difference between five
+           minutes in the Vercel settings and an afternoon of guessing. */
+        try { authSecret(); }
+        catch(e){ return fail(res, 503, e.message); }
+        const user = sessionOf(req);
+        if(!user) return res.status(401).json({ error:"Sign in required", auth:"required" });
+        req.user = user;
+      }
+      return await handler(req, res);
+    }
     catch(e){
       console.error(req.method, req.url, e);
       // Setup problems are worth showing; anything else stays generic.

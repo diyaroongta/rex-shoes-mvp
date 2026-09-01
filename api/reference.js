@@ -4,6 +4,7 @@ import { INPUTS } from "../shared/inputs.js";
 import { articleCode, existingArticleCode, mergeBom } from "../shared/bom-import.js";
 import { SOLE_TYPES, routingForSole } from "../shared/reference-edit.js";
 import { resolveArticleSizeIn, splitScopedSizeKey, scopedSizeKey } from "../shared/bridge.js";
+import { planRemoval, applyRemoval, ordersAtRisk } from "../shared/bom-removal.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -360,6 +361,64 @@ export default wrap(async (req, res) => {
   if(req.method === "PATCH"){
     try{
     const body=req.body||{};
+
+    /* Bulk BOM removal: whole articles, whole size ranges, individual
+       materials, or any mix, in one confirmed action. Removing them one at a
+       time was the only way, which does not scale past a handful and made
+       clearing out an article the factory no longer runs a morning's work.
+
+       The preview and the deletion are computed by the SAME pure function, so
+       what the clerk confirms is what happens — a preview produced by
+       different code from the delete is a preview that can be wrong. */
+    if(body.bom_removal && typeof body.bom_removal === "object"){
+      const sel=body.bom_removal;
+      const dryRun=!!sel.dry_run;
+      const ref=await current();
+      const plan=planRemoval(ref,sel);
+      if(plan.errors.length) return fail(res,400,plan.errors.slice(0,10).join("; "));
+      if(plan.empty) return fail(res,400,"Nothing was selected for removal");
+
+      /* Which live orders this would strand. Checked against active orders
+         only — an archived order is already off the board. */
+      const {rows:live}=await q(
+        "select order_no, article_code, lines from orders where active order by order_no");
+      const atRisk=ordersAtRisk(plan,live);
+
+      if(dryRun)
+        return res.status(200).json({ dry_run:true, plan, orders_at_risk:atRisk });
+
+      /* The default is to refuse. An order whose article vanishes cannot be
+         planned at all, so this is a real consequence and not a formality —
+         it is overridable, but only by saying so about THESE orders. */
+      if(atRisk.length && !sel.confirm_in_use){
+        const names=atRisk.slice(0,8).map(r=>`${r.order_no} (${r.detail})`).join("; ");
+        return fail(res,409,
+          `${atRisk.length} live order${atRisk.length===1?"":"s"} depend${atRisk.length===1?"s":""} on what you are removing: `
+          +`${names}${atRisk.length>8?"; and more":""}. Those orders will stay on the sheet but cannot be planned `
+          +`until their article is restored or they are re-articled. Confirm to remove anyway.`);
+      }
+
+      const label=plan.articles.length===1&&!plan.ranges.length&&!plan.materials.length
+        ?plan.articles[0].article:null;
+      await mutateReference("bom-bulk-remove",label,async ref2=>{
+        /* Re-planned against the row this transaction locked, so a BOM
+           uploaded between the preview and the confirmation cannot cause a
+           stale plan to delete something the clerk never saw. */
+        const fresh=planRemoval(ref2,sel);
+        if(fresh.errors.length) reject(fresh.errors.slice(0,10).join("; "));
+        if(fresh.empty) reject("Nothing was selected for removal");
+        applyRemoval(ref2,fresh);
+        return fresh;
+      });
+
+      return res.status(200).json({ ok:true, removed:plan.totals,
+        removed_articles:plan.articles.map(a=>a.article),
+        removed_ranges:plan.ranges.map(r=>`${r.article} ${r.combo}`),
+        removed_materials:plan.materials.length,
+        emptied_ranges:plan.emptied_ranges, emptied_articles:plan.emptied_articles,
+        orders_affected:atRisk });
+    }
+
     let removedBomItems=0;
     const directChangeType=body.bom_remove?"bom-item-remove":"reference-edit";
     const directChangeArticle=Array.isArray(body.bom_remove)&&body.bom_remove.length===1

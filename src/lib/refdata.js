@@ -28,10 +28,14 @@ export async function hydrate(){
     }
     catalogue = cat || {};
   }catch(e){
+    source = "error";
+    /* An expired session is not a data-integrity problem, and re-wrapping it
+       here would hide its type from the caller — startup would show "could not
+       start safely" where it should show the login box. Pass it through. */
+    if(e && e.name === "NotSignedIn") throw e;
     // Production must never continue on a different, bundled article master:
     // it can accept an order with yesterday's BOM or packing rule. Let startup
     // show a blocking error instead of turning a database outage into bad PIs.
-    source = "error";
     throw new Error(`Could not load the live article master: ${e.message||e}`);
   }
   setReference(REF);        // keep the reader's vocabulary in step

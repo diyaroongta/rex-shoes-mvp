@@ -179,3 +179,27 @@ alter table dispatches add column if not exists closes_order boolean not null de
 alter table dispatches drop constraint if exists dispatches_order_no_fkey;
 alter table dispatches add constraint dispatches_order_no_fkey
   foreign key (order_no) references orders(order_no) on delete restrict;
+
+-- ---------------------------------------------------------------------------
+-- Accounts. Until now the portal had none: anyone with the URL could read and
+-- edit every order. One row per person — the plan is several, each with a role,
+-- so `role` is here from the start even while only 'admin' is issued.
+--
+-- Passwords are stored as scrypt hashes written by api/_lib/auth.js. There is
+-- no plaintext password anywhere in this schema, this repo, or the environment
+-- variables; accounts are created with: node scripts/create-user.mjs <username>
+create table if not exists users (
+  username       text primary key,               -- stored lower-case; compared lower-case
+  password_hash  text        not null,           -- scrypt$N$r$p$salt$hash
+  display_name   text,
+  role           text        not null default 'admin' check (role in ('admin','planner','viewer')),
+  active         boolean     not null default true,
+  -- Brute force against a single shared password on a public URL is the
+  -- realistic attack here, so failures are counted and the account is held
+  -- shut for a few minutes rather than being guessable at machine speed.
+  failed_attempts integer    not null default 0,
+  locked_until   timestamptz,
+  last_login_at  timestamptz,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);

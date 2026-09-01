@@ -241,9 +241,13 @@ Until stock is real, the procurement list is illustrative rather than actionable
 
 Ordered by how much they matter.
 
-1. **No authentication.** Anyone with the URL can read and write the order sheet. This is the
-   blocker before it goes near a factory floor. If you haven't chosen a database yet, this is
-   the one argument for Supabase over Neon — it bundles auth, so you solve both at once.
+1. **Authentication is in, but it is one account and no roles yet.** Every `/api` endpoint
+   requires a signed-in user (the guard is in `wrap()` in `api/_lib/http.js`), passwords are
+   scrypt hashes, and the session is a 12-hour HttpOnly cookie signed with `AUTH_SECRET`.
+   What is NOT done: `users.role` exists (`admin | planner | viewer`) but **no endpoint reads
+   it**, so every account is effectively an admin. The static SPA shell is also still served
+   publicly — it holds no factory data, but the login page is reachable by anyone with the URL.
+   See "Setting up sign-in" below.
 2. **Sole types are guesses for 4 of 13 articles.** Confirmed by the client: JILL, ARMOUR, PERCY,
    SPADE and SPIKE are EVA; SILKY BELLY and REX GOLA are PVC. Still guesses:
    SMART BOY (PVC) and ARMOUR (VELCRO)/(LACE) (STUCK-ON). The stuck-on pair matters most —
@@ -603,8 +607,85 @@ Received as two feedback documents, 2026-08-04. Status of each:
 - **"PI addition in a separate tab" / initial party-nature tab** — the intake tab is already
   separate from order management; unclear whether the client means a deeper restructuring.
   Needs a concrete description of the desired tab layout before rebuilding navigation.
-- **Audit trail on edits** — blocked on authentication (known gap 1) — there is no user identity
-  to attach an edit to yet.
+- **Audit trail on edits** — no longer blocked. Authentication is in and `req.user.username` is
+  available on every write; what remains is choosing which tables carry a `changed_by` column
+  and threading it through.
+
+## Setting up sign-in
+
+Three steps, once, against the deployment you already have on Vercel + Neon.
+
+**1. Add `AUTH_SECRET` to Vercel.** Generate one and paste it into
+Project → Settings → Environment Variables (all environments):
+
+```
+npm run auth:secret
+```
+
+Without it every endpoint answers `503` and says so — it fails closed on purpose, so a
+forgotten variable can never leave the portal open while looking protected.
+
+**2. Apply the schema.** It is safe to re-run; it adds the `users` table and nothing else
+changes:
+
+```
+psql "$DATABASE_URL" -f db/schema.sql
+```
+
+**3. Create the account.** Run this locally with the same `DATABASE_URL` the deployment
+uses. The password is typed at a hidden prompt — it is never an argument, never an
+environment variable, and never logged:
+
+```
+DATABASE_URL="postgres://..." npm run user:create -- yourname
+```
+
+Then redeploy (step 1 changed the environment) and open the app: it now asks to sign in.
+
+**Adding more people later** is the same command with a different username. To reset a
+forgotten password, run it again for that username. To sign everybody out immediately —
+a laptop lost, someone leaving — rotate `AUTH_SECRET` on Vercel; every existing cookie
+stops verifying at once.
+
+### Managing accounts
+
+All four take the same `DATABASE_URL` as above.
+
+```
+node scripts/create-user.mjs --list             # who has an account, and who is locked out
+node scripts/create-user.mjs --verify <user>    # does this password actually work?
+node scripts/create-user.mjs --unlock <user>    # clear a lockout early
+node scripts/create-user.mjs <user>             # create, or reset the password
+```
+
+### If a password will not work
+
+Work down this list — it is ordered by how often each one is the cause.
+
+| What you see | What it means | Fix |
+|---|---|---|
+| "This portal is not set up yet — AUTH_SECRET…" | The environment variable is missing or under 32 characters | Set it on Vercel and **redeploy** |
+| "No accounts exist yet" | Schema applied, nobody created | `npm run user:create -- <username>` |
+| "Too many failed attempts" | Five wrong tries; locked 15 minutes | Wait, or `--unlock <user>` |
+| "Incorrect username or password" and you are sure it is right | Almost always the account was created against a **different database** than the deployment reads | `--list` against the deployment's `DATABASE_URL`; if the account is missing, that is the answer |
+| `--verify` says the password is correct, but the browser refuses it | The browser is talking to a different deployment, or `AUTH_SECRET` differs between environments | Check the URL and the Vercel environment |
+
+`--verify` is the one that settles arguments: it checks a typed password against the stored
+hash directly, with no browser and no cookie involved. If `--verify` passes and the browser
+still refuses, the password is not the problem.
+
+**What the script guarantees.** After writing an account it reads the hash back out of the
+database and checks the password against it before reporting success. An account it says was
+created is one that can sign in — a write that silently went to the wrong place, or a hash
+that did not round-trip, is caught there rather than at the login screen a day later.
+
+**How it works, in one paragraph.** `POST /api/auth` checks the password against an scrypt
+hash and sets a 12-hour HttpOnly cookie holding a signed `{username, role, expiry}`. Every
+other endpoint is wrapped by `wrap()` in `api/_lib/http.js`, which verifies that signature
+before the handler runs — so protection is structural, not something each endpoint has to
+remember. The browser never holds a token it can read. Five wrong passwords lock the account
+for fifteen minutes, and a wrong password and an unknown username give the identical reply,
+so the form cannot be used to discover who has an account.
 
 ## Swapping the AI provider
 

@@ -7,6 +7,7 @@ const mocks=vi.hoisted(()=>({
   listOrders:vi.fn(),getSettings:vi.fn(),putSettings:vi.fn(),listPis:vi.fn(),listDispatches:vi.fn(),
   getReference:vi.fn(),getCatalogue:vi.fn(),listParties:vi.fn(),
   createOrders:vi.fn(),patchReference:vi.fn(),saveParty:vi.fn(),
+  previewBomRemoval:vi.fn(),removeBom:vi.fn(),
   schedulePi:vi.fn(),patchOrder:vi.fn(),deleteAllOrders:vi.fn(),
   listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
@@ -38,6 +39,11 @@ beforeEach(()=>{
   mocks.listParties.mockResolvedValue([]);
   mocks.createOrders.mockResolvedValue([{order_no:"JO9001"}]);
   mocks.patchReference.mockResolvedValue({ok:true});
+  mocks.previewBomRemoval.mockResolvedValue({dry_run:true,
+    plan:{articles:[],ranges:[],materials:[{article:"SPIKE",combo:"7X10S",stage:"CUTTING",material:"M"}],
+          emptied_ranges:[],emptied_articles:[],errors:[],totals:{articles:0,ranges:0,rates:1},empty:false},
+    orders_at_risk:[]});
+  mocks.removeBom.mockResolvedValue({ok:true,removed_articles:[],removed_ranges:[],removed_materials:1,orders_affected:[]});
   mocks.saveParty.mockResolvedValue({name:"Test Buyer"});
   mocks.schedulePi.mockResolvedValue({restored:["JO77"]});
   mocks.listArchivedPis.mockResolvedValue([]);
@@ -130,16 +136,69 @@ describe("critical UI contracts",()=>{
     expect(onUploadBom).toHaveBeenCalledWith("JILL");
   });
 
-  it("removes one selected BOM item without replacing the full BOM",async()=>{
+  /* Bulk BOM removal replaced a one-material-at-a-time control. The contract
+     that matters is that nothing is deleted without a preview and an explicit
+     confirmation, and that whole articles can go in a single action. */
+  it("removes several whole articles in one confirmed action",async()=>{
+    const user=userEvent.setup();
+    mocks.previewBomRemoval.mockResolvedValue({dry_run:true,
+      plan:{articles:[{article:"SPIKE",ranges:2,rates:4},{article:"PERCY",ranges:1,rates:2}],
+            ranges:[],materials:[],emptied_ranges:[],emptied_articles:[],errors:[],
+            totals:{articles:2,ranges:3,rates:6},empty:false},
+      orders_at_risk:[]});
+    render(<ArticleRulesTab/>);
+    await user.click(screen.getByRole("button",{name:"Remove from BOM"}));
+
+    await user.click(await screen.findByRole("checkbox",{name:/^SPIKE/}));
+    await user.click(screen.getByRole("checkbox",{name:/^PERCY/}));
+    await user.click(screen.getByRole("button",{name:/Check what will be removed/}));
+
+    await waitFor(()=>expect(mocks.previewBomRemoval).toHaveBeenCalledWith(
+      expect.objectContaining({articles:["SPIKE","PERCY"]})));
+    // Nothing is deleted by previewing.
+    expect(mocks.removeBom).not.toHaveBeenCalled();
+
+    await user.click(await screen.findByRole("checkbox",{name:/I have checked the list above/}));
+    await user.click(screen.getByRole("button",{name:/^Remove /}));
+    await waitFor(()=>expect(mocks.removeBom).toHaveBeenCalledWith(
+      expect.objectContaining({articles:["SPIKE","PERCY"]}),false));
+  });
+
+  it("will not delete anything until the preview has been confirmed",async()=>{
     const user=userEvent.setup();
     render(<ArticleRulesTab/>);
-    await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
-    await user.click(screen.getByRole("button",{name:"Remove a BOM item"}));
-    await user.click(screen.getByRole("checkbox",{name:/I checked the article, size range and material/}));
-    await user.click(screen.getByRole("button",{name:"Remove selected BOM item"}));
-    await waitFor(()=>expect(mocks.patchReference).toHaveBeenCalledWith(expect.objectContaining({
-      bom_remove:[expect.objectContaining({article:"SPIKE",combo:"7X10S"})],
-    })));
+    await user.click(screen.getByRole("button",{name:"Remove from BOM"}));
+    await user.click(await screen.findByRole("checkbox",{name:/^SPIKE/}));
+    await user.click(screen.getByRole("button",{name:/Check what will be removed/}));
+    // The confirm box is untouched, so the remove button stays disabled.
+    const remove=await screen.findByRole("button",{name:/^Remove /});
+    expect(remove).toBeDisabled();
+    expect(mocks.removeBom).not.toHaveBeenCalled();
+  });
+
+  /* The override the planner needs to survive: an order on a deleted article
+     cannot be scheduled, so it must be named and separately acknowledged. */
+  it("blocks removal that would strand a live order until it is acknowledged",async()=>{
+    const user=userEvent.setup();
+    mocks.previewBomRemoval.mockResolvedValue({dry_run:true,
+      plan:{articles:[{article:"SPIKE",ranges:1,rates:2}],ranges:[],materials:[],
+            emptied_ranges:[],emptied_articles:[],errors:[],
+            totals:{articles:1,ranges:1,rates:2},empty:false},
+      orders_at_risk:[{order_no:"JO77",article:"SPIKE",reason:"article",
+                       detail:"its article would no longer exist"}]});
+    render(<ArticleRulesTab/>);
+    await user.click(screen.getByRole("button",{name:"Remove from BOM"}));
+    await user.click(await screen.findByRole("checkbox",{name:/^SPIKE/}));
+    await user.click(screen.getByRole("button",{name:/Check what will be removed/}));
+
+    expect(await screen.findByText(/JO77/)).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox",{name:/I have checked the list above/}));
+    // Confirmed, but the live order has not been acknowledged yet.
+    expect(screen.getByRole("button",{name:/^Remove /})).toBeDisabled();
+
+    await user.click(screen.getByRole("checkbox",{name:/these orders will become unplannable/}));
+    await user.click(screen.getByRole("button",{name:/^Remove /}));
+    await waitFor(()=>expect(mocks.removeBom).toHaveBeenCalledWith(expect.anything(),true));
   });
 
   it("adds a party without exposing dispatch-timeline editing",async()=>{

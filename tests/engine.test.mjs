@@ -323,5 +323,48 @@ test("orders with no PI number are grouped, never dropped", () => {
   assert.deepEqual(groups[""].orders, ["JO1"], "unfiled work eats the same stock");
 });
 
+/* An order can outlive its article — the article master is editable and a bulk
+   BOM removal can be confirmed over the top of a live order. compute() builds
+   every screen from one call, so a single orphaned order used to blank the
+   whole app rather than just its own row. */
+test("an order whose article was deleted does not take the planner down", () => {
+  const orders = [
+    { order_no:"JO1", order_date:"2026-07-06", article_code:"DELETED ARTICLE",
+      priority:2, party:"A", pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:60 }] },
+    { order_no:"JO2", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+      priority:2, party:"B", pi:{pi_no:"PI-2"}, lines:[{ combo:"11X13", qty:18 }] },
+  ];
+  const s = run(orders);                                   // must not throw
+  const jo2 = s.orders.find(o => o.order_no === "JO2");
+  assert.ok(jo2 && jo2.dispatch_date, "the healthy order is still planned normally");
+});
+
+test("the orphaned order stays on the board instead of vanishing", () => {
+  const orders = [{ order_no:"JO1", order_date:"2026-07-06", article_code:"DELETED ARTICLE",
+                    priority:2, party:"A", pi:{}, lines:[{ combo:"11X13", qty:60 }] }];
+  const s = run(orders);
+  const jo1 = s.orders.find(o => o.order_no === "JO1");
+  assert.ok(jo1, "the order is still listed — the pairs are still owed either way");
+  assert.equal(jo1.article_missing, true);
+  assert.equal(jo1.dispatch_date, null, "and honestly carries no date it cannot compute");
+  assert.equal(s.totals.total_pairs, 60, "its pairs still count");
+  assert.equal(s.totals.unplanned, 1);
+});
+
+test("and it is reported as a schedule problem, naming the article", () => {
+  const orders = [{ order_no:"JO1", order_date:"2026-07-06", article_code:"DELETED ARTICLE",
+                    priority:2, party:"A", pi:{}, lines:[{ combo:"11X13", qty:60 }] }];
+  const problem = run(orders).schedule_problems.find(p => p.includes("JO1"));
+  assert.ok(problem, "an unplannable order must be surfaced, not silently skipped");
+  assert.match(problem, /DELETED ARTICLE/);
+});
+
+test("an orphan does not consume stock it can no longer compute a need for", () => {
+  const orders = [{ order_no:"JO1", order_date:"2026-07-06", article_code:"DELETED ARTICLE",
+                    priority:2, party:"A", pi:{}, lines:[{ combo:"11X13", qty:9000 }] }];
+  const s = run(orders);
+  assert.equal(s.procurement.length, 0, "no article means no BOM means no material demand");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);
