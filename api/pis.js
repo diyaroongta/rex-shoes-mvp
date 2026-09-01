@@ -36,6 +36,21 @@ export default wrap(async (req,res)=>{
   }
 
   if(req.method==="POST"){
+    /* Allocating the next PI number lives here rather than in its own endpoint
+       because Vercel's Hobby plan allows 12 serverless functions and this
+       project had grown to 13. It belongs with the PIs in any case, and it is
+       handled BEFORE the pi_no check below — a number being allocated is
+       precisely the request that does not have one yet.
+
+       Central allocation matters: a browser-side random number has only a few
+       hundred possibilities and eventually merges unrelated commercial records. */
+    if(String((req.body&&req.body.action)||"").trim()==="next_number"){
+      await q("create sequence if not exists pi_no_seq start 1");
+      const {rows}=await q("select nextval('pi_no_seq') as n");
+      const year=new Date().getUTCFullYear();
+      return res.status(201).json({pi_no:`PI-${year}-${String(rows[0].n).padStart(6,"0")}`});
+    }
+
     const piNo=String((req.body&&req.body.pi_no)||"").trim();
     if(!piNo) return fail(res,400,"pi_no is required");
 

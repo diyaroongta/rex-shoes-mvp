@@ -115,7 +115,8 @@ api/
   _lib/ai.js       the ONLY file that reads ANTHROPIC_API_KEY
   _lib/db.js       pooled Postgres
   orders/          create, list, edit, delete
-  reference.js     BOM upload, stock, MRP, sole type, molding machine
+  pis.js           PI master, release into production, and PI number allocation
+  reference.js     BOM upload, stock, MRP, sole type, molding machine, bulk removal
   dispatches.js    packing reports
   parties.js       customers and their locked commercial terms
 db/schema.sql      safe to re-run; everything uses IF NOT EXISTS
@@ -245,6 +246,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | A mocked query that Postgres would refuse | The failed-attempt counter used `$2` in both `failed_attempts = $2` and a `case when $2 >= $3`, which real Postgres rejects outright (42P08). Every mocked test passed — they assert SQL text, not that a server accepts it — while in production a wrong password returned 500 and the lockout never advanced. Mocked API tests cannot catch parameter-type errors; anything non-trivial in SQL needs one run against a real database. |
 | An order that outlived its article | The article master is editable and a bulk BOM removal can be confirmed over a live order, so `articles[o.article_code]` can be undefined. `compute()` read `.routing` off it and threw — and because ONE call builds every screen, a single orphaned order blanked the whole app: dashboard, schedule, procurement and PI list together. Orphans are now set aside, listed at the top of the board with `article_missing`, counted in the pair totals and reported in `schedule_problems`. Never let one bad row take the planner down. |
 | A range emptied instead of removed | Removing the last material from a size range left the range in place with no rates. Orders could still be placed on it, and it then booked machine capacity while requiring zero material — the same silent failure as an unpriced line. `planRemoval` promotes that to removing the range itself, and says so in the preview rather than doing it quietly. Same rule one level up: an article whose every range is selected goes too. |
+| A thirteenth serverless function | Vercel's Hobby plan builds one function per file under `api/` and allows 12. Adding `api/auth.js` made it 13, and the DEPLOYMENT was rejected even though the build succeeded — so tests, coverage and `vite build` all passed while the app could not ship. PI number allocation moved into `api/pis.js` as `action:"next_number"`, and a shape test in `tests/api/auth.test.js` now asserts the count. Helpers go under `api/_lib/`, which Vercel ignores because of the underscore. |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---

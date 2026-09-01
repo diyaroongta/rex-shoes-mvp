@@ -68,7 +68,9 @@ export const listArchivedPis = ()          => j("/api/pis?archived=1");
 export const archivePi       = pi_no       => post("/api/pis", { pi_no, action:"archive" });
 export const restorePi       = pi_no       => post("/api/pis", { pi_no, action:"restore" });
 export const deletePi        = pi_no       => j(`/api/pis?pi_no=${encodeURIComponent(pi_no)}&confirm=1`, { method:"DELETE" });
-export const nextPiNumber    = ()          => post("/api/pi-numbers", {});
+/* Allocated by the server, never in the browser. Folded into /api/pis to stay
+   inside Vercel's 12-function limit on the Hobby plan. */
+export const nextPiNumber    = ()          => post("/api/pis", { action:"next_number" });
 
 /* ---- shared config (machine capacities) ---- */
 export const getSettings = ()      => j("/api/settings");

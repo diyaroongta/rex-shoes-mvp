@@ -354,6 +354,16 @@ describe("no endpoint ships unguarded", ()=>{
     expect(unguarded).toEqual([]);
   });
 
+  /* Vercel's Hobby plan builds ONE serverless function per file under api/,
+     capped at 12. Adding api/auth.js made it 13 and the deployment was
+     rejected outright — the build itself succeeds, so nothing catches this
+     until a deploy fails. Anything under api/_lib/ is ignored by Vercel
+     because of the underscore, which is why helpers live there. */
+  it("stays within the 12 serverless functions the Hobby plan allows", ()=>{
+    const functions = apiFiles();
+    expect(functions.length).toBeLessThanOrEqual(12);
+  });
+
   it("keeps the Postgres driver out of the guard's import path", ()=>{
     // http.js guards every endpoint, so anything it imports lands in the cold
     // start of the AI endpoints that deliberately avoid pg.

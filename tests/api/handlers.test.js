@@ -14,7 +14,6 @@ import partiesHandler from "../../api/parties.js";
 import catalogueHandler from "../../api/catalogue.js";
 import referenceHandler from "../../api/reference.js";
 import pisHandler from "../../api/pis.js";
-import piNumbersHandler from "../../api/pi-numbers.js";
 import { COOKIE, signSession } from "../../api/_lib/auth.js";
 
 /* Every endpoint is behind the session guard in api/_lib/http.js, so a request
@@ -34,10 +33,20 @@ describe("database API contracts",()=>{
   it("allocates collision-resistant PI numbers from a database sequence",async()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{n:"42"}]});
     const res=response();
-    await piNumbersHandler({headers:AUTH,method:"POST",url:"/api/pi-numbers",body:{}},res);
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{action:"next_number"}},res);
     expect(res.statusCode).toBe(201);
     expect(res.body.pi_no).toMatch(/^PI-\d{4}-000042$/);
     expect(String(dbMocks.q.mock.calls[1][0])).toContain("nextval('pi_no_seq')");
+  });
+
+  /* Folded in from its own endpoint to stay within Vercel's 12-function Hobby
+     limit. Allocating a number is the one POST with no pi_no, so it has to be
+     handled before the pi_no check that guards every other action. */
+  it("allocates a number without a pi_no, and still requires one for everything else",async()=>{
+    const missing=response();
+    await pisHandler({headers:AUTH,method:"POST",url:"/api/pis",body:{}},missing);
+    expect(missing.statusCode).toBe(400);
+    expect(missing.body.error).toMatch(/pi_no is required/);
   });
 
   it("preserves untouched settings when one capacity changes",async()=>{
