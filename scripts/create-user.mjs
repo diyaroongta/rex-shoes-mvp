@@ -17,6 +17,11 @@ import { Pool } from "pg";
 import { hashPassword, verifyPassword, assertUsablePassword,
          normalisePassword, MIN_PASSWORD } from "../api/_lib/auth.js";
 import { hiddenPrompts } from "./hidden-prompt.mjs";
+import { loadEnvLocal } from "./env-local.mjs";
+
+/* So the Neon URL can be saved once in .env.local instead of pasted in
+   front of every command. */
+const fromFile = loadEnvLocal();
 
 const args = process.argv.slice(2);
 const flag = name => { const i = args.indexOf(name); return i > -1 ? (args[i+1] || "") : null; };
@@ -44,9 +49,12 @@ if(!ROLES.includes(role)){
   process.exit(1);
 }
 if(!process.env.DATABASE_URL){
-  console.error("DATABASE_URL is not set. Copy it from Vercel -> Settings -> Environment Variables");
-  console.error("(or from the Neon dashboard) and run this again:");
-  console.error('  DATABASE_URL="postgres://..." npm run user:create -- <username>');
+  console.error("DATABASE_URL is not set.\n");
+  console.error("Get it from the Neon dashboard (Vercel stores it write-only, so it");
+  console.error("cannot be read back from there):");
+  console.error("  console.neon.tech -> your project -> Connect -> copy the connection string\n");
+  console.error("Save it once so you never paste it again:");
+  console.error("  echo 'DATABASE_URL=postgres://...' > .env.local");
   process.exit(1);
 }
 
@@ -69,12 +77,13 @@ const pool = new Pool({
 const fail = msg => { console.error(`\n✗ ${msg}`); process.exitCode = 1; };
 
 try{
-  console.log(`Database: ${describeTarget(process.env.DATABASE_URL)}`);
+  console.log(`Database: ${describeTarget(process.env.DATABASE_URL)}`
+    + (fromFile.some(e=>e.key==="DATABASE_URL") ? "  (from .env.local)" : ""));
 
   const exists = await pool.query("select to_regclass('public.users') as t");
   if(!exists.rows[0].t){
     console.error("\nThe users table does not exist in THIS database. Apply the schema first:");
-    console.error('  psql "$DATABASE_URL" -f db/schema.sql');
+    console.error("  npm run db:setup");
     process.exit(1);
   }
 

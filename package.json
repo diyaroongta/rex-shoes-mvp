@@ -18,7 +18,7 @@
     "coverage:ui-api": "vitest run --coverage --coverage.reportsDirectory=coverage/ui-api --coverage.thresholds.lines=60 --coverage.thresholds.statements=60 --coverage.thresholds.branches=50 --coverage.thresholds.functions=45",
     "test:coverage": "npm run coverage:core && npm run coverage:ui-api",
     "check": "npm run test:coverage && npm run build",
-    "db:setup": "psql \"$DATABASE_URL\" -f db/schema.sql",
+    "db:setup": "node scripts/db-setup.mjs",
     "user:create": "node scripts/create-user.mjs",
     "auth:secret": "node scripts/create-user.mjs --secret"
   },

@@ -66,7 +66,7 @@ Two notes:
 ### 3. Apply the schema
 
 ```bash
-psql "$DATABASE_URL" -f db/schema.sql      # or: npm run db:setup
+npm run db:setup                          # applies db/schema.sql
 ```
 
 Safe to re-run. Creates the operational tables, the persistent PI master, and the order-number sequence.
@@ -629,8 +629,11 @@ forgotten variable can never leave the portal open while looking protected.
 changes:
 
 ```
-psql "$DATABASE_URL" -f db/schema.sql
+DATABASE_URL="postgres://..." npm run db:setup
 ```
+
+It needs no psql install — it uses the `pg` package the project already depends on,
+prints which database it wrote to, and lists the tables that exist afterwards.
 
 **3. Create the account.** Run this locally with the same `DATABASE_URL` the deployment
 uses. The password is typed at a hidden prompt — it is never an argument, never an
