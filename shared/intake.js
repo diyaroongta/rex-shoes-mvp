@@ -105,6 +105,32 @@ function exactCombo(article, type, sizes,runHint=""){
    line whose carton count was the sum divided by one size's packing rate. An
    unresolved size is precisely a size we cannot key, so it can never be
    merged with another. */
+/* WHAT THE NUMBER UNDER A SIZE MEANS.
+ *
+ * The slip stacks size over quantity — "12" over "18" — and that lower figure
+ * is sometimes cartons and sometimes pairs. The factory's own rule is the size
+ * of the number: a carton count for one size is a small number, so anything
+ * ABOVE TEN is pairs. "12 over 18" is eighteen PAIRS of size 12; "11X13 over
+ * 4" is four CARTONS of that range.
+ *
+ * Reading eighteen pairs as eighteen cartons multiplies the order by the
+ * packing rate — on SPIKE's 11X1 that is 24x — so a 288-pair order came back
+ * as thousands. Getting this the wrong way round is not a rounding error, it
+ * is a different order.
+ *
+ * It is a heuristic and it is stated as one: `basis` comes back on every line
+ * so the screen can show which way it was read, and a genuinely large carton
+ * count is corrected by hand. */
+export const CARTON_LIMIT = 10;
+
+export function readQuantity(written, ppc){
+  const n = Math.max(0, Number(written) || 0);
+  if(!n) return { pairs:0, cartons:0, basis:null };
+  if(n > CARTON_LIMIT)
+    return { pairs:n, cartons: ppc ? +(n/ppc).toFixed(4) : null, basis:"pairs" };
+  return { pairs: ppc ? n*ppc : 0, cartons:n, basis:"cartons" };
+}
+
 function mergeSpecific(lines, incoming){
   const existing = incoming.combo
     && lines.find(line => line.combo === incoming.combo && line.sizes && incoming.sizes);
@@ -193,8 +219,10 @@ export function buildPhotoCards(parsed, reference){
           if(runHint==="SMALL")return `${token.bare||size}s`;
           return token.bare||String(size);
         }).filter(Boolean);
-        const cartons = Math.max(0, Number(rawLine.cartons) || 0);
-        if(!sizes.length || cartons <= 0) continue;
+        /* The figure as WRITTEN. Whether it means cartons or pairs is decided
+           by readQuantity, per line, once the packing rate is known. */
+        const written_qty = Math.max(0, Number(rawLine.cartons) || 0);
+        if(!sizes.length || written_qty <= 0) continue;
         const match = exactCombo(article, type, sizes, runHint);
         const combo = match.combo;
         /* PROVENANCE, not a label the invoice prints. It must read back as the
@@ -214,14 +242,18 @@ export function buildPhotoCards(parsed, reference){
           // size_order and the packing rate is looked up on the right roll.
           const size = combo ? match.sizes[0] : sizes[0];
           const ppc = singlePackQty(article, size, lineType,combo);
-          const qty = ppc == null ? 0 : cartons * ppc;
+          /* Each size at ITS OWN rate, and the written figure read as pairs or
+             cartons by its size. */
+          const read = readQuantity(written_qty, ppc);
+          const qty = read.pairs;
           const incoming = {
             combo,
             type: lineType,
             single: combo ? undefined : size,
             exact: !!combo,
             raw,
-            cartons,
+            basis: read.basis,
+            cartons: read.cartons,
             ppc: ppc ?? "",
             ppcKnown: ppc != null,
             qty,
@@ -235,16 +267,18 @@ export function buildPhotoCards(parsed, reference){
         }
 
         const ppc = combo ? pairsPerCarton(article, combo) : null;
+        const readLine = readQuantity(written_qty, ppc);
         lines.push({
           combo,
           type: lineType,
           single: combo ? undefined : sizes.join("×"),
           exact: !!combo,
           raw,
-          cartons,
+          basis: readLine.basis,
+          cartons: readLine.cartons,
           ppc: ppc ?? "",
           ppcKnown: ppc != null,
-          qty: ppc == null ? 0 : cartons * ppc,
+          qty: readLine.pairs,
           size_order: combo ? comboSizesForArticle(article, combo, lineType) : sizes,
         });
         if(!combo) issues.push(`${article} ${type || ""}: ${sizes.join("×")} is not an exact configured size range.`);

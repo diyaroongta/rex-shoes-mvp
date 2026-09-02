@@ -55,6 +55,29 @@ order back to the automatic planner.
 
 ---
 
+**Job work is one flow for a line and for an outside fabricator.** Issue,
+receive, shortage — identical. Only three things differ, and all three follow
+from the fabricator's `type`:
+
+| | internal line | external | sample |
+|---|---|---|---|
+| slip printed | Internal Issue Slip | Job Work Challan | Job Work Challan |
+| money | none, ever | rate x pieces | flat charge |
+| quantity | bulk | bulk | 1-10, bulk is REFUSED |
+
+That is why it is one screen with one "who is doing this" dropdown. Two lists
+would mean two screens and two ways to get the same question wrong.
+
+**A partial return is still OUT, not short.** `receive()` is cumulative, and
+`shortage` is written only when the job is CLOSED — at which point the balance
+is accepted as never coming back. An open job with 400 of 900 back is 500 still
+with the fabricator. `withFabricators()` is the note's "with fabricator/line"
+bucket and counts only open jobs, while a closed job's shortage stays on record.
+
+**Payment follows what came BACK, not what went out** — a shortage is not work
+done — and the rate is SNAPSHOTTED onto the job row, so renegotiating a
+fabricator's rate next month cannot rewrite what last month's work cost.
+
 **Fabricators and internal lines are ONE list.** `shared/fabricators.js` keeps
 them apart by `type` only — `internal_line`, `external`, `sample` — so the job
 work issue screen asks "who is doing this" once, whether the answer is Line 2 or
@@ -211,6 +234,7 @@ shared/            imported by BOTH browser and server — pure, testable
   packing-list.js  the dispatch document: carton numbering, totals, reconciliation
   bom-components.js  cut pieces per material: job cards read these, procurement never does
   fabricators.js   internal lines and job workers in one list; what each type requires
+  job-work.js      issuing work out and taking it back: slips, shortage, what it costs
   inputs.js        SEED reference data only — real data lives in Postgres
   catalogue-seed.js article photos + MRP bands from the catalogue PDF
 src/
@@ -220,6 +244,7 @@ src/
   BomRemovalPanel.jsx  bulk BOM removal: articles, ranges and materials in one action
   JobOrdersTab.jsx     releasing PI quantities into production, one run at a time
   FabricatorsTab.jsx   the fabricator master: lines, job workers, sample makers
+  JobWorkTab.jsx       assigning stitching out, receiving it back, and the slip
   PackingList.jsx      the dispatch document, in the factory's own layout
   lib/refdata.js   hydrates live reference data over the seed at startup
   lib/client.js    the only thing the browser calls — never a provider directly
@@ -229,7 +254,7 @@ api/
   orders/          create, list, edit, delete
   pis.js           PI master, release into production, and PI number allocation
   reference.js     BOM upload, stock, MRP, sole type, molding machine, bulk removal
-  dispatches.js    packing reports
+  dispatches.js    packing reports, AND job work (?resource=job_work)
   parties.js       customers, AND fabricators (?resource=fabricators) — see below
 db/schema.sql      safe to re-run; everything uses IF NOT EXISTS
 tests/             4 suites, ~26 checks
@@ -364,6 +389,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | A warning that could never be cleared | `onArticleChange` remapped the card but left `ambiguous` set, so "More than one product fits" stayed up after the correction was made. A banner that survives the fix teaches people to scroll past every banner. Choosing from the list now IS the confirmation. |
 | A range mistaken for an invented size | Match &amp; Check bolded the RANGE (`11X1`) while the slip's own `12, 13, 1` sat in ten-point grey, so a range covering a size nobody wrote looked like the app adding one. It is not: a range is only the RATE BASIS, and an unwritten size carries no quantity, so nothing extra is priced or made. The written sizes lead now and the range follows as "mapped to 11X1". The warning fires only when an unwritten size actually carries pairs — which would be the real invented-size fault. |
 | Refusing where a warning would do | Issuing a PI was blocked by five separate refusals — customer, colours, size range, packing rate, MRP — each stopping the clerk dead at a different point. During setup, and on a genuinely urgent order, that is the wrong trade. They are collected and shown ONCE with "Issue the PI anyway". What is not negotiable is honesty about the cost: a line with no size range or no packing rate prices to zero pairs and is DROPPED from the invoice entirely, so those two say so in as many words rather than reading as cosmetic. |
+| Reading pairs as cartons | The slip stacks size over quantity, and that bottom figure is sometimes cartons and sometimes PAIRS. The factory's rule is the size of the number: a carton count for ONE size is small, so anything above ten is pairs (`CARTON_LIMIT` in `shared/intake.js`). Read the other way round it is multiplied by the packing rate — the 2026-27 SPIKE BLUE revised order is 288 pairs and came back with a single line reading 1,728. `readQuantity()` decides, `basis` says which way it went so the screen can show it, and the AI prompt now says to transcribe the figure verbatim rather than convert it. |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---

@@ -236,3 +236,36 @@ create table if not exists fabricators (
   updated_at     timestamptz not null default now()
 );
 create index if not exists fabricators_type_idx on fabricators (active, type, name);
+
+-- ---------------------------------------------------------------------------
+-- Job work: what has been sent out to a line or a fabricator, and what has
+-- come back. ONE table for both, because the movement is identical — only the
+-- slip it prints and whether it is payable differ, and both follow from the
+-- fabricator's type (see shared/job-work.js).
+--
+-- `received` is cumulative: a partial return is normal, and the balance is
+-- still OUT rather than short. `shortage` is only written when the job is
+-- closed, at which point the balance is accepted as never coming back.
+create table if not exists job_work (
+  id              bigserial primary key,
+  fabricator      text        not null references fabricators(name),
+  fabricator_type text        not null,
+  article         text        not null,
+  stage           text        not null default 'STITCHING',
+  order_no        text,                                   -- the production order, when it came from one
+  qty             integer     not null check (qty > 0),   -- pieces issued
+  received        integer     not null default 0,
+  shortage        integer     not null default 0,
+  status          text        not null default 'issued'
+                    check (status in ('issued','partial','closed')),
+  slip            text,                                   -- Job Work Challan / Internal Issue Slip
+  sample          boolean     not null default false,
+  sample_status   text        check (sample_status in ('pending','approved','rejected','revision')),
+  rate            numeric     not null default 0,         -- snapshotted, so a later rate change
+  payable         boolean     not null default false,     -- cannot rewrite a settled job
+  note            text,
+  issued_on       date        not null default current_date,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index if not exists job_work_open_idx on job_work (status, fabricator, issued_on desc);

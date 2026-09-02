@@ -1,6 +1,7 @@
 import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { buildPackingList } from "../shared/packing-list.js";
+import { validateIssue, receive, slipFor } from "../shared/job-work.js";
 import { INPUTS } from "../shared/inputs.js";
 import { pairsPerCarton, setReference } from "../shared/bridge.js";
 
@@ -14,7 +15,92 @@ function validDate(value){
 /* Packing / dispatch reports. Recording one reduces an order's pending
    quantity; it never edits the order itself, so the original order stays
    auditable against what actually shipped. */
+/* Job work shares this endpoint rather than getting its own file: Vercel's
+   Hobby plan builds one function per file under api/ and allows 12, and the
+   project is at exactly 12. It is a good neighbour — a dispatch and a job work
+   issue are the same shape of thing, goods leaving with a quantity that is
+   later reconciled against what came back. Both are a planner's daily work,
+   so they share the permission too. */
+async function jobWork(req, res){
+  if(req.method === "GET"){
+    const { rows } = await q(
+      `select id, fabricator, fabricator_type, article, stage, order_no, qty,
+              received, shortage, status, slip, sample, sample_status, rate,
+              payable, note, issued_on
+         from job_work order by status, issued_on desc, id desc`);
+    return res.status(200).json(rows.map(r => ({ ...r,
+      qty:Number(r.qty), received:Number(r.received),
+      shortage:Number(r.shortage), rate:Number(r.rate) })));
+  }
+
+  if(req.method === "POST"){
+    const b = req.body || {};
+    const { rows:[fab] } = await q(
+      `select name, type, rate, payable, active from fabricators where name = $1`,
+      [String(b.fabricator || "").trim()]);
+    if(!fab) return fail(res, 404, `no such fabricator: ${b.fabricator || "(none)"}`);
+
+    const check = validateIssue(b, { ...fab, rate:Number(fab.rate) });
+    if(!check.ok) return fail(res, 400, check.problems.join("; "));
+    const v = check.value;
+
+    /* The rate is SNAPSHOTTED onto the job. Renegotiating a fabricator's rate
+       next month must not silently rewrite what last month's work cost. */
+    const { rows } = await q(
+      `insert into job_work (fabricator, fabricator_type, article, stage, order_no,
+                             qty, slip, sample, sample_status, rate, payable, note,
+                             issued_on)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, coalesce($13::date, current_date))
+       returning id, fabricator, fabricator_type, article, stage, order_no, qty,
+                 received, shortage, status, slip, sample, sample_status, rate,
+                 payable, note, issued_on`,
+      [v.fabricator, v.fabricator_type, v.article, v.stage, v.order_no, v.qty,
+       v.slip, v.sample, v.sample_status, Number(fab.rate), fab.payable, v.note,
+       v.issued_on]);
+    return res.status(201).json({ ...rows[0], qty:Number(rows[0].qty),
+      received:Number(rows[0].received), rate:Number(rows[0].rate) });
+  }
+
+  /* Receiving work back, and recording a sample's verdict. */
+  if(req.method === "PATCH"){
+    const b = req.body || {};
+    const id = Number(b.id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const { rows:[job] } = await q(
+      `select id, qty, received, status, sample from job_work where id = $1`, [id]);
+    if(!job) return fail(res, 404, `no such job: ${id}`);
+
+    if(b.sample_status != null){
+      if(!job.sample) return fail(res, 400, "only sample work carries a sample verdict");
+      const st = String(b.sample_status);
+      if(!["pending","approved","rejected","revision"].includes(st))
+        return fail(res, 400, `unknown sample status: ${st}`);
+      const { rows } = await q(
+        `update job_work set sample_status=$2, updated_at=now() where id=$1
+         returning id, sample_status`, [id, st]);
+      return res.status(200).json(rows[0]);
+    }
+
+    const out = receive({ qty:Number(job.qty), received:Number(job.received) },
+                        b.received, { close: !!b.close });
+    if(!out.ok) return fail(res, 400, out.problems.join("; "));
+    const { rows } = await q(
+      `update job_work set received=$2, shortage=$3, status=$4, updated_at=now()
+        where id=$1
+       returning id, fabricator, article, qty, received, shortage, status`,
+      [id, out.received, out.shortage, out.status]);
+    return res.status(200).json({ ...rows[0], qty:Number(rows[0].qty),
+      received:Number(rows[0].received), shortage:Number(rows[0].shortage) });
+  }
+
+  return fail(res, 405, `${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
+  if(String((req.query||{}).resource||"") === "job_work"
+     || (req.body && req.body.resource === "job_work"))
+    return jobWork(req, res);
+
   if(req.method === "GET"){
     const { rows } = await q(
       `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list

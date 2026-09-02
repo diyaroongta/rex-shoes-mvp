@@ -107,6 +107,23 @@ export const addDispatch     = d       => post("/api/dispatches", d);
    so it is a correction of a mis-keyed report, not a way to hide a shipment. */
 export const deleteDispatch  = id      => j(`/api/dispatches?id=${id}`, { method:"DELETE" });
 
+/* ---- job work: what is out with a line or a fabricator ----
+   Served by /api/dispatches to stay within Vercel's 12-function limit — a job
+   work issue and a dispatch are the same shape of movement. */
+export const listJobWork = ()   => j("/api/dispatches?resource=job_work");
+export const issueJobWork = job => post("/api/dispatches?resource=job_work",
+                                        { ...job, resource:"job_work" });
+/* Cumulative: a partial return is normal. `close` accepts the balance as never
+   coming back and records it as a shortage. */
+export const receiveJobWork = (id, received, close=false) =>
+  j("/api/dispatches?resource=job_work", { method:"PATCH",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ resource:"job_work", id, received, close }) });
+export const setSampleStatus = (id, sample_status) =>
+  j("/api/dispatches?resource=job_work", { method:"PATCH",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ resource:"job_work", id, sample_status }) });
+
 /* ---- reference data (articles, BOM rates, materials, packing) ---- */
 export const getReference   = ()        => j("/api/reference");
 export const uploadBom      = payload   => post("/api/reference", payload);

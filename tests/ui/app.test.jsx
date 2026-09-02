@@ -180,26 +180,27 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("button",{name:"Release production runs for PI77"})).toBeNull();
   });
 
-  /* Sizes inside one range do not pack alike. SPIKE's 11X1 packs 12s and 13s
-     at 24 to a carton and size 1 at 18, so a slip reading 12/18, 13/18, 1/36
-     is 432 + 432 + 648 = 1,512 pairs — not the 72 x 24 = 1,728 the PAIRS
-     column was printing from the line rate alone. */
+  /* Sizes inside one range do not pack alike: SPIKE's 11X1 packs 12s and 13s
+     at 24 to a carton and size 1 at 18. So a line's pairs can never be
+     cartons x the LINE rate — that figure is wrong the moment two sizes in the
+     range differ. Small figures here, so they read as cartons. */
   it("totals a line from its own sizes, not cartons x the line rate",async()=>{
     const { buildPhotoCards } = await import("../../shared/intake.js");
     const { INPUTS } = await import("../../shared/inputs.js");
     const { cards } = buildPhotoCards({orders:[{
       category:"SPIKE", color:"BLUE", party:"X", type:"VELCRO",
-      lines:[{sizes:["12"],cartons:18,type:"VELCRO"},
-             {sizes:["13"],cartons:18,type:"VELCRO"},
-             {sizes:["1"], cartons:36,type:"VELCRO"}]}]}, INPUTS);
+      lines:[{sizes:["12"],cartons:2,type:"VELCRO"},
+             {sizes:["13"],cartons:2,type:"VELCRO"},
+             {sizes:["1"], cartons:2,type:"VELCRO"}]}]}, INPUTS);
     const line = cards[0].lines[0];
-    expect(line.cartons).toBe(72);
+    expect(line.basis).toBe("cartons");
+    expect(line.cartons).toBe(6);
     expect(line.ppc).toBe(24);
-    // Each size costed at ITS OWN rate.
-    expect(line.sizes).toEqual({ "1":648, "12s":432, "13s":432 });
-    expect(line.qty).toBe(1512);
-    // The trap: the line rate alone would have said 1,728.
-    expect(line.cartons * line.ppc).toBe(1728);
+    // 12s and 13s at 24, size 1 at its own 18.
+    expect(line.sizes).toEqual({ "1":36, "12s":48, "13s":48 });
+    expect(line.qty).toBe(132);
+    // The trap: the line rate alone would have said 144.
+    expect(line.cartons * line.ppc).toBe(144);
     expect(line.qty).not.toBe(line.cartons * line.ppc);
   });
 

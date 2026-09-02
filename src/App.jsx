@@ -18,6 +18,7 @@ import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
 import JobOrdersTab from "./JobOrdersTab.jsx";
 import FabricatorsTab from "./FabricatorsTab.jsx";
+import JobWorkTab from "./JobWorkTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -279,6 +280,8 @@ export default function App({ user=null, onSignOut=null }={}){
       ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
+      /* Assigning stitching to a line or an outside fabricator. */
+      ["jobwork","Job work"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
       ["machines","Machine load"],
@@ -506,6 +509,7 @@ export default function App({ user=null, onSignOut=null }={}){
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
+        {tab==="jobwork" && <JobWorkTab orders={orders||[]} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
@@ -1410,6 +1414,19 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                       return <span className="font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
                         background:small?"#ecfeff":"#fef3c7",color:small?"#0e7490":"#92400e"}}>
                         {small?"SMALL run":"LARGE run"}</span>; })()}
+                    {/* HOW THE WRITTEN FIGURE WAS READ. Above ten it is taken
+                        as pairs, at or below ten as cartons — a rule that is
+                        right nearly always and wrong occasionally, so it has to
+                        be visible to be correctable. Without this the clerk
+                        cannot tell a line read as 18 pairs from one read as 18
+                        cartons; the two differ by the packing rate. */}
+                    {l.basis && <span className="font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
+                      background:l.basis==="pairs"?"#eef2ff":"#f1f5f9",
+                      color:l.basis==="pairs"?"#4338ca":"#475569"}}
+                      title={l.basis==="pairs"
+                        ? "Over ten, so read as pairs. Edit the size boxes below to change it."
+                        : "Ten or under, so read as cartons at each size's own rate."}>
+                      read as {l.basis}</span>}
                     {l.combo
                       ? <span className="mono font-normal text-slate-400" style={{fontSize:10}}>mapped to {l.combo}</span>
                       : <span className="text-amber-700">Not matched to a range</span>}
@@ -1813,6 +1830,7 @@ const VIEWS = {
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   jobs:        {title:"Job orders",         sub:"Release PI quantities into production, one run at a time"},
+  jobwork:     {title:"Job work",           sub:"Assign stitching to an internal line or an outside fabricator, and take it back in"},
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},

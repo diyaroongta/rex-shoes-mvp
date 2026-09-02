@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readQuantity, CARTON_LIMIT } from "../shared/intake.js";
 import { buildPhotoCards } from "../shared/intake.js";
 import { buildMultiPI } from "../shared/pi.js";
 import { INPUTS } from "../shared/inputs.js";
@@ -274,3 +275,46 @@ assert.ok(readPrompt().includes('"stated_cartons"'),
   "the reader must hand back the total so the app can check it independently");
 
 console.log("  pass  photo stacks retain exact sizes, type and packing rate; unknown articles are blocked\n");
+
+/* ---------------------------------------------------------------------------
+   PAIRS OR CARTONS — the number written under a size.
+   The 2026-27 "SPIKE BLUE (Revised order)" slip stacks size over quantity:
+   12/18, 13/18, 1/36 ... and those lower figures are PAIRS. The factory's rule
+   is the size of the number — a carton count for a single size is small, so
+   anything above ten is pairs. Reading 18 pairs as 18 cartons multiplies by the
+   packing rate, and this 288-pair order came back as thousands. */
+{
+  const slip = buildPhotoCards({orders:[{
+    category:"SPIKE", color:"BLUE", party:"X",
+    lines:[{sizes:["12"],cartons:18,type:"VELCRO"},{sizes:["13"],cartons:18,type:"VELCRO"},
+           {sizes:["1"], cartons:36,type:"VELCRO"},{sizes:["2"], cartons:18,type:"VELCRO"},
+           {sizes:["4"], cartons:18,type:"VELCRO"},{sizes:["5"], cartons:36,type:"VELCRO"},
+           {sizes:["6"], cartons:36,type:"LACE"},  {sizes:["7"], cartons:36,type:"LACE"},
+           {sizes:["8"], cartons:18,type:"LACE"},  {sizes:["9"], cartons:18,type:"LACE"},
+           {sizes:["10"],cartons:18,type:"LACE"},  {sizes:["11"],cartons:18,type:"LACE"}]}]}, INPUTS);
+
+  const lines = slip.cards.flatMap(c => c.lines);
+  assert.equal(lines.reduce((a,l)=>a+l.qty,0), 288,
+    "the revised SPIKE BLUE slip totals the 288 pairs it was written for");
+
+  const first = lines.find(l => l.combo === "11X1");
+  assert.equal(first.basis, "pairs", "a figure above ten is read as PAIRS, not cartons");
+  assert.deepEqual(first.sizes, {"1":36,"12s":18,"13s":18},
+    "each size keeps the number the slip wrote against it");
+  assert.equal(first.qty, 72, "reading 18 as cartons would have made this line 432");
+}
+
+/* A small figure is still a carton count — the 19-Aug slip's 1, 2 and 2. */
+{
+  const small = buildPhotoCards({orders:[{category:"SPIKE", party:"X",
+    lines:[{sizes:["13"],cartons:2,type:"VELCRO"}]}]}, INPUTS);
+  const l = small.cards[0].lines[0];
+  assert.equal(l.basis, "cartons", "ten or below is still read as CARTONS");
+  assert.equal(l.qty, 48, "and is costed at that size's own rate");
+}
+
+assert.equal(CARTON_LIMIT, 10, "the threshold is exactly ten");
+assert.equal(readQuantity(10, 24).basis, "cartons", "ten is cartons");
+assert.equal(readQuantity(11, 24).basis, "pairs", "eleven is pairs");
+assert.equal(readQuantity(36, 18).cartons, 2, "pairs carry a derived carton count for the packer");
+assert.equal(readQuantity(0, 24).basis, null, "nothing written is nothing at all");

@@ -130,13 +130,14 @@ const LABEL = {
    permission. Setup screens are therefore hidden rather than disabled. */
 const VIEWER_TABS = new Set([
   "mis", "pis", "orders", "dispatch", "schedule", "plan", "machines", "procurement", "stock",
+  "jobwork",                        // reads what is out with each line; writes are refused
 ]);
 const PLANNER_TABS = new Set([
   /* "bulk" is not listed: bulk upload is a mode INSIDE PI generation now, not
      a screen of its own, so it is governed by access to "intake".
      "jobs" is releasing PI quantities into production — squarely the
      planner's job, and the reason the role exists. */
-  ...VIEWER_TABS, "intake", "jobs", "copilot",
+  ...VIEWER_TABS, "intake", "jobs", "jobwork", "copilot",
 ]);
 
 export function canSeeTab(role, tab){
