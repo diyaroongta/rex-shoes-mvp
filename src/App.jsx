@@ -437,6 +437,12 @@ export default function App({ user=null, onSignOut=null }={}){
                   )}
                 </div>
               )}
+              {/* The factory's own mark, top right on every screen. Kept out of
+                  print — the documents carry their own letterhead, and a second
+                  logo on an invoice is worse than none. */}
+              <img data-noprint src="/brand/rex-logo.jpg" alt="REX"
+                   style={{height:30,width:"auto",objectFit:"contain",
+                           paddingLeft:14,borderLeft:"1px solid #E4E9F0"}} />
             </div>
           </header>
 
