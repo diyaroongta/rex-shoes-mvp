@@ -55,6 +55,21 @@ order back to the automatic planner.
 
 ---
 
+**The menu names the factory's own books.** Orders & dispatch is the **Order
+Book**, Dispatch & packing is the **Dispatch Book**. Bulk upload is not a
+top-level screen: it is a second way of doing what PI generation does — getting
+orders in — so it is a mode inside that screen. `NewOrderFlow` stays MOUNTED
+when the spreadsheet mode is showing, because it holds an unsaved draft and
+switching modes must not discard a slip the clerk has already checked.
+
+**Creating a production job order is its own screen** (`JobOrdersTab`), not a
+button inside the PI database. It was nested under the PI row's Release action,
+which put a shop-floor decision inside a commercial record and meant hunting
+through issued invoices to find the work still owed. The PI database now only
+REPORTS what is owed and links across. Releasing is still partial by design —
+each release is one production order that schedules and dispatches on its own,
+and what is left stays owed on the PI without touching the invoice.
+
 **BOM removal is bulk, previewed, and undoable.** `shared/bom-removal.js` is a
 pure planner: give it the reference document and a selection of articles, size
 ranges and individual materials in any mix, and it returns exactly what would
@@ -99,6 +114,7 @@ shared/            imported by BOTH browser and server — pure, testable
   bridge.js        article matching + the handwriting-reading prompt
   bom-import.js    parsing the factory's BOM workbooks
   bom-removal.js   what a bulk BOM removal would delete — pure, shared by preview and delete
+  permissions.js   who may do what — enforced in wrap(), read by the UI for tabs
   order-import.js  parsing bulk order spreadsheets
   intake.js        photo-read normalization; preserves exact sizes and V/L
   mis.js           pure executive MIS KPIs: health, dispatch gap, output/utilisation
@@ -109,6 +125,7 @@ src/
   *Tab.jsx         one file per screen
   PiDocument.jsx   the invoice, matching the factory's existing layout
   BomRemovalPanel.jsx  bulk BOM removal: articles, ranges and materials in one action
+  JobOrdersTab.jsx     releasing PI quantities into production, one run at a time
   lib/refdata.js   hydrates live reference data over the seed at startup
   lib/client.js    the only thing the browser calls — never a provider directly
 api/
@@ -247,6 +264,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | An order that outlived its article | The article master is editable and a bulk BOM removal can be confirmed over a live order, so `articles[o.article_code]` can be undefined. `compute()` read `.routing` off it and threw — and because ONE call builds every screen, a single orphaned order blanked the whole app: dashboard, schedule, procurement and PI list together. Orphans are now set aside, listed at the top of the board with `article_missing`, counted in the pair totals and reported in `schedule_problems`. Never let one bad row take the planner down. |
 | A range emptied instead of removed | Removing the last material from a size range left the range in place with no rates. Orders could still be placed on it, and it then booked machine capacity while requiring zero material — the same silent failure as an unpriced line. `planRemoval` promotes that to removing the range itself, and says so in the preview rather than doing it quietly. Same rule one level up: an article whose every range is selected goes too. |
 | A thirteenth serverless function | Vercel's Hobby plan builds one function per file under `api/` and allows 12. Adding `api/auth.js` made it 13, and the DEPLOYMENT was rejected even though the build succeeded — so tests, coverage and `vite build` all passed while the app could not ship. PI number allocation moved into `api/pis.js` as `action:"next_number"`, and a shape test in `tests/api/auth.test.js` now asserts the count. Helpers go under `api/_lib/`, which Vercel ignores because of the underscore. |
+| A session that invented a role | `signSession` defaulted a missing role to `"admin"` (`user.role \|\| "admin"`), and `readSession` did the same on the way back. Any path that produced a user without a role — a hand-written row, a future SSO mapping, a bug — therefore minted an ADMINISTRATOR session. Access control has to fail closed: the default is gone, an absent role reaches `can()` as absent, and it is refused with a message telling the user to have it set. |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---
@@ -306,9 +324,23 @@ centres, 13 screens, 7 API endpoints.
 - The session is a 12-hour HttpOnly cookie, so the browser holds no token and no
   script can read one. There is no sessions table: revoking everybody at once is done
   by rotating `AUTH_SECRET` on Vercel.
-- `users.role` is `admin | planner | viewer` from the start. Only `admin` is issued
-  today and **no endpoint checks the role yet** — that is the next step, and the role
-  already rides in the verified cookie as `req.user.role`.
+- **Roles are enforced.** `shared/permissions.js` is pure and is consulted by `wrap()`
+  on every request, so an endpoint cannot ship without a policy any more than it can
+  ship without a session. It **denies anything it does not recognise**, so a new
+  endpoint is admin-only until classified, and a shape test fails the build until
+  someone classifies it.
+  - `admin` — everything, including the article master, BOM, parties, capacities
+  - `planner` — orders, PIs, scheduling, dispatch, AI readers, and stock figures
+  - `viewer` — reads everything, writes nothing
+  The one split worth knowing: `api/reference.js` carries BOTH stock figures (daily
+  clerical work, planner) and the BOM (master data, admin), so it is judged on the
+  body keys, not the endpoint. Mixing a BOM change in beside a stock change sinks the
+  whole request.
+- The UI hides screens a role cannot use rather than disabling their buttons — a
+  screen whose every control is refused reads as a broken app, not as a permission.
+  The server is still the only thing that enforces it.
+- Roles are changed with `--set-role`, which does NOT reset the password. The role
+  rides in the signed cookie, so it takes effect at the user's next sign-in.
 - Accounts: `node scripts/create-user.mjs <username>`. The password is typed at a
   hidden prompt — never an argument, never an environment variable, never logged.
   Also `--list`, `--verify <user>` (checks a password against the stored hash with no

@@ -11,7 +11,7 @@
     "dev:ui-only": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:core": "node tests/engine.test.mjs && node tests/pi.test.mjs && node tests/sizes.test.mjs && node tests/order-import.test.mjs && node tests/intake.test.mjs && node tests/pi-split.test.mjs && node tests/mis.test.mjs && node tests/dispatch-ledger.test.mjs && node tests/reference-import.test.mjs && node tests/regressions.test.mjs && node tests/bom-removal.test.mjs && node tests/scripts.test.mjs",
+    "test:core": "node tests/engine.test.mjs && node tests/pi.test.mjs && node tests/sizes.test.mjs && node tests/order-import.test.mjs && node tests/intake.test.mjs && node tests/pi-split.test.mjs && node tests/mis.test.mjs && node tests/dispatch-ledger.test.mjs && node tests/reference-import.test.mjs && node tests/regressions.test.mjs && node tests/bom-removal.test.mjs && node tests/permissions.test.mjs && node tests/scripts.test.mjs",
     "test:ui-api": "vitest run",
     "test": "npm run test:core && npm run test:ui-api",
     "coverage:core": "c8 --all --include='shared/**/*.js' --exclude='shared/inputs.js' --exclude='shared/catalogue-seed.js' --check-coverage --lines=80 --branches=60 --functions=80 --report-dir=coverage/core --reporter=text --reporter=json-summary npm run test:core",

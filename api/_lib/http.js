@@ -3,6 +3,7 @@
    api/_lib/auth.js observes the same rule, which is why the session guard
    below can live here at all. */
 import { authSecret, sessionOf } from "./auth.js";
+import { can } from "../../shared/permissions.js";
 
 export function fail(res, status, message){
   return res.status(status).json({ error: message });
@@ -38,6 +39,15 @@ export function wrap(handler, opts = {}){
         const user = sessionOf(req);
         if(!user) return res.status(401).json({ error:"Sign in required", auth:"required" });
         req.user = user;
+
+        /* Roles are enforced HERE for the same reason the session is: an
+           endpoint must not be able to ship without a policy because someone
+           forgot a line. shared/permissions.js denies anything it does not
+           recognise, so a new endpoint is admin-only until it is classified.
+           It is pure — no database — so it costs nothing on a cold start. */
+        const verdict = can(user.role, req.method, req.url, req.body);
+        if(!verdict.allowed)
+          return res.status(403).json({ error: verdict.reason, role: user.role, forbidden:true });
       }
       return await handler(req, res);
     }

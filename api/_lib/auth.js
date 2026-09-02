@@ -93,7 +93,12 @@ const sign = (data, secret) => createHmac("sha256", secret).update(data).digest(
 /* token = base64url(payload JSON) . base64url(HMAC of that same string) */
 export function signSession(user, { now = Date.now(), seconds = SESSION_SECONDS, secret = null } = {}){
   const key = secret || authSecret();
-  const payload = { u: user.username, r: user.role || "admin",
+  /* NO default role. This used to fall back to "admin", which meant any path
+     that produced a user without one — a hand-written row, a future SSO
+     mapping, a bug — minted an administrator session. Access control must
+     fail closed: an absent role reaches can() as absent and is refused, with a
+     message telling the user to have it set. */
+  const payload = { u: user.username, r: user.role || null,
                     n: user.display_name || user.username,
                     iat: Math.floor(now/1000), exp: Math.floor(now/1000) + seconds };
   const body = b64(JSON.stringify(payload));
@@ -118,7 +123,7 @@ export function readSession(token, { now = Date.now(), secret = null } = {}){
   catch(_){ return null; }
   if(!payload || !payload.u || !payload.exp) return null;
   if(payload.exp * 1000 <= now) return null;                  // expired
-  return { username: payload.u, role: payload.r || "admin", display_name: payload.n || payload.u,
+  return { username: payload.u, role: payload.r || null, display_name: payload.n || payload.u,
            issued_at: payload.iat, expires_at: payload.exp };
 }
 

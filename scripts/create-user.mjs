@@ -4,6 +4,7 @@
  *   node scripts/create-user.mjs <username> [--role admin|planner|viewer]
  *   node scripts/create-user.mjs --list             # who has an account
  *   node scripts/create-user.mjs --verify <user>    # does this password work?
+ *   node scripts/create-user.mjs <user> --set-role planner   # change role only
  *   node scripts/create-user.mjs --unlock <user>    # clear a lockout
  *   node scripts/create-user.mjs --secret           # print an AUTH_SECRET
  *
@@ -17,6 +18,7 @@ import { Pool } from "pg";
 import { hashPassword, verifyPassword, assertUsablePassword,
          normalisePassword, MIN_PASSWORD } from "../api/_lib/auth.js";
 import { hiddenPrompts } from "./hidden-prompt.mjs";
+import { ROLES as VALID_ROLES, ROLE_SUMMARY } from "../shared/permissions.js";
 import { loadEnvLocal } from "./env-local.mjs";
 
 /* So the Neon URL can be saved once in .env.local instead of pasted in
@@ -31,11 +33,15 @@ if(args.includes("--secret")){
   process.exit(0);
 }
 
-const ROLES = ["admin","planner","viewer"];
+const ROLES = VALID_ROLES;
 const listing  = args.includes("--list");
 const verifying = flag("--verify");
 const unlocking = flag("--unlock");
-const role = (flag("--role") || "admin").toLowerCase();
+/* Changing a role must NOT require resetting the password. Accounts get
+   created before anyone has decided who does what, so the common case is an
+   existing person being narrowed from admin to planner. */
+const settingRole = flag("--set-role");
+const role = (settingRole || flag("--role") || "admin").toLowerCase();
 const username = String(verifying || unlocking ||
                         args.find(a => !a.startsWith("--") && a !== role) || "").trim().toLowerCase();
 
@@ -45,7 +51,8 @@ if(!listing && !username){
   process.exit(1);
 }
 if(!ROLES.includes(role)){
-  console.error(`Unknown role: ${role}. Use ${ROLES.join(", ")}.`);
+  console.error(`Unknown role: ${role}. Use one of:\n`);
+  for(const r of ROLES) console.error(`  ${r.padEnd(8)} ${ROLE_SUMMARY[r]}`);
   process.exit(1);
 }
 if(!process.env.DATABASE_URL){
@@ -116,6 +123,28 @@ try{
     if(!rowCount) fail(`No account called "${username}" in this database. Run --list to see what is there.`);
     else console.log(`\n✓ Unlocked ${username}. They can sign in again straight away.`);
     process.exit(process.exitCode || 0);
+  }
+
+  /* ---- change a role, leaving the password alone ---- */
+  if(settingRole){
+    const { rows } = await pool.query(
+      "select role from users where username = $1", [username]);
+    if(!rows.length){
+      fail(`No account called "${username}" in this database. Run --list to see what is there.`);
+      process.exit(1);
+    }
+    if(rows[0].role === role){
+      console.log(`\n${username} is already ${role}. Nothing changed.`);
+      process.exit(0);
+    }
+    await pool.query("update users set role = $2, updated_at = now() where username = $1",
+                     [username, role]);
+    console.log(`\n✓ ${username}: ${rows[0].role} -> ${role}`);
+    console.log(`  ${ROLE_SUMMARY[role]}`);
+    /* The role rides in the signed session cookie, so it is fixed for the rest
+       of the current 12-hour session and does not tighten retroactively. */
+    console.log("\n  They must sign out and back in for this to take effect.");
+    process.exit(0);
   }
 
   /* ---- test a password against what is stored ---- */

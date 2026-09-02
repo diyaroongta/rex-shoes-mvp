@@ -72,7 +72,8 @@ describe("critical UI contracts",()=>{
     await user.click(await screen.findByRole("button",{name:"PI generation"}));
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     expect(screen.getByText("2 · Match & check")).toBeInTheDocument();
-    await user.click(screen.getByRole("button",{name:"Bulk upload"}));
+    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    await user.click(screen.getByRole("button",{name:"From a spreadsheet"}));
     expect(screen.getByText("Add orders from a spreadsheet")).toBeInTheDocument();
     await user.click(screen.getByRole("button",{name:"PI generation"}));
     expect(screen.getByText("2 · Match & check")).toBeInTheDocument();
@@ -134,6 +135,49 @@ describe("critical UI contracts",()=>{
     expect(screen.getByText(/Complete BOM used per pair/)).toBeInTheDocument();
     await user.click(screen.getByRole("button",{name:"Upload or replace BOM Excel"}));
     expect(onUploadBom).toHaveBeenCalledWith("JILL");
+  });
+
+  /* The menu was restructured: getting orders in is one screen with two ways
+     of doing it, and creating the production job order is its own screen
+     rather than a button buried in the commercial record. */
+  it("offers bulk upload inside PI generation, not as its own menu item", async ()=>{
+    const user = userEvent.setup();
+    render(<App user={{username:"a",role:"admin"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+
+    // No top-level entry any more...
+    expect(screen.queryByRole("button",{name:"Bulk upload"})).toBeNull();
+
+    // ...it is a mode within PI generation.
+    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    expect(screen.getByRole("button",{name:"From a slip or PI"})).toBeInTheDocument();
+    await user.click(screen.getByRole("button",{name:"From a spreadsheet"}));
+    expect(await screen.findByText("Add orders from a spreadsheet")).toBeInTheDocument();
+  });
+
+  it("names the two books the way the factory does", async ()=>{
+    render(<App user={{username:"a",role:"admin"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+    expect(screen.getByRole("button",{name:"Order Book"})).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Dispatch Book"})).toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:"Orders & dispatch"})).toBeNull();
+    expect(screen.queryByRole("button",{name:"Dispatch & packing"})).toBeNull();
+  });
+
+  it("gives job order creation its own screen, and takes it out of the PI database", async ()=>{
+    const user = userEvent.setup();
+    mocks.listPis.mockResolvedValue([{ pi_no:"PI77", pi_date:"2026-08-01", party:"Buyer",
+      status:"produced", revision:0, snapshot:{ orders:[{ order_no:"S1", article_code:"SPIKE",
+        lines:[{combo:"7X10S", qty:600}] }] } }]);
+    render(<App user={{username:"a",role:"admin"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+
+    expect(screen.getByRole("button",{name:"Job orders"})).toBeInTheDocument();
+
+    // The commercial record reports what is owed but no longer releases it.
+    await user.click(screen.getByRole("button",{name:"PI database"}));
+    expect(await screen.findByRole("button",{name:/still to release/})).toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:"Release production runs for PI77"})).toBeNull();
   });
 
   /* Bulk BOM removal replaced a one-material-at-a-time control. The contract
@@ -247,18 +291,18 @@ describe("critical UI contracts",()=>{
       outstanding:[{order_no:"JO77",article_code:"SPIKE",remaining:1800}],partial:true});
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await user.click(await screen.findByRole("button",{name:"Job orders"}));
     // The button offers the pairs still owed, not "is this linked".
-    await user.click(await screen.findByRole("button",{name:"Release production runs for PI77"}));
+    await user.click(await screen.findByRole("button",{name:"Create job orders for PI77"}));
 
     const box=await screen.findByLabelText("Pairs of 7X10S to release from JO77");
     expect(box).toHaveValue(2400);                 // defaults to everything owed
     await user.clear(box); await user.type(box,"600");
-    await user.click(screen.getByRole("button",{name:/Release 600 pairs/}));
+    await user.click(screen.getByRole("button",{name:/Create job order for 600 pairs/}));
 
     await waitFor(()=>expect(mocks.releasePiParts).toHaveBeenCalledWith("PI77",
       [{order_no:"JO77",qty:{"7X10S":600}}]));
-    expect(await screen.findByText(/1,800 pairs still unreleased/)).toBeInTheDocument();
+    expect(await screen.findByText(/1,800 pairs still owed/)).toBeInTheDocument();
   });
 
   it("counts runs already made, so a half-released PI still offers the balance", async()=>{
@@ -269,8 +313,8 @@ describe("critical UI contracts",()=>{
     mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:2400,label:"7X10S"}])]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
-    await user.click(await screen.findByRole("button",{name:"Release production runs for PI77"}));
+    await user.click(await screen.findByRole("button",{name:"Job orders"}));
+    await user.click(await screen.findByRole("button",{name:"Create job orders for PI77"}));
     expect(await screen.findByLabelText("Pairs of 7X10S to release from JO77")).toHaveValue(1800);
   });
 
@@ -278,13 +322,13 @@ describe("critical UI contracts",()=>{
     mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:100,label:"7X10S"}])]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
-    await user.click(await screen.findByRole("button",{name:"Release production runs for PI77"}));
+    await user.click(await screen.findByRole("button",{name:"Job orders"}));
+    await user.click(await screen.findByRole("button",{name:"Create job orders for PI77"}));
     const box=await screen.findByLabelText("Pairs of 7X10S to release from JO77");
     await user.clear(box); await user.type(box,"500");
     expect(screen.getByText(/More than is owed/)).toBeInTheDocument();
     // The release button is disabled, so an over-release cannot be sent at all.
-    const go=screen.getByRole("button",{name:/^Release \d/});
+    const go=screen.getByRole("button",{name:/^Create job order for/});
     expect(go).toBeDisabled();
     await user.click(go);
     expect(mocks.releasePiParts).not.toHaveBeenCalled();
@@ -403,7 +447,7 @@ describe("critical UI contracts",()=>{
     }]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+    await user.click(await screen.findByRole("button",{name:"Order Book"}));
     await user.click(await screen.findByRole("button",{name:"Edit saved order"}));
 
     // No free-text total: the sizes are the quantity.
@@ -738,7 +782,7 @@ describe("live orders exclude completed work",()=>{
     ]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+    await user.click(await screen.findByRole("button",{name:"Order Book"}));
 
     expect(await screen.findByText("Live orders · 1")).toBeInTheDocument();
     expect(screen.queryByText("JO1")).not.toBeInTheDocument();   // shipped in full
@@ -756,7 +800,7 @@ describe("live orders exclude completed work",()=>{
     ]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+    await user.click(await screen.findByRole("button",{name:"Order Book"}));
     expect(await screen.findByText("Live orders · 2")).toBeInTheDocument();
   });
 });
@@ -772,7 +816,7 @@ describe("actions report what they did",()=>{
     vi.spyOn(window,"confirm").mockReturnValue(true);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Orders & dispatch"}));
+    await user.click(await screen.findByRole("button",{name:"Order Book"}));
     await user.click(screen.getByRole("button",{name:"Clear all orders"}));
     expect(await screen.findByText(/1 order cleared/)).toBeInTheDocument();
     expect(screen.getByText(/PI snapshots remain/)).toBeInTheDocument();

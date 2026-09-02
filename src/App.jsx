@@ -16,8 +16,10 @@ import PartiesTab from "./PartiesTab.jsx";
 import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
+import JobOrdersTab from "./JobOrdersTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
+import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
 
 /* ------------- UI helpers (shared) ------------- */
 const SOLE_COLOR = {PVC:"#4f46e5",PU:"#0f9d6b",EVA:"#c2410c","STUCK-ON":"#7c3aed"};
@@ -34,7 +36,17 @@ export default function App({ user=null, onSignOut=null }={}){
   const [dispatchLoading, setDispatchLoading] = useState(true);
   const [dispatchErr, setDispatchErr] = useState("");
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
-  const [tab, setTab] = useState("mis");
+  /* A role must never land on a screen it cannot open. The server is the only
+     thing that actually enforces permissions; this just keeps the app honest
+     about what it is offering. */
+  const role = (user && user.role) || "admin";
+  const readOnly = isReadOnly(role);
+  const [rawTab, setTab] = useState(()=>defaultTab(role));
+  /* Derived rather than corrected in an effect: plenty of places call setTab
+     (a save jumps to the order sheet, "Upload BOM" jumps to Data & BOM), and
+     every one of them would otherwise need to know about roles. */
+  const tab = canSeeTab(role, rawTab) ? rawTab : defaultTab(role);
+  const [intakeMode, setIntakeMode] = useState("slip");   // "slip" | "sheet", inside PI generation
   const [selected, setSelected] = useState(null);
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
 
@@ -242,11 +254,16 @@ export default function App({ user=null, onSignOut=null }={}){
       ["mis","Executive MIS", {n:state.totals.sla.breach, tone:"#BE123C"}],
     ]],
     ["Orders", [
+      /* Bulk upload is no longer a top-level entry — it is a second way of
+         doing the same job as PI generation (getting orders in), so it lives
+         inside that screen rather than beside it. */
       ["intake","PI generation"],
       ["pis","PI database"],
-      ["bulk","Bulk upload"],
-      ["orders","Orders & dispatch", {n:lateCount, tone:"#BE123C"}],
-      ["dispatch","Dispatch & packing"],
+      /* Creating the production job order was a button inside the PI database,
+         which buried a shop-floor decision inside a commercial record. */
+      ["jobs","Job orders"],
+      ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
+      ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
       ["schedule","Schedule"],
@@ -263,7 +280,8 @@ export default function App({ user=null, onSignOut=null }={}){
       ["rules","Packing & BOM rules"],
       ["data","Data & BOM"],
     ]],
-  ];
+  ].map(([group, items]) => [group, items.filter(([key]) => canSeeTab(role, key))])
+   .filter(([, items]) => items.length);
 
   const errBanner = loadErr ? (
     <div style={{margin:"14px 22px 0"}}
@@ -346,9 +364,9 @@ export default function App({ user=null, onSignOut=null }={}){
           </nav>
 
           <div style={{padding:10,borderTop:"1px solid #183149"}}>
-            <button onClick={()=>setTab("copilot")} data-on={tab==="copilot"?"1":"0"} className="navitem">
+            {canSeeTab(role,"copilot") && <button onClick={()=>setTab("copilot")} data-on={tab==="copilot"?"1":"0"} className="navitem">
               <span>Ask the copilot</span>
-            </button>
+            </button>}
           </div>
         </aside>
 
@@ -362,7 +380,7 @@ export default function App({ user=null, onSignOut=null }={}){
                 {items.map(([k,label])=><option key={k} value={k}>{label}</option>)}
               </optgroup>
             ))}
-            <option value="copilot">Ask the copilot</option>
+            {canSeeTab(role,"copilot") && <option value="copilot">Ask the copilot</option>}
           </select>
         </div>
 
@@ -390,7 +408,7 @@ export default function App({ user=null, onSignOut=null }={}){
                       {user.display_name || user.username}
                     </div>
                     <div style={{fontSize:10.5,color:"#8A9AAC",textTransform:"uppercase",letterSpacing:".04em"}}>
-                      {user.role}
+                      {ROLE_LABEL[user.role] || user.role}
                     </div>
                   </div>
                   {onSignOut && (
@@ -403,6 +421,15 @@ export default function App({ user=null, onSignOut=null }={}){
               )}
             </div>
           </header>
+
+          {readOnly && (
+            <div style={{margin:"14px 22px 0",padding:"9px 12px",borderRadius:8,fontSize:12.5,
+                         background:"#F1F5F9",border:"1px solid #CBD5E1",color:"#33465C"}}>
+              <b>Read-only access.</b> You can see everything here, but saving is refused —
+              orders, invoices, dispatch and reference data are all unchanged by anything you do.
+              Ask an administrator if you need to make a change.
+            </div>
+          )}
 
           {errBanner}
 
@@ -428,10 +455,30 @@ export default function App({ user=null, onSignOut=null }={}){
 
         {/* Keep PI intake mounted while navigating. Its draft belongs to the
             clerk until Save or Close PI, not to the currently visible tab. */}
-        <div style={{display:tab==="intake"?"block":"none"}}><NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} /></div>
+        {/* Both ways of getting orders in, on one screen. NewOrderFlow stays
+            MOUNTED whichever mode is showing, because it holds an unsaved draft
+            — switching to the spreadsheet and back must not discard a slip the
+            clerk has already checked. */}
+        <div style={{display:tab==="intake"?"block":"none"}}>
+          <div data-noprint style={{padding:"14px 22px 0",display:"flex",gap:8,flexWrap:"wrap"}}>
+            {[["slip","From a slip or PI"],["sheet","From a spreadsheet"]].map(([k,label])=>(
+              <button key={k} onClick={()=>setIntakeMode(k)} data-on={intakeMode===k?"1":"0"}
+                style={{fontSize:12,fontWeight:600,padding:"6px 12px",borderRadius:8,cursor:"pointer",
+                        border:`1px solid ${intakeMode===k?"#0B6BCB":"#CBD5E1"}`,
+                        background:intakeMode===k?"#0B6BCB":"#fff",
+                        color:intakeMode===k?"#fff":"#33465C"}}>{label}</button>
+            ))}
+          </div>
+          <div style={{display:intakeMode==="slip"?"block":"none"}}>
+            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} />
+          </div>
+          {intakeMode==="sheet" &&
+            <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
+        </div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
           onRefresh={syncAll} />}
         {tab==="pis" && <PiDatabaseTab orders={orders} shortfall={state?state.procurement_by_pi:null}
+                            onGoToJobs={()=>setTab("jobs")}
           onScheduled={syncAll} onChanged={syncAll} />}
         {tab==="orders" && <>
           <OrdersTab state={state} ledger={ledger} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
@@ -450,7 +497,8 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
-        {tab==="bulk" && <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
+        {tab==="jobs" && <JobOrdersTab orders={orders} shortfall={state?state.procurement_by_pi:null}
+                            onScheduled={syncAll} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="catalogue" && <CatalogueTab
           onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
@@ -1642,9 +1690,9 @@ const VIEWS = {
   mis:         {title:"Executive MIS",       sub:"Live order health, delivery outlook, dispatch gap and planned capacity"},
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
-  bulk:        {title:"Bulk upload",        sub:"Add many orders at once from a spreadsheet"},
-  orders:      {title:"Orders & dispatch",  sub:"Every live order, its dispatch date and delivery risk"},
-  dispatch:    {title:"Dispatch & packing", sub:"Record what shipped and what is still outstanding"},
+  jobs:        {title:"Job orders",         sub:"Release PI quantities into production, one run at a time"},
+  orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
+  dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
@@ -1669,7 +1717,7 @@ function Pill({status}){
   return <span className="mono text-xs font-semibold px-2 py-0.5 rounded-full" style={{color:SLA_COLOR[status],background:status==="on_track"?"#ecfdf5":status==="at_risk"?"#fff7ed":"#fef2f2"}}>{SLA_LABEL[status]}</span>;
 }
 
-function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
+function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
   const [pis,setPis]=useState(null);
   const [selectedPi,setSelectedPi]=useState(null);
   const [editingOrder,setEditingOrder]=useState(null);
@@ -1681,8 +1729,6 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
   const [busyPi,setBusyPi]=useState("");
   const [deletePi,setDeletePi]=useState(null);
   const [shortfallPi,setShortfallPi]=useState(null);
-  const [releasing,setReleasing]=useState(null);      // pi_no whose picker is open
-  const [picked,setPicked]=useState({});              // order_no -> boolean
   const reloadPis=()=>(showArchived?api.listArchivedPis():api.listPis()).then(setPis);
 
   /* Archive hides a PI and takes its orders off the schedule; restore puts them
@@ -1721,28 +1767,9 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
   /* A PI order can have several production runs against it, so it is "on the
      schedule" when ANY run exists — not when a row carries its own number. */
   const runsFor=sourceNo=>(orders||[]).filter(o=>sourceOrderOf(o)===sourceNo);
-  /* orderNos omitted = release the whole PI. Passing a subset releases only
-     those articles and leaves the rest of the PI where it is, ready to be
-     released later — the factory is regularly able to start one article of a
-     PI while another waits on material. */
-  /* Release production runs. `parts` is [{order_no, qty:{combo: pairs}}] — one
-     production order per part, so the same shoe can be made in several runs. */
-  async function releaseRuns(piNo, parts){
-    setLinking(piNo);setErr("");setMsg("");
-    try{
-      const result=await api.releasePiParts(piNo, parts);
-      if(onScheduled) await onScheduled();
-      await reloadPis();
-      setReleasing(null); setPicked({});
-      const made=result.created||[];
-      const pairs=made.reduce((a,c)=>a+(Number(c.pairs)||0),0);
-      const left=(result.outstanding||[]).reduce((a,o)=>a+(Number(o.remaining)||0),0);
-      setMsg(`${piNo}: ${made.length} production order${made.length===1?"":"s"} `
-        + `(${fmt(pairs)} pairs) added to the schedule — ${made.map(m=>m.order_no).join(", ")}.`
-        + (left?` ${fmt(left)} pairs still unreleased on this PI.`:" This PI is now fully released."));
-    }catch(e){setErr(e.message||String(e));}
-    finally{setLinking("");}
-  }
+  /* Releasing into production moved to its own screen (JobOrdersTab): it is a
+     shop-floor decision, and burying it in the commercial record meant hunting
+     through issued invoices to find the work still owed. */
   const chosen=pis.find(p=>p.pi_no===selectedPi);
   const saved=(chosen&&chosen.snapshot&&chosen.snapshot.orders)||[];
   const items=saved.map(o=>({
@@ -1796,16 +1823,14 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
               {g.short_count} short</button>;
           })()}</td>
           {/* Owed pairs, not "is it on the schedule". A PI half-released still
-              has work to send, and the old existence check called it Linked. */}
+              has work to send, and the old existence check called it Linked.
+              Creating the job order itself is a shop-floor decision and now
+              has its own screen; this column only REPORTS the position. */}
           <td>{owedPairs>0
-            ? <button disabled={linking===p.pi_no}
-                aria-label={`Release production runs for ${p.pi_no}`}
-                onClick={()=>{ const open=releasing===p.pi_no;
-                  setReleasing(open?null:p.pi_no);
-                  setPicked(open?{}:Object.fromEntries(owed.flatMap(r=>
-                    r.lines.filter(l=>l.remaining>0).map(l=>[`${r.order_no}|${l.combo}`,String(l.remaining)])))); }}
-                className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1 disabled:opacity-50">
-                {linking===p.pi_no?"Releasing…":`Release ${fmt(owedPairs)} pr…`}</button>
+            ? <button onClick={()=>onGoToJobs&&onGoToJobs()}
+                aria-label={`${fmt(owedPairs)} pairs of ${p.pi_no} still to release`}
+                className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1">
+                {fmt(owedPairs)} pr owed</button>
             : <span className="text-xs font-semibold text-emerald-700">Fully released</span>}</td>
           <td className="text-right whitespace-nowrap">
             <button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button>
@@ -1823,75 +1848,6 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged}){
           </td>
         </tr>;})}</tbody>
       </table>}
-      {releasing && (()=>{
-        const pi=pis.find(x=>x.pi_no===releasing);
-        if(!pi) return null;
-        const owed=outstandingFor(pi).filter(r=>r.remaining>0);
-        const key=(o,c)=>`${o}|${c}`;
-        const asked=(o,c)=>Math.max(0,Math.round(Number(picked[key(o,c)])||0));
-        const parts=owed.map(r=>({order_no:r.order_no,
-          qty:Object.fromEntries(r.lines.filter(l=>l.remaining>0&&asked(r.order_no,l.combo)>0)
-            .map(l=>[l.combo,Math.min(asked(r.order_no,l.combo),l.remaining)]))}))
-          .filter(pt=>Object.keys(pt.qty).length);
-        const totalAsked=parts.reduce((a,pt)=>a+Object.values(pt.qty).reduce((x,y)=>x+y,0),0);
-        const over=owed.flatMap(r=>r.lines.filter(l=>asked(r.order_no,l.combo)>l.remaining)
-          .map(l=>`${r.order_no} ${l.combo}`));
-        return <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50/70 px-3 py-3">
-          <div className="text-sm font-semibold text-amber-900 mb-1">Release {releasing} into production</div>
-          <p className="text-xs text-amber-900 mb-2 leading-relaxed">
-            Enter how many pairs of each size range to make <b>now</b>. A large order is normally
-            made in several runs, so each release becomes its own production order that schedules
-            and dispatches on its own. Anything you leave behind stays on the PI and can be
-            released later — the invoice is not changed either way.
-          </p>
-          <div className="overflow-x-auto">
-            <table className="text-xs" style={{borderCollapse:"collapse",minWidth:520}}>
-              <thead><tr className="text-slate-600">
-                <th className="text-left py-1 pr-3">Article</th>
-                <th className="text-left py-1 pr-3">Size range</th>
-                <th className="text-right py-1 pr-3">On the PI</th>
-                <th className="text-right py-1 pr-3">Already made</th>
-                <th className="text-right py-1 pr-3">Still owed</th>
-                <th className="text-left py-1">Release now</th>
-              </tr></thead>
-              <tbody>
-                {owed.flatMap(r=>r.lines.filter(l=>l.remaining>0).map((l,li)=>(
-                  <tr key={key(r.order_no,l.combo)} style={{borderTop:"1px solid #f3d8bd"}}>
-                    <td className="py-1 pr-3">{li===0?<><span className="mono font-semibold">{r.order_no}</span> {r.article_code}</>:""}</td>
-                    <td className="py-1 pr-3 mono">{l.combo}</td>
-                    <td className="py-1 pr-3 text-right mono text-slate-500">{fmt(l.ordered)}</td>
-                    <td className="py-1 pr-3 text-right mono text-slate-500">{fmt(l.released)}</td>
-                    <td className="py-1 pr-3 text-right mono font-semibold">{fmt(l.remaining)}</td>
-                    <td className="py-1">
-                      <input type="number" min="0" max={l.remaining} step="1"
-                        aria-label={`Pairs of ${l.combo} to release from ${r.order_no}`}
-                        value={picked[key(r.order_no,l.combo)]??""}
-                        onChange={e=>setPicked(x=>({...x,[key(r.order_no,l.combo)]:e.target.value}))}
-                        className="w-24 border rounded px-1.5 py-0.5 bg-white mono"
-                        style={{fontSize:11,borderColor:asked(r.order_no,l.combo)>l.remaining?"#dc2626":"#cbd5e1"}} />
-                    </td>
-                  </tr>)))}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex gap-2 flex-wrap items-center mt-2">
-            <button disabled={!parts.length||!!over.length||linking===releasing}
-              onClick={()=>releaseRuns(releasing,parts)}
-              className="text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-40">
-              {linking===releasing?"Releasing…":`Release ${fmt(totalAsked)} pairs`}</button>
-            <button onClick={()=>setPicked(Object.fromEntries(owed.flatMap(r=>
-                r.lines.filter(l=>l.remaining>0).map(l=>[key(r.order_no,l.combo),String(l.remaining)]))))}
-              className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">All remaining</button>
-            <button onClick={()=>setPicked({})}
-              className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">None</button>
-            <button onClick={()=>{setReleasing(null);setPicked({});}}
-              className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Cancel</button>
-            {!!over.length && <span className="text-xs font-semibold text-rose-700">
-              More than is owed on {over.join(", ")}.</span>}
-            {!over.length && !parts.length && <span className="text-xs text-amber-900">Enter a quantity on at least one range.</span>}
-          </div>
-        </div>;
-      })()}
       {shortfallPi && (shortfall||{})[shortfallPi] && (
         <div className="mt-3 rounded-xl border border-orange-300 bg-orange-50/60 px-3 py-3">
           <div className="text-sm font-semibold text-orange-900 mb-1">

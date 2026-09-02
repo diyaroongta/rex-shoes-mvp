@@ -9,6 +9,9 @@ process.env.AUTH_SECRET = "test-only-secret-of-at-least-32-characters";
 
 import authHandler from "../../api/auth.js";
 import ordersHandler from "../../api/orders/index.js";
+import catalogueHandler from "../../api/catalogue.js";
+import referenceHandler from "../../api/reference.js";
+import dispatchHandler from "../../api/dispatches.js";
 import { COOKIE, hashPassword, verifyPassword, signSession, readSession,
          parseCookies, SESSION_SECONDS } from "../../api/_lib/auth.js";
 
@@ -64,6 +67,15 @@ describe("session tokens", ()=>{
     expect(readSession(undefined)).toBe(null);
   });
 
+  /* Access control must fail CLOSED. This defaulted to "admin", so a user
+     built without a role — a hand-written row, a future SSO mapping, a bug —
+     was silently issued an administrator session. */
+  it("never invents a role for a session that has none", ()=>{
+    const token = signSession({ username:"abhay" });          // no role given
+    expect(readSession(token).role).toBe(null);
+    expect(readSession(token).role).not.toBe("admin");
+  });
+
   it("cannot be forged with a different secret", ()=>{
     const token = signSession({ username:"abhay" }, { secret:"an-attackers-own-secret-32-characters" });
     expect(readSession(token)).toBe(null);            // verified against the real one
@@ -102,7 +114,7 @@ describe("the guard on every endpoint", ()=>{
     dbMocks.q.mockResolvedValue({ rows:[] });
     const res = response();
     await ordersHandler({ method:"GET", url:"/api/orders", query:{},
-                          headers:cookieHeader(signSession({ username:"abhay" })) }, res);
+                          headers:cookieHeader(signSession({ username:"abhay", role:"admin" })) }, res);
     expect(res.statusCode).toBe(200);
   });
 
@@ -332,6 +344,63 @@ describe("end to end: the cookie a sign-in issues opens a guarded endpoint", ()=
     const orders = response();
     await ordersHandler({ method:"GET", url:"/api/orders", query:{}, headers:{ cookie: jar } }, orders);
     expect(orders.statusCode).toBe(401);
+  });
+});
+
+/* The policy is tested in tests/permissions.test.mjs. What matters HERE is
+   that wrap() actually consults it — a correct policy nobody calls protects
+   nothing. */
+describe("roles are enforced by the guard, not just described", ()=>{
+  const as = role => cookieHeader(signSession({ username:"someone", role }));
+
+  it("lets a viewer read the order sheet", async ()=>{
+    dbMocks.q.mockResolvedValue({ rows:[] });
+    const res = response();
+    await ordersHandler({ method:"GET", url:"/api/orders", query:{}, headers:as("viewer") }, res);
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("refuses a viewer's write with 403, before the database is touched", async ()=>{
+    const res = response();
+    await ordersHandler({ method:"POST", url:"/api/orders", headers:as("viewer"),
+                          body:{ orders:[{ order_date:"2026-08-22", article_code:"SPIKE",
+                                           priority:2, party:"X", lines:[] }] } }, res);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.forbidden).toBe(true);
+    expect(res.body.error).toMatch(/read-only/i);
+    expect(dbMocks.q).not.toHaveBeenCalled();
+  });
+
+  it("refuses a planner the article master, and says who can", async ()=>{
+    const res = response();
+    await catalogueHandler({ method:"PUT", url:"/api/catalogue", headers:as("planner"),
+                             body:{ article_code:"SPIKE", price:500 } }, res);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error).toMatch(/administrator/i);
+    expect(dbMocks.q).not.toHaveBeenCalled();
+  });
+
+  it("still lets a planner do the daily job", async ()=>{
+    dbMocks.q.mockResolvedValue({ rows:[] });
+    const res = response();
+    await dispatchHandler({ method:"GET", url:"/api/dispatches", query:{}, headers:as("planner") }, res);
+    expect(res.statusCode).toBe(200);
+  });
+
+  /* The split that makes the planner role usable: stock is a daily clerical
+     job behind the same endpoint as the BOM. */
+  it("lets a planner update stock but not the BOM behind the same endpoint", async ()=>{
+    const blocked = response();
+    await referenceHandler({ method:"PATCH", url:"/api/reference", headers:as("planner"),
+                             body:{ bom_removal:{ articles:["SPIKE"] } } }, blocked);
+    expect(blocked.statusCode).toBe(403);
+    expect(dbMocks.q).not.toHaveBeenCalled();
+  });
+
+  it("treats an account with no role as having no access", async ()=>{
+    const res = response();
+    await ordersHandler({ method:"POST", url:"/api/orders", headers:as(undefined), body:{} }, res);
+    expect(res.statusCode).toBe(403);
   });
 });
 
