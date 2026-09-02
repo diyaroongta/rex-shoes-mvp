@@ -244,7 +244,17 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
     if(duplicates.length)errors.push(`${label}: duplicate column${duplicates.length===1?"":"s"} ${duplicates.map(d=>COLUMN_LABELS[d]||d).join(", ")}. Keep one column for each field.`);
   }
 
+  /* Built BEFORE the Packing sheet is read, because Packing is parsed first
+     but the mapping it needs is declared on the Catalogue. */
+  const catalogueBomRange={};
+  for(const r of rowObjects(catalogueSheet?.rows||[],["Article Code","Size Range"],resolvers.Catalogue)){
+    const a=articleCode(r.get("Article Code")), sz=comboCode(r.get("Size Range")),
+          br=comboCode(r.get("BOM Range"));
+    if(a&&sz&&br&&sz!==br) catalogueBomRange[`${a}||${sz}`]=br;
+  }
+
   const seen=new Set();
+  const zeroRated=[];
   for(const r of rowObjects(bomSheet?.rows||[],BOM_REQUIRED,resolvers.BOM)){
     const article=articleCode(r.get("Article Code"));
     const sole=cleanSole(r.get("Sole Type"));
@@ -261,11 +271,10 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
     const upperColour=cleanColour(r.get("Upper Colour"));
     const prefix=`BOM row ${r.row}`;
     /* A COMPONENT row may legitimately be zero — a piece cut from what is
-       already being bought for another component consumes nothing extra. The
-       material's total is what procurement uses, and that is the sum. Without
-       a component named, zero is still a missing rate. */
-    const zeroIsFine = !!component && Number.isFinite(rate) && rate === 0;
-    if(!article||!sole||!combo||!stage||!material||!uom||!Number.isFinite(rate)||(rate<0)||(rate===0&&!zeroIsFine)){
+       already being bought for another component consumes nothing extra — and
+       a bare material at zero is a gap the factory has not filled in yet.
+       Both are accepted; only the second is warned about. */
+    if(!article||!sole||!combo||!stage||!material||!uom||!Number.isFinite(rate)||(rate<0)){
       /* Name what is actually wrong. "Complete every required field" sent
          people hunting across twelve columns; a zero rate in particular looks
          filled in, and it is the one that silently orders none of a material
@@ -275,9 +284,20 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
         .filter(([,v])=>!v).map(([k])=>k);
       errors.push(missing.length
         ? `${prefix}: ${missing.join(", ")} ${missing.length===1?"is":"are"} blank.`
-        : `${prefix}: ${material} has no rate per pair. A rate of 0 would order none of it — `
-          +`enter the consumption, or name a cutting component if it is cut from another material.`);
+        : `${prefix}: Rate per Pair must be a number of 0 or more.`);
       continue;
+    }
+    /* A zero rate is ACCEPTED and flagged, not refused. Against a COMPONENT it
+       is normal — a piece cut from material already being bought for another
+       piece consumes nothing extra. Against a bare material it is a gap the
+       factory has not filled in, and procurement will order none of it.
+       Refusing rejected the whole workbook over a few cells; the factory would
+       rather load the article and fix the figures. Every one is named so none
+       is discovered later as a shortage. */
+    if(rate===0&&!component){
+      warnings.push(`${prefix}: ${material} has NO RATE — procurement will order none of it. `
+        +`Fill in the consumption per pair when you have it.`);
+      zeroRated.push(`${article} ${combo} ${stage} ${material}`);
     }
     if(!SOLES.has(sole)){errors.push(`${prefix}: Sole Type must be EVA, PVC, PU or STUCK-ON.`);continue;}
     if(!STAGES.has(stage)){errors.push(`${prefix}: unknown Stage ${stage}.`);continue;}
@@ -368,10 +388,21 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
     const article=boms[rawArticle]?rawArticle:(existingArticleCode(reference.articles,rawArticle)||rawArticle);
     const rawRange=comboCode(r.get("Size Range"));
     const combo=rawRange;
-    const bomRange=comboCode(r.get("BOM Range"));
+    let bomRange=comboCode(r.get("BOM Range"));
     const ppc=Number(r.get("Pairs per Carton"));
     const prefix=`Packing row ${r.row}`;
     if(!article||!combo||!Number.isInteger(ppc)||ppc<1){errors.push(`${prefix}: Article Code, Size Range and a whole-number pairs/carton of 1 or more are required.`);continue;}
+    /* The Catalogue names the customer-facing range AND the BOM range it maps
+       to ("6X10" priced, cut against "6X8"). Packing repeats the same
+       customer-facing name but often leaves BOM Range blank, and the file was
+       then rejected for a mapping it had already stated on the next sheet.
+       This borrows that answer — it is not a guess, it is elsewhere in the
+       same workbook — and says so. */
+    if(!bomRange && catalogueBomRange[`${article}||${combo}`]){
+      bomRange = catalogueBomRange[`${article}||${combo}`];
+      warnings.push(`${prefix}: BOM Range was blank; used ${bomRange} because the Catalogue sheet maps `
+        +`${combo} to it for ${article}.`);
+    }
     const definition=boms[article]||reference.articles?.[article];
     const combos=definition?(definition.combo_order||Object.keys(definition.combos||{})):[];
     if(bomRange&&!combos.includes(bomRange)){errors.push(`${prefix}: BOM Range ${bomRange} is not in ${article}'s BOM (${combos.join(", ")}).`);continue;}
@@ -383,7 +414,25 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
         [article]:{...workbookReference.articles[article],individual_sizes:[...(workbookReference.articles[article]?.individual_sizes||[]),...extra]}}}:workbookReference;
       const resolved=resolveArticleSizeWithSequenceIn(refForSize,article,rawRange,packingSequence[article]);
       const single=resolved.size;
-      if(resolved.error){errors.push(`${prefix}: ${resolved.error}${bomRange?"":"; write S/L explicitly or add BOM Range for a standalone size"}.`);continue;}
+      if(resolved.error){
+        /* A customer-facing RANGE name that is not a single size. When the
+           workbook says which BOM range it maps to, that IS the answer: the
+           carton rate belongs to that range. "6X10" priced and packed, cut
+           against "6X8". Without a BOM Range there is nothing to attach it to
+           and it stays an error. */
+        if(bomRange && combos.includes(bomRange)){
+          packing[article]=packing[article]||{};
+          if(packing[article][bomRange]!=null && Number(packing[article][bomRange])!==ppc){
+            errors.push(`${prefix}: conflicting pairs/carton for ${article} ${bomRange} — `
+              +`earlier row has ${packing[article][bomRange]}, this row has ${ppc}.`);continue;
+          }
+          packing[article][bomRange]=ppc;
+          warnings.push(`${prefix}: ${combo} is not a BOM range; its ${ppc} pairs/carton was stored `
+            +`against ${bomRange}, which the workbook maps it to.`);
+          continue;
+        }
+        errors.push(`${prefix}: ${resolved.error}${bomRange?"":"; write S/L explicitly or add BOM Range for a standalone size"}.`);continue;
+      }
       if(single&&/^\d+(?:\.5)?S?$/.test(single)){
         packingSingles[article]=packingSingles[article]||{};
         const storageKey=scopedSizeKey(bomRange,single);
@@ -475,12 +524,24 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
         const refForSize=bomRange?{...workbookReference,articles:{...workbookReference.articles,
           [article]:{...workbookReference.articles[article],individual_sizes:[...(workbookReference.articles[article]?.individual_sizes||[]),...extra]}}}:workbookReference;
         const resolved=resolveArticleSizeWithSequenceIn(refForSize,article,combo,catalogueSequence[article]);
-        if(resolved.error){errors.push(`${prefix}: ${resolved.error}${bomRange?"":"; write S/L explicitly or add BOM Range for a standalone size"}.`);continue;}
-        priceKey=scopedSizeKey(bomRange,resolved.size);
-        individualSizes[article]=individualSizes[article]||[];
-        if(!individualSizes[article].includes(resolved.size)) individualSizes[article].push(resolved.size);
-        if(resolved.outOfOrder) warnings.push(`${prefix}: explicit Small size ${resolved.size} appears after Large sizes; kept because S/L was written explicitly.`);
-        if(resolved.inferred&&["7","8","9","10","11","12","13","13.5"].includes(token.bare)) warnings.push(`${prefix}: inferred ${resolved.size} from ascending Small-then-Large order; write S/L to make it explicit.`);
+        if(resolved.error){
+          /* Same as Packing: a customer-facing range name that maps to a BOM
+             range. The price belongs to that range. */
+          if(bomRange && ranges.includes(bomRange)){
+            priceKey=bomRange;
+            warnings.push(`${prefix}: ${combo} is not a BOM range; its MRP was stored against `
+              +`${bomRange}, which this row maps it to.`);
+          }else{
+            errors.push(`${prefix}: ${resolved.error}${bomRange?"":"; write S/L explicitly or add BOM Range for a standalone size"}.`);continue;
+          }
+        }
+        if(priceKey===null) priceKey=scopedSizeKey(bomRange,resolved.size);
+        if(resolved.size){
+          individualSizes[article]=individualSizes[article]||[];
+          if(!individualSizes[article].includes(resolved.size)) individualSizes[article].push(resolved.size);
+          if(resolved.outOfOrder) warnings.push(`${prefix}: explicit Small size ${resolved.size} appears after Large sizes; kept because S/L was written explicitly.`);
+          if(resolved.inferred&&["7","8","9","10","11","12","13","13.5"].includes(token.bare)) warnings.push(`${prefix}: inferred ${resolved.size} from ascending Small-then-Large order; write S/L to make it explicit.`);
+        }
       }
     }
     if(priceKey&&price!=null){

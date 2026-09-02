@@ -19,6 +19,7 @@ import MISDashboard from "./MISDashboard.jsx";
 import JobOrdersTab from "./JobOrdersTab.jsx";
 import FabricatorsTab from "./FabricatorsTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
+import JobCardTab from "./JobCardTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -281,6 +282,7 @@ export default function App({ user=null, onSignOut=null }={}){
     ]],
     ["Production", [
       /* Assigning stitching to a line or an outside fabricator. */
+      ["jobcards","Job cards"],
       ["jobwork","Job work"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
@@ -515,6 +517,7 @@ export default function App({ user=null, onSignOut=null }={}){
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
+        {tab==="jobcards" && <JobCardTab orders={(state&&state.orders)||[]} />}
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
@@ -1836,6 +1839,7 @@ const VIEWS = {
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   jobs:        {title:"Job orders",         sub:"Release PI quantities into production, one run at a time"},
+  jobcards:    {title:"Job cards",          sub:"Raise the card that goes out with a production run — check it, then issue it"},
   jobwork:     {title:"Job work",           sub:"Assign stitching to an internal line or an outside fabricator, and take it back in"},
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},

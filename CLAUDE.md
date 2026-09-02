@@ -107,6 +107,20 @@ serverless functions and the project is at exactly 12. Parties are who work
 comes in from, fabricators who it goes out to; both are counterparty master
 data under the same admin-only policy, so the neighbour is a reasonable one.
 
+**A component carries a RATE, not a piece count.** The revised workbook writes
+`VAMP MESH  MESH 58"  MTR  0.06` — consumption of its material, in that
+material's unit. The factory's paper card also shows `VAMP 1824 PCS`, and
+pieces per pair are a DIFFERENT figure the workbook does not carry. The job
+card issues what the BOM supplies; when piece counts arrive they slot in beside
+the rate rather than replacing it.
+
+**The job card follows the PI's three steps** — choose, check, confirm — for the
+same reason: something is read out of the system, a person corrects it, and only
+then is the document raised. Editing after Generate marks the preview stale and
+blocks issuing, exactly as the PI does. Issuing creates the job work record,
+which is what gives the card its number and puts the pairs in that fabricator's
+bucket; until then it is a preview.
+
 **Components are a BREAKDOWN of a material, never extra demand.** The revised
 BOM hangs cut pieces off a material row — ARMOR REXION becomes VAMP, ADDI,
 PALTA — and the material rate already covers all of them. Counting a component
@@ -250,6 +264,8 @@ src/
   PiDocument.jsx   the invoice, matching the factory's existing layout
   BomRemovalPanel.jsx  bulk BOM removal: articles, ranges and materials in one action
   JobOrdersTab.jsx     releasing PI quantities into production, one run at a time
+  JobCardTab.jsx       raising a job card: choose, check, confirm — the PI flow
+  JobCard.jsx          the job card itself, in the factory's layout
   FabricatorsTab.jsx   the fabricator master: lines, job workers, sample makers
   JobWorkTab.jsx       assigning stitching out, receiving it back, and the slip
   PackingList.jsx      the dispatch document, in the factory's own layout

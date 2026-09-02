@@ -150,10 +150,25 @@ assert.ok(oldCatalogueTemplate.warnings.some(w=>w.includes("treated THUNDER 1 as
 // Row numbers must point at the row Excel shows, counted from the real header.
 const bad = parseReferenceWorkbook([{ name:"BOM", rows:[
   ["Title"], [], BOM_HEAD,
-  ["GLAMOUR","EVA","6X8","CUTTING",'MESH 58"',"MTR",0],
+  ["GLAMOUR","EVA","6X8","CUTTING",'MESH 58"',"",0.4],     // no UOM
 ]}]);
 assert.ok(bad.errors.some(e => e.includes("BOM row 4")),
   `the error must name the row Excel shows, got: ${bad.errors.join(" | ")}`);
+
+/* A ZERO RATE loads and is flagged, rather than rejecting the workbook. It is
+   a real gap — procurement will order none of that material — but refusing the
+   whole file over a few unfilled cells stops an article being loaded at all,
+   and the factory would rather load it and fill the figures in. */
+const zeroRate = parseReferenceWorkbook([{ name:"BOM", rows:[
+  ["Title"], [], BOM_HEAD,
+  ["GLAMOUR","EVA","6X8","CUTTING",'MESH 58"',"MTR",0.4],
+  ["GLAMOUR","EVA","6X8","STITCHING","D-RING 25 MM","PCS",0],
+]}]);
+assert.deepEqual(zeroRate.errors, [], "a zero rate must not reject the workbook");
+assert.ok(zeroRate.warnings.some(w => /BOM row 5.*D.RING 25 MM.*NO RATE/.test(w)),
+  `every zero must be named, got: ${zeroRate.warnings.join(" | ")}`);
+assert.equal(zeroRate.boms[0].combos["6X8"].rates.STITCHING["D RING 25 MM||PCS"], 0,
+  "and it is stored, so the material is on the BOM ready to be priced");
 
 console.log("  pass  a title block above the table does not break the upload");
 console.log("  pass  row numbers still match what Excel shows\n");
@@ -408,12 +423,15 @@ console.log("  pass  colours split a material, standard colours prefill an order
 }
 
 /* Without a component, a zero rate still orders none of a material the shoe
-   uses — and the message must say which material, not "a required field". */
+   uses. It LOADS — refusing the workbook over a few unfilled cells stops the
+   article being loaded at all — but it is named, so it is fixed rather than
+   discovered as a shortage. */
 {
   const rows = [
     ["Article Code","Sole Type","Size Range","Stage","Material","UOM","Rate per Pair"],
     ["BOLT","EVA","7X10","STITCHING","D-RING 25 MM","PCS",0],
   ];
   const out = parseReferenceWorkbook([{name:"BOM",rows}],{articles:{},materials:{}});
-  assert.ok(out.errors.some(e=>/D.RING 25 MM has no rate per pair/.test(e)), out.errors.join("; "));
+  assert.deepEqual(out.errors, []);
+  assert.ok(out.warnings.some(w=>/D.RING 25 MM has NO RATE/.test(w)), out.warnings.join("; "));
 }

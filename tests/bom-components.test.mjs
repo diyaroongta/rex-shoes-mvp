@@ -134,10 +134,18 @@ test("components against a material that is not on that stage are refused", () =
   assert.match(validateComponents(a).join(" "), /not a material on that stage/);
 });
 
-test("a component with no quantity per pair is refused — it cannot be issued", () => {
+test("a component with no consumption at all is refused", () => {
   const a = ARTICLE();
   a.combos["11X1"].components.CUTTING["ARMOR REXION||MTR"].push({ name:"NEW PIECE" });
-  assert.match(validateComponents(a).join(" "), /needs a quantity per pair/);
+  assert.match(validateComponents(a).join(" "), /needs a consumption per pair/);
+});
+
+/* Zero is legitimate — the workbook's RING STRIP is cut from rexine already
+   being bought for the other pieces. */
+test("a component at zero is accepted", () => {
+  const a = ARTICLE();
+  a.combos["11X1"].components.CUTTING["ARMOR REXION||MTR"].push({ name:"RING STRIP", per_pair:0 });
+  assert.deepEqual(validateComponents(a), []);
 });
 
 test("a component with no name is refused", () => {

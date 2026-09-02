@@ -17,8 +17,13 @@
  *   material-wise    what to buy, what is in stock, what the BOM screens show
  *   component-wise   what a job card issues to a fabricator, per stage
  *
- * Component quantities are pieces per PAIR, which is how the job card reads:
- * VAMP 2/pair over 912 pairs prints 1,824 PCS.
+ * A component carries a RATE in its material's own unit — the revised BOM
+ * writes VAMP MESH at 0.06 MTR per pair — so the job card issues
+ * 0.06 x pairs MTR of mesh, cut as VAMP MESH. That is what the workbook
+ * supplies. It is NOT a piece count: the factory's paper card also shows
+ * "VAMP 1824 PCS", and pieces per pair are a different figure the BOM does
+ * not carry. Where they arrive, they slot in beside the rate rather than
+ * replacing it.
  */
 
 const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -139,8 +144,11 @@ export function validateComponents(article){
           problems.push(`${combo} ${stage}: components are listed against ${nameOf(material)}, which is not a material on that stage`);
         for(const c of (Array.isArray(list) ? list : [])){
           if(!clean(c.name)) problems.push(`${combo} ${stage} ${nameOf(material)}: a component has no name`);
-          if(!(num(c.per_pair) > 0))
-            problems.push(`${combo} ${stage} ${clean(c.name) || "a component"}: needs a quantity per pair`);
+          /* Zero is legitimate for a component: a piece cut from material
+             already being bought for another piece consumes nothing extra.
+             Only a missing or negative figure is wrong. */
+          if(c.per_pair == null || c.per_pair === "" || num(c.per_pair) < 0)
+            problems.push(`${combo} ${stage} ${clean(c.name) || "a component"}: needs a consumption per pair`);
         }
       }
     }
