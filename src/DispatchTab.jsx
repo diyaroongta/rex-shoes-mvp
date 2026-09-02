@@ -3,6 +3,9 @@ import { REF as INPUTS } from "./lib/refdata.js";
 import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
+import PackingList from "./PackingList.jsx";
+import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
+import { comboSizes } from "../shared/pi.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
 
@@ -16,6 +19,10 @@ const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
    numbers. */
 export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [open,setOpen]=useState(null);
+  /* The packing list for the dispatch being recorded. Null until the packer
+     opens it — a dispatch can still be recorded without one, because a
+     shortage close has nothing to pack. */
+  const [sheet,setSheet]=useState(null);
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
@@ -72,13 +79,17 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       return;
     setBusy(true); setErr("");
     try{
+      /* Cartons come from the packing list, where they were COUNTED. The old
+         code divided pairs by the packing rate and stored a fraction — 2.67
+         cartons — which is not something that can be put on a lorry, and is
+         wrong whenever sizes inside a range pack at different rates. */
       const cartons={};
-      for(const [c,v] of Object.entries(dispatched)){
-        const ppc=pairsPerCarton(rec.order.article_code||rec.order.article,c);
-        if(ppc) cartons[c]=v/ppc;
-      }
+      if(sheet) for(const line of buildPackingList(sheet).lines)
+        if(line.combo) cartons[line.combo]=(cartons[line.combo]||0)+line.cartons;
+
       await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
-        kind: closing ? "shortage" : kind, note, closes_order: closing });
+        kind: closing ? "shortage" : kind, note, closes_order: closing,
+        ...(sheet ? { packing_list: sheet } : {}) });
       setOpen(null);
       setMsg(closing
         ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
@@ -144,10 +155,9 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                       <thead><tr className="text-slate-500">
                         <th className="text-left">Size range</th><th className="text-right">Ordered</th>
                         <th className="text-right">Already sent</th><th className="text-right">Outstanding</th>
-                        <th className="text-right">Dispatch now</th><th className="text-right">Cartons</th></tr></thead>
+                        <th className="text-right">Dispatch now</th></tr></thead>
                       <tbody>
                         {rec.rows.map(r=>{
-                          const now=Number(draft[r.combo])||0;
                           return <tr key={r.combo}>
                             <td className="mono py-1">{r.combo}</td>
                             <td className="text-right mono">{fmt(r.ordered)}</td>
@@ -157,11 +167,25 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                               <input type="number" min={0} max={r.pending} value={draft[r.combo]??0}
                                 onChange={e=>setDraft(d=>({...d,[r.combo]:e.target.value}))}
                                 className="w-20 text-sm border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>
-                            <td className="text-right mono text-slate-500">
-                              {r.ppc ? (now/r.ppc).toFixed(2) : <span title="no packing chart for this size range">—</span>}</td>
                           </tr>;})}
                       </tbody>
                     </table>
+
+                    {/* The dispatch document itself. Quantities above set what
+                        leaves the order book; this is what the customer's gate
+                        checks against, so it is entered per SIZE with cartons
+                        COUNTED — never divided out of a packing rate. */}
+                    <div className="mt-3">
+                      {!sheet
+                        ? <button type="button"
+                            onClick={()=>setSheet(draftFromOrder(rec.order, comboSizes,
+                              Object.fromEntries(Object.entries(draft).map(([c,v])=>[c,Number(v)||0]))))}
+                            className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
+                            Fill in the packing list
+                          </button>
+                        : <PackingListEditor sheet={sheet} setSheet={setSheet}
+                            expectedPairs={Object.values(draft).reduce((a,v)=>a+(Number(v)||0),0)} />}
+                    </div>
                     <div className="flex gap-2 items-end flex-wrap">
                       <label className="text-xs text-slate-600">Type
                         <select value={kind} onChange={e=>{
@@ -258,5 +282,73 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
         </table>
       </div>
     )}
+  </div>;
+}
+
+/* Entering the packing list: per SIZE pairs, and a COUNTED carton figure for
+   each group of sizes that shares a box. Sizes that fill their own cartons stay
+   as separate groups; the "share a carton" action merges a size into the group
+   above it, which is how a part carton is actually made up on the floor. */
+function PackingListEditor({ sheet, setSheet, expectedPairs }){
+  const built = buildPackingList({ ...sheet, dispatch_pairs: expectedPairs });
+  const edit = fn => { const next = JSON.parse(JSON.stringify(sheet)); fn(next); setSheet(next); };
+
+  return <div className="rounded-xl border border-slate-300 bg-white p-3">
+    <div className="flex items-baseline gap-3 flex-wrap mb-2">
+      <div className="text-sm font-semibold text-slate-800">Packing list</div>
+      <div className="text-xs text-slate-600">
+        <b className="mono">{built.total_pairs}</b> pairs · <b className="mono">{built.total_cartons}</b> cartons
+        {expectedPairs != null && <> · dispatching <b className="mono">{expectedPairs}</b></>}
+      </div>
+    </div>
+
+    {sheet.lines.map((line, li) => (
+      <div key={li} className="mb-2 rounded-lg border border-slate-200 p-2">
+        <div className="text-xs font-semibold text-slate-700 mb-1">
+          <span className="mono">{line.article}</span> · {line.closure || "—"} · {line.colour || "—"}
+          <span className="text-slate-400 font-normal ml-2 mono">{line.combo}</span>
+        </div>
+        <table className="text-xs w-full" style={{borderCollapse:"collapse"}}>
+          <thead><tr className="text-slate-500">
+            <th className="text-left py-1">Size</th>
+            <th className="text-right">Pairs</th>
+            <th className="text-right">Cartons (counted)</th>
+            <th></th>
+          </tr></thead>
+          <tbody>
+            {line.groups.map((g, gi) => g.sizes.map((sz, si) => (
+              <tr key={`${gi}-${si}`} style={{borderTop:"1px solid #f1f5f9"}}>
+                <td className="py-1 mono">{sz.size}</td>
+                <td className="text-right">
+                  <input type="number" min={0} value={sz.pairs ?? 0}
+                    aria-label={`Pairs of size ${sz.size}`}
+                    onChange={e=>edit(n=>{ n.lines[li].groups[gi].sizes[si].pairs = e.target.value; })}
+                    className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>
+                {si === 0 && <td className="text-right" rowSpan={g.sizes.length}>
+                  <input type="number" min={0} value={g.cartons ?? 0}
+                    aria-label={`Cartons for size ${g.sizes.map(x=>x.size).join(" and ")}`}
+                    onChange={e=>edit(n=>{ n.lines[li].groups[gi].cartons = e.target.value; })}
+                    className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>}
+                {si === 0 && <td className="text-right" rowSpan={g.sizes.length}>
+                  {gi > 0 && <button type="button" title="Pack this size in the carton above"
+                    onClick={()=>edit(n=>{ const gs=n.lines[li].groups;
+                      gs[gi-1].sizes.push(...gs[gi].sizes); gs.splice(gi,1); })}
+                    className="text-[11px] text-indigo-700 underline">share carton above</button>}
+                  {g.sizes.length > 1 && <button type="button" title="Give each size its own carton"
+                    onClick={()=>edit(n=>{ const gs=n.lines[li].groups;
+                      const split=gs[gi].sizes.map(x=>({sizes:[x],cartons:0}));
+                      gs.splice(gi,1,...split); })}
+                    className="ml-2 text-[11px] text-slate-600 underline">split</button>}
+                </td>}
+              </tr>
+            )))}
+          </tbody>
+        </table>
+      </div>
+    ))}
+
+    {!built.ok && <div className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">
+      {built.problems.slice(0,4).map((p,i)=><div key={i}>{p}</div>)}
+    </div>}
   </div>;
 }

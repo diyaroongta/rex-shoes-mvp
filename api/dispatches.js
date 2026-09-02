@@ -1,5 +1,6 @@
 import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
+import { buildPackingList } from "../shared/packing-list.js";
 import { INPUTS } from "../shared/inputs.js";
 import { pairsPerCarton, setReference } from "../shared/bridge.js";
 
@@ -16,7 +17,7 @@ function validDate(value){
 export default wrap(async (req, res) => {
   if(req.method === "GET"){
     const { rows } = await q(
-      `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order
+      `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list
          from dispatches order by dispatched_on desc, id desc`);
     return res.status(200).json(rows.map(r => ({
       ...r,
@@ -81,12 +82,29 @@ export default wrap(async (req, res) => {
       const ppc=Number(linePpc)||pairsPerCarton(ord[0].article_code,combo);
       if(ppc) cleanCartons[combo]=n/ppc;
     }
+    /* The packing list is the document that travels with the lorry; `clean` is
+       what the pending balance is reduced by. Letting them disagree would put
+       one number on the customer's gate pass and a different one in the order
+       book, so the sheet is checked against the dispatch before either is
+       written. */
+    let sheet = null;
+    if(req.body && req.body.packing_list){
+      const built = buildPackingList(req.body.packing_list);
+      const dispatchedPairs = Object.values(clean).reduce((a,v)=>a+Number(v||0),0);
+      if(built.total_pairs !== dispatchedPairs)
+        return fail(res, 400,
+          `The packing list adds up to ${built.total_pairs} pairs but this dispatch is ${dispatchedPairs}. `
+          + `Correct the sizes or the quantities before saving.`);
+      if(!built.ok) return fail(res, 400, built.problems.slice(0,5).join("; "));
+      sheet = req.body.packing_list;
+    }
+
     const { rows } = await q(
-      `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on, closes_order)
-       values ($1,$2,$3,$4,$5, coalesce($6::date, current_date), $7)
-       returning id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order`,
+      `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list)
+       values ($1,$2,$3,$4,$5, coalesce($6::date, current_date), $7, $8)
+       returning id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list`,
       [order_no, JSON.stringify(clean), JSON.stringify(cleanCartons), k, note || null,
-       dispatched_on || null, !!closes_order]);
+       dispatched_on || null, !!closes_order, sheet ? JSON.stringify(sheet) : null]);
     return res.status(201).json(rows[0]);
   }
 

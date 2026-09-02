@@ -3,7 +3,7 @@ import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, sourc
 import { compute, fromDay, dayIndex, queueOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
-import { buildPhotoCards } from "../shared/intake.js";
+import { buildPhotoCards, sizesNotWritten } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
@@ -17,6 +17,7 @@ import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
 import JobOrdersTab from "./JobOrdersTab.jsx";
+import FabricatorsTab from "./FabricatorsTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -27,6 +28,18 @@ const SLA_COLOR = {on_track:"#0f9d6b",at_risk:"#c2410c",breach:"#dc2626"};
 const SLA_LABEL = {on_track:"On track",at_risk:"At risk",breach:"Breach"};
 const STAGE_ABBR = {CUTTING:"CUT",STITCHING:"STI",MOLDING:"MLD",ASSEMBLY:"ASM",PACKING:"PCK"};
 const fmt = (n,d=0)=>n==null||isNaN(n)?"—":Number(n).toLocaleString("en-IN",{maximumFractionDigits:d});
+/* A range is a fixed run, so it covers sizes the slip never mentioned — 2X5
+   covers a 3 that "2, 4, 5" never wrote. That on its own is NOT a fault: the
+   range is only the rate basis, and an unwritten size carries no quantity, so
+   nothing extra is priced or made. What WOULD be a fault is the reader giving
+   one of those sizes a quantity, which is the invented-size failure this
+   project has hit before. So only a size that is both unwritten AND carrying
+   pairs is worth interrupting anyone about. */
+const extraSizes = line => {
+  const unwritten = sizesNotWritten(line && line.raw, (line && line.size_order) || []);
+  const sizes = (line && line.sizes) || {};
+  return unwritten.filter(s => Number(sizes[s]) > 0);
+};
 const niceDate = iso => iso ? new Date(String(iso).slice(0,10)+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 
 /* ------------- App shell ------------- */
@@ -276,6 +289,8 @@ export default function App({ user=null, onSignOut=null }={}){
     ]],
     ["Setup", [
       ["parties","Parties & terms"],
+      /* Who work goes OUT to, as parties are who it comes IN from. */
+      ["fabricators","Fabricators & lines"],
       ["catalogue","Catalogue"],
       ["rules","Packing & BOM rules"],
       ["data","Data & BOM"],
@@ -500,6 +515,7 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="jobs" && <JobOrdersTab orders={orders} shortfall={state?state.procurement_by_pi:null}
                             onScheduled={syncAll} />}
         {tab==="parties" && <PartiesTab />}
+        {tab==="fabricators" && <FabricatorsTab />}
         {tab==="catalogue" && <CatalogueTab
           onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
           onAddBom={()=>setTab("data")} />}
@@ -574,6 +590,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [readingPi,setReadingPi]=useState(false);
   const [piCards,setPiCards]=useState(null);
   const [piPreviewCards,setPiPreviewCards]=useState(null);
+  /* Everything incomplete about the PI, gathered so it can be shown ONCE with
+     the option to issue anyway. Null when nothing is outstanding. */
+  const [piIssues,setPiIssues]=useState(null);
   const [piPreviewSignature,setPiPreviewSignature]=useState("");
   const [customerCity,setCustomerCity]=useState("");
   const [vl,setVl]=useState("");
@@ -898,7 +917,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     return {...card,...colours,article:art,vl:present.length===1?present[0]:"",types:present,matched:true,lines};
   }
   function onArticleChange(i,art){
-    setCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art):c));
+    /* Choosing from the list IS the confirmation. Previously the "more than
+       one product fits" banner stayed up after the correction was made, so the
+       one warning that matters became noise to be scrolled past. */
+    setCards(cs=>cs.map((c,j)=>j===i?{...remapForArticle(c,art),article_confirmed:true}:c));
   }
   function onPiArticleChange(i,art){
     setPiCards(cs=>cs.map((c,j)=>j===i?remapForArticle(c,art):c));
@@ -1101,37 +1123,50 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     return `${piNo}-${parties.indexOf(who)+1}`;
   };
 
-  async function save(){
+  async function save(force=false){
     const source=piPreviewCards||[];
     if(!source.length){ setErr("Generate the PI from Match & Check before saving."); return; }
     if(previewStale){ setErr("Match & Check changed. Regenerate the PI with the latest edits before saving."); return; }
     if(!piNo){ setErr("A server-issued PI number is required. Press New PI number and try again."); return; }
+
+    /* Missing reference data used to be five separate refusals, each stopping
+       the clerk dead. During setup — and on a genuinely urgent order — that is
+       the wrong trade: the person knows the MRP is not loaded yet and wants the
+       invoice anyway. So everything incomplete is collected, shown ONCE, and
+       can be overridden.
+       What is NOT negotiable is honesty about the consequence. Two of these
+       make a line vanish from the invoice rather than merely look unfinished,
+       and that is the failure this project has already been bitten by — an
+       invoice that looked complete while being five cartons short. Those say
+       so in as many words. */
+    const problems=[];
     const noParty=source.filter(c=>!String(c.party||"").trim());
-    if(noParty.length){
-      setErr("Enter the customer for: "+noParty.map(c=>c.article).join(", ")
-        +". One sheet can list several customers, so each order needs its own.");
-      return;
-    }
+    if(noParty.length) problems.push({
+      what:`No customer on: ${noParty.map(c=>c.article).join(", ")}`,
+      cost:"These will be filed against “—” and must be corrected before dispatch." });
+
     const incomplete=source.filter(c=>
       !String(c.order_nature||"").trim() || !String(c.dispatch_timeline||"").trim()
       || !String(c.sole_colour||"").trim() || !String(c.upper_colour||"").trim()
       || !String(c.order_date||"").trim());
-    if(incomplete.length){
-      setErr("Complete order nature, dispatch timeline, sole colour and upper colour for every article before issuing the PI: "
-        +incomplete.map(c=>c.article).join(", "));
-      return;
-    }
+    if(incomplete.length) problems.push({
+      what:`Order nature, dispatch timeline, colours or order date missing on: ${incomplete.map(c=>c.article).join(", ")}`,
+      cost:"The invoice prints those boxes empty." });
+
     const unresolved=source.flatMap(c=>c.lines
-      .map((l,li)=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
+      .map(l=>(!l.combo && (Number(l.cartons)||0)>0) ? `${c.article} size ${l.single||"?"}` : null)
       .filter(Boolean));
-    if(unresolved.length){ setErr("Pick a combo for: "+unresolved.join(", ")+" before saving — or set its cartons to 0 to leave it out."); return; }
+    if(unresolved.length) problems.push({
+      what:`No size range picked for: ${unresolved.join(", ")}`,
+      cost:"THESE LINES WILL NOT APPEAR ON THE INVOICE AT ALL — a line with no range prices to zero pairs and is dropped. The cartons are lost from the document.", severe:true });
+
     const missingPacking=source.flatMap(c=>c.lines
       .filter(l=>!c.fromPi&&(Number(l.cartons)||0)>0&&!(Number(l.ppc)>0))
       .map(l=>`${c.article} ${l.combo}`));
-    if(missingPacking.length){
-      setErr("Packing is missing for: "+[...new Set(missingPacking)].join(", ")+". Add pairs/carton in Data & BOM before issuing the PI.");
-      return;
-    }
+    if(missingPacking.length) problems.push({
+      what:`No pairs per carton for: ${[...new Set(missingPacking)].join(", ")}`,
+      cost:"THESE LINES WILL NOT APPEAR ON THE INVOICE — pairs are cartons x pairs/carton, so a missing rate makes them zero.", severe:true });
+
     const unpriced=source.flatMap(c=>c.lines.flatMap(l=>{
       if((c.fromPi?(Number(l.qty)||0):(Number(l.cartons)||0))<=0) return [];
       const sizes=(l.size_order||comboSizesForArticle(c.article,l.combo))
@@ -1140,16 +1175,19 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       return sizes.filter(size=>mrpForSize(chart,l.combo,size)==null)
         .map(size=>`${c.article} ${l.combo} / ${size}`);
     }));
-    if(unpriced.length){
-      setErr("Set MRP before issuing this PI: "+[...new Set(unpriced)].join(", ")+". Use Catalogue → Edit MRP size by size.");
-      return;
-    }
+    if(unpriced.length) problems.push({
+      what:`No MRP for: ${[...new Set(unpriced)].join(", ")}`,
+      cost:"Those sizes price at zero, so the invoice total will be short." });
+
+    if(problems.length && !force){ setPiIssues(problems); setErr(""); return; }
+    setPiIssues(null);
+
     const drafts=source.map(c=>{
       const commercial={...(c.commercial_terms||termsForParty(c.party)),
         dispatch_timeline:String(c.dispatch_timeline||c.commercial_terms?.dispatch_timeline||"45 days")};
       return ({
       order_date:c.order_date, article_code:c.article,
-      priority:Number(c.priority)||2, party:String(c.party||"").trim(),
+      priority:Number(c.priority)||2, party:String(c.party||"").trim()||"—",
       lines:(c.lines||[]).filter(l=>c.fromPi?(Number(l.qty)||0)>0:(Number(l.cartons)||0)>0).map(l=>c.fromPi
         ? {combo:l.combo,qty:Number(l.qty)||0,label:l.label||l.combo,sizes:l.sizes,
            size_order:l.size_order||comboSizesForArticle(c.article,l.combo),
@@ -1297,20 +1335,42 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         const missingPacking=c.lines.filter(l=>l.combo&&!(Number(l.ppc)>0)).map(l=>l.combo);
         return (
         <div key={i} className="border border-slate-200 rounded-xl mb-3 overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-2.5 bg-slate-50 border-b border-slate-200 flex-wrap">
-            <select value={c.article} onChange={e=>onArticleChange(i,e.target.value)}
-              className="border rounded-lg px-2 py-1.5 text-sm font-semibold bg-white" style={{borderColor:c.matched?"#e2e8f0":"#f59e0b"}}>
-              {ARTS.map(a=><option key={a} value={a}>{a}</option>)}</select>
-            {/* One article, however many rolls it was ordered in. */}
-            {vlSummary(c) && <span className="text-xs font-semibold rounded-full px-2 py-0.5"
-              style={{background:"#eef2ff",color:"#4338ca"}}>{vlSummary(c)}</span>}
-            {c.raw && <span className="mono text-xs text-slate-400">read: “{c.raw.trim()}”</span>}
-            <span className="mono text-xs ml-auto" style={{color:SOLE_COLOR[INPUTS.articles[c.article].sole_type]}}>{INPUTS.articles[c.article].sole_type}</span>
-            <span className="mono text-xs text-slate-400">{fmt(c.lines.reduce((a,l)=>a+(l.sizes?Object.values(l.sizes).reduce((x,y)=>x+(Number(y)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0)),0))} pr</span>
-            <button onClick={()=>delCard(i)} title="Remove this article" className="text-rose-500 px-1.5 text-lg leading-none">×</button>
-          </div>
+          {(()=>{
+            /* WHAT THE SLIP SAYS is the card's identity; the product is a
+               mapping FROM it. Showing only the mapping made a guess look like
+               a reading — the box said "JACK LACE BLACK-BLUE" in confident
+               bold while the slip said "Spike Blue", and the actual read was
+               grey five-point text beside it. Whoever is checking the order
+               has to see what was written before they can judge the match. */
+            const sole=(INPUTS.articles[c.article]||{}).sole_type;
+            const unconfirmed=(c.ambiguous || !c.matched) && !c.article_confirmed;
+            const pairs=c.lines.reduce((a,l)=>a+(l.sizes?Object.values(l.sizes).reduce((x,y)=>x+(Number(y)||0),0):(Number(l.cartons)||0)*(Number(l.ppc)||0)),0);
+            return <div className="px-3 py-2.5 bg-slate-50 border-b border-slate-200">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="text-sm font-semibold text-slate-800">
+                  {c.raw ? `“${c.raw.trim()}”` : c.article}
+                </div>
+                {/* One article, however many rolls it was ordered in. */}
+                {vlSummary(c) && <span className="text-xs font-semibold rounded-full px-2 py-0.5"
+                  style={{background:"#eef2ff",color:"#4338ca"}}>{vlSummary(c)}</span>}
+                <span className="mono text-xs ml-auto" style={{color:SOLE_COLOR[sole]}}>{sole||""}</span>
+                <span className="mono text-xs text-slate-400">{fmt(pairs)} pr</span>
+                <button onClick={()=>delCard(i)} title="Remove this article" className="text-rose-500 px-1.5 text-lg leading-none">×</button>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <label htmlFor={`product-${i}`} className="text-[10.5px] uppercase tracking-wide text-slate-500 font-semibold">Product</label>
+                <select id={`product-${i}`} aria-label="Product" value={c.article}
+                  onChange={e=>onArticleChange(i,e.target.value)}
+                  className="border rounded-lg px-2 py-1.5 text-sm font-semibold bg-white"
+                  style={{borderColor:unconfirmed?"#f59e0b":"#e2e8f0"}}>
+                  {ARTS.map(a=><option key={a} value={a}>{a}</option>)}</select>
+                {unconfirmed && <span className="text-[11px] font-semibold rounded-full px-2 py-0.5"
+                  style={{background:"#fef3c7",color:"#92400e"}}>not confirmed</span>}
+              </div>
+            </div>;
+          })()}
           {articleDetails(c, patch=>setCard(i,patch), type=>onTypeChange(i,type))}
-          {(c.ambiguous || !c.matched || missingPacking.length>0) && (
+          {((( c.ambiguous || !c.matched) && !c.article_confirmed) || missingPacking.length>0) && (
             <div className="px-3 py-2 text-xs border-b border-amber-200 bg-amber-50 text-amber-900 space-y-1">
               {!c.matched && <div><b>Not recognised.</b> The reader could not match “{(c.raw||"").trim()}” to a product — pick the right one above.</div>}
               {c.matched && c.ambiguous && <div><b>More than one product fits</b> “{(c.raw||"").trim()}”. Confirm the selection above is right.</div>}
@@ -1330,9 +1390,15 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                       and printed as is the range picker below and the per-size
                       boxes beneath it; both of those do reach the PI. */}
                   <div className="text-sm font-semibold px-1.5 py-1 -ml-1.5 flex items-baseline gap-1.5 flex-wrap">
-                    {l.combo
-                      ? <span>{l.combo}</span>
-                      : <span className="text-amber-700">Not matched to a range</span>}
+                    {/* WHAT THE SLIP WROTE leads, and the range it was mapped
+                        to follows — the same way round as the article above.
+                        Bolding "11X1" while the paper said "12, 13, 1" put the
+                        app's own inference where the source belonged, and hid
+                        the one thing worth checking: a range routinely covers a
+                        size nobody wrote. */}
+                    {l.raw
+                      ? <span>{l.raw}</span>
+                      : <span className="text-slate-400 font-normal">no sizes written</span>}
                     {/* WHICH RUN. A numeral 6-13 exists twice on the roll — the
                         kids size and the adult repeat — and which one a line
                         landed in is the correction most often needed after a
@@ -1344,7 +1410,19 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                       return <span className="font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
                         background:small?"#ecfeff":"#fef3c7",color:small?"#0e7490":"#92400e"}}>
                         {small?"SMALL run":"LARGE run"}</span>; })()}
-                    {l.raw && <span className="mono font-normal text-slate-400" style={{fontSize:10}}>as written: {l.raw}</span>}
+                    {l.combo
+                      ? <span className="mono font-normal text-slate-400" style={{fontSize:10}}>mapped to {l.combo}</span>
+                      : <span className="text-amber-700">Not matched to a range</span>}
+                    {/* A range is a fixed run of sizes, so mapping "2, 4, 5" to
+                        2X5 quietly brings size 3 along with it. That is often
+                        right — the slip abbreviates — but it is a decision the
+                        clerk has to see, because the extra size is priced,
+                        costed and made. */}
+                    {(()=>{ const extra=extraSizes(l); if(!extra.length) return null;
+                      return <span className="font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
+                        background:"#fef3c7",color:"#92400e"}}
+                        title="These sizes carry pairs but were not on the slip">
+                        {extra.join(", ")} not on the slip</span>; })()}
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="mono text-slate-400" style={{fontSize:9}}>rate basis:</span>
@@ -1498,6 +1576,33 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           <div className="serif text-lg font-semibold">3 · Generate Proforma Invoice</div>
           <div className="text-xs text-slate-500">The PI is created from the current Match &amp; Check values only when you press Generate.</div>
         </div>
+        {piIssues && (
+          <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3">
+            <div className="text-sm font-semibold text-amber-900">
+              This PI is missing {piIssues.length === 1 ? "something" : `${piIssues.length} things`}
+            </div>
+            <div className="text-xs text-amber-900 mt-0.5 mb-2">
+              You can issue it anyway — nothing here stops the invoice being raised.
+            </div>
+            <ul className="text-xs text-amber-900 space-y-1.5 mb-3" style={{listStyle:"disc",paddingLeft:18}}>
+              {piIssues.map((p,i)=>(
+                <li key={i}>
+                  <span className="font-semibold">{p.what}</span>
+                  <div className={p.severe?"font-semibold text-rose-800":"text-amber-800"}>{p.cost}</div>
+                </li>))}
+            </ul>
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={()=>save(true)} disabled={saving}
+                className="text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-50">
+                {saving?"Issuing…":"Issue the PI anyway"}
+              </button>
+              <button onClick={()=>setPiIssues(null)}
+                className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
+                Go back and fix it
+              </button>
+            </div>
+          </div>)}
+
         <div className="flex gap-2">
           <button onClick={generatePiPreview} disabled={generatingPi}
             className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
@@ -1506,7 +1611,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           {piPreviewCards && <button onClick={async()=>{if(await allocatePiNo()) await generatePiPreview();}}
             className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white">New PI number</button>}
           <button onClick={printPI} disabled={!piPreviewCards||previewStale} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 disabled:opacity-40">Print / Save PDF</button>
-          <button onClick={save} disabled={saving||!piPreviewCards||previewStale}
+          <button onClick={()=>save(false)} disabled={saving||!piPreviewCards||previewStale}
             className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50">
             {saving ? "Saving…" : `Save & send ${piPreviewCards?.length||0} order${piPreviewCards?.length===1?"":"s"} to production →`}
           </button>
@@ -1699,6 +1804,7 @@ const VIEWS = {
   procurement: {title:"Procurement",        sub:"What to buy, netted against stock"},
   stock:       {title:"Stock register",     sub:"Opening, received, issued and what is left"},
   parties:     {title:"Parties & terms",    sub:"Customers and their agreed commercial terms"},
+  fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},

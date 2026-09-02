@@ -203,3 +203,36 @@ create table if not exists users (
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
+
+-- The packing list as the packer counted it: per SIZE, with COUNTED cartons.
+-- Kept beside `dispatched` rather than replacing it: `dispatched` is per size
+-- range and drives the pending balance and the ledger, which is arithmetic the
+-- app must keep doing. This is the document that travels with the lorry, and
+-- its pairs must reconcile with `dispatched`.
+alter table dispatches add column if not exists packing_list jsonb;
+
+-- ---------------------------------------------------------------------------
+-- Fabricators: who work can be sent to. The factory's own stitching lines and
+-- outside job workers live in ONE table separated by `type`, so the job work
+-- issue screen has a single "who is doing this" dropdown rather than two.
+--
+-- What each type requires differs and is enforced in shared/fabricators.js:
+-- an internal line has no rate and is never payable; an external fabricator
+-- must have a rate and a contact; a sample fabricator takes a flat charge.
+create table if not exists fabricators (
+  name           text primary key,
+  type           text        not null check (type in ('internal_line','external','sample')),
+  rate           numeric     not null default 0,      -- per piece, or flat for a sample
+  tat_days       integer     not null default 0,      -- turnaround
+  contact_person text,
+  contact_phone  text,
+  payable        boolean     not null default false,
+  -- Deactivating must never erase history: a past job card has to keep making
+  -- sense, so an inactive fabricator stays in the list and simply takes no new
+  -- work. There is deliberately no delete.
+  active         boolean     not null default true,
+  note           text,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+create index if not exists fabricators_type_idx on fabricators (active, type, name);

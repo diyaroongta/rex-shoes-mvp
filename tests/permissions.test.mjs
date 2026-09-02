@@ -155,13 +155,13 @@ test("a viewer is not offered screens whose every button would be refused", () =
 test("a planner gets the production screens but not the setup ones", () => {
   for(const tab of ["intake","jobs","orders","schedule","plan","machines","stock","copilot"])
     assert.equal(canSeeTab("planner", tab), true, `planner should see ${tab}`);
-  for(const tab of ["data","rules","catalogue","parties"])
+  for(const tab of ["data","rules","catalogue","parties","fabricators"])
     assert.equal(canSeeTab("planner", tab), false, `planner should not see ${tab}`);
 });
 
 test("an admin sees everything", () => {
   for(const tab of ["mis","intake","jobs","orders","dispatch","schedule","plan","machines",
-                    "procurement","stock","parties","catalogue","rules","data","copilot"])
+                    "procurement","stock","parties","fabricators","catalogue","rules","data","copilot"])
     assert.equal(canSeeTab("admin", tab), true);
 });
 

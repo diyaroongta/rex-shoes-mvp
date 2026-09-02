@@ -1,6 +1,7 @@
 import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
+import { validateFabricator, DEFAULT_LINES } from "../shared/fabricators.js";
 
 const termsOf = row => ({
   discount_pct: Number(row.discount_pct),
@@ -12,7 +13,75 @@ const termsOf = row => ({
 
 /* Party master. Commercial terms live here so a PI cannot deviate from them:
    the invoice screen reads these and shows them read-only. */
+/* Fabricators share this endpoint rather than getting their own file: Vercel's
+   Hobby plan builds one serverless function per file under api/ and allows 12,
+   and this project is at exactly 12. They are a reasonable neighbour — parties
+   are the customers work comes from, fabricators the people it goes to, and
+   both are counterparty master data judged by the same admin-only policy. */
+async function fabricators(req, res){
+  if(req.method === "GET"){
+    const { rows } = await q(
+      `select name, type, rate, tat_days, contact_person, contact_phone,
+              payable, active, note
+         from fabricators order by active desc, type, name`);
+    return res.status(200).json(rows.map(r => ({ ...r,
+      rate: Number(r.rate), tat_days: Number(r.tat_days) })));
+  }
+
+  if(req.method === "PUT"){
+    const b = req.body || {};
+    /* Seeding the four internal lines is an explicit action, not something
+       that happens on first read: a line the factory does not run should not
+       appear because nobody had opened the screen yet. */
+    if(b.seed_lines){
+      const made = [];
+      for(const line of DEFAULT_LINES){
+        const { rowCount } = await q(
+          `insert into fabricators (name, type, rate, tat_days, payable, active, note)
+           values ($1,$2,$3,$4,$5,true,$6) on conflict (name) do nothing`,
+          [line.name, line.type, line.rate, line.tat_days, line.payable, line.note]);
+        if(rowCount) made.push(line.name);
+      }
+      return res.status(200).json({ seeded: made });
+    }
+
+    const check = validateFabricator(b);
+    if(!check.ok) return fail(res, 400, check.problems.join("; "));
+    const v = check.value;
+    const { rows } = await q(
+      `insert into fabricators (name, type, rate, tat_days, contact_person,
+                                contact_phone, payable, active, note)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       on conflict (name) do update set
+         type=$2, rate=$3, tat_days=$4, contact_person=$5, contact_phone=$6,
+         payable=$7, active=$8, note=$9, updated_at=now()
+       returning name, type, rate, tat_days, contact_person, contact_phone, payable, active, note`,
+      [v.name, v.type, v.rate, v.tat_days, v.contact_person, v.contact_phone,
+       v.payable, v.active, v.note]);
+    return res.status(200).json({ ...rows[0], rate:Number(rows[0].rate), tat_days:Number(rows[0].tat_days) });
+  }
+
+  /* No delete. A fabricator named on a past job card must stay resolvable, so
+     retiring one deactivates it — it keeps its history and takes no new work. */
+  if(req.method === "DELETE"){
+    const name = String((req.query||{}).name || "").trim();
+    if(!name) return fail(res, 400, "name is required");
+    const { rowCount } = await q(
+      "update fabricators set active=false, updated_at=now() where name=$1", [name]);
+    if(!rowCount) return fail(res, 404, `no such fabricator: ${name}`);
+    return res.status(200).json({ name, active:false,
+      note:"Deactivated rather than deleted, so past job cards still make sense." });
+  }
+
+  return fail(res, 405, `${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
+  /* One endpoint, two masters. */
+  if(String((req.query||{}).resource||"") === "fabricators"
+     || (req.body && req.body.resource === "fabricators"))
+    return fabricators(req, res);
+
   if(req.method === "GET"){
     const { rows } = await q(
       `select name, city, discount_pct, deductions, gst_pct, payment_split_pct,

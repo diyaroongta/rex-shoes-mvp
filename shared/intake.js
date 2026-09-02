@@ -287,3 +287,26 @@ export function buildPhotoCards(parsed, reference){
   }
   return { cards: cards.filter(card => card.lines.length), issues };
 }
+
+/* Which sizes a range brings along that were never on the slip.
+ *
+ * A size range is a fixed run, so mapping a written "2, 4, 5" to the range 2X5
+ * quietly adds size 3 — and mapping "9, 10, 11" to 9X12 adds size 12. That is
+ * often exactly right, because the slip abbreviates a continuous run, but it
+ * is a DECISION and not a reading: the extra size gets priced, costed and
+ * made. Naming it is the difference between the clerk confirming an
+ * abbreviation and discovering an invented size at dispatch.
+ *
+ * Compared on the bare numeral, so a written "12" matches the range's "12s" —
+ * which run a line belongs to is a separate question, already shown beside it.
+ */
+export function sizesNotWritten(raw, sizeOrder){
+  const bare = v => {
+    const t = parseSizeToken(v);
+    return t.bare || String(v == null ? "" : v).trim().toUpperCase().replace(/S$/,"");
+  };
+  const written = new Set(String(raw == null ? "" : raw)
+    .split(/[^0-9A-Za-z.]+/).filter(Boolean).map(bare));
+  if(!written.size) return [];                 // nothing written: nothing to compare against
+  return (sizeOrder || []).filter(s => !written.has(bare(s)));
+}

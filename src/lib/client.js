@@ -88,6 +88,18 @@ export const removeParty = name => j(`/api/parties?name=${encodeURIComponent(nam
 export const previewPartyTerms = name => post("/api/parties", { name, preview:true });
 export const applyPartyTerms   = name => post("/api/parties", { name });
 
+/* ---- fabricators: the factory's own lines and outside job workers ----
+   Served by /api/parties to stay within Vercel's 12-function limit; they are
+   counterparty master data either way. Retiring one DEACTIVATES it, because a
+   fabricator named on a past job card must stay resolvable. */
+export const listFabricators   = ()   => j("/api/parties?resource=fabricators");
+export const saveFabricator    = f    => j("/api/parties?resource=fabricators", {
+  method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(f) });
+export const seedInternalLines = ()   => j("/api/parties?resource=fabricators", {
+  method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({seed_lines:true}) });
+export const retireFabricator  = name => j(
+  `/api/parties?resource=fabricators&name=${encodeURIComponent(name)}`, { method:"DELETE" });
+
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);

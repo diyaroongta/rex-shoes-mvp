@@ -180,6 +180,69 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("button",{name:"Release production runs for PI77"})).toBeNull();
   });
 
+  /* Missing reference data used to stop the clerk dead, five separate
+     refusals deep. During setup that is the wrong trade — but overriding must
+     never be silent about a line that will vanish from the invoice. */
+  it("offers to issue a PI with missing details instead of refusing outright",async()=>{
+    const user=userEvent.setup();
+    mocks.listParties.mockResolvedValue([]);
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+
+    const selects=()=>[...document.querySelectorAll("select")];
+    const product=screen.getByLabelText("Product");
+    await user.selectOptions(product,"SPIKE");
+    const combo=selects().find(s=>[...s.options].some(o=>o.value==="7X10S"));
+    if(combo) await user.selectOptions(combo,"7X10S");
+
+    const cartons=document.querySelector('input[type=number]');
+    if(cartons){ await user.clear(cartons); await user.type(cartons,"2"); }
+
+    await user.click(screen.getByRole("button",{name:/Generate PI/}));
+    const saveBtn=await screen.findByRole("button",{name:/^Save/});
+    await user.click(saveBtn);
+
+    /* One panel listing everything, with a way through — not a dead end. */
+    const alert=await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/missing/i);
+    expect(screen.getByRole("button",{name:"Issue the PI anyway"})).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Go back and fix it"})).toBeInTheDocument();
+    // Nothing was saved just by being warned.
+    expect(mocks.createOrders).not.toHaveBeenCalled();
+  });
+
+  /* The reader's GUESS must never look like the reading. The card used to be
+     titled by the matched product in confident bold — "JACK LACE BLACK-BLUE"
+     — while the words actually on the slip, "Spike Blue", sat beside it in
+     grey five-point text. Someone checking the order could not see what was
+     written, only what the machine decided. */
+  it("titles a read card by what the slip said, not by the product it guessed",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+
+    // The product is now a labelled field rather than the card's headline.
+    expect(screen.getByLabelText("Product")).toBeInTheDocument();
+    // ...and the old grey provenance note is gone.
+    expect(screen.queryByText(/^read: /)).toBeNull();
+  });
+
+  it("clears the ambiguity warning once a product is actually chosen",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+
+    const product=screen.getByLabelText("Product");
+    await user.selectOptions(product,"SPIKE");
+    /* Choosing IS confirming. The banner used to survive the correction, so
+       the one warning that matters became something to scroll past. */
+    await waitFor(()=>expect(screen.queryByText(/More than one product fits/)).toBeNull());
+    expect(screen.queryByText("not confirmed")).toBeNull();
+  });
+
   /* Bulk BOM removal replaced a one-material-at-a-time control. The contract
      that matters is that nothing is deleted without a preview and an explicit
      confirmation, and that whole articles can go in a single action. */

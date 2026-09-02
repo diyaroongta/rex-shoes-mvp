@@ -11,7 +11,11 @@ import DispatchTab from "../../src/DispatchTab.jsx";
 
 beforeEach(()=>{vi.clearAllMocks();mocks.listDispatches.mockResolvedValue([]);mocks.addDispatch.mockResolvedValue({});mocks.deleteDispatch.mockResolvedValue({});});
 
-it("uses ARMOUR's inherited packing rate for SPIKE dispatch cartons",async()=>{
+/* The screen used to show a carton figure derived as pairs / packing rate —
+   "10.00" for 240 pairs. The factory's own packing list counts cartons instead,
+   and it has to: sizes inside one range do not pack alike, and a fraction of a
+   carton cannot go on a lorry. The derived column is gone. */
+it("does not derive a carton count from the packing rate any more",async()=>{
   const user=userEvent.setup();
   const order={order_no:"JO1",party:"Buyer",article:"SPIKE",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240}]};
   render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}}/>);
@@ -20,7 +24,31 @@ it("uses ARMOUR's inherited packing rate for SPIKE dispatch cartons",async()=>{
      different totals for the same day, whichever refreshed last winning. */
   expect(mocks.listDispatches).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button",{name:"Packing report"}));
-  expect(screen.getByText("10.00")).toBeInTheDocument();
+  expect(screen.queryByText("10.00")).toBeNull();
+  expect(screen.getByRole("button",{name:"Fill in the packing list"})).toBeInTheDocument();
+});
+
+it("counts cartons per size on the packing list, and totals what was entered",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO1",party:"THE UNIFORM WORLD",article:"SPIKE",article_code:"SPIKE",
+               pi:{vl:"VELCRO",upper_colour:"N.BLUE/RED"},lines:[{combo:"7X10S",qty:240}]};
+  render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}}/>);
+  await user.click(screen.getByRole("button",{name:"Packing report"}));
+  await user.click(screen.getByRole("button",{name:"Fill in the packing list"}));
+
+  // The article, closure and colour come across so they are not re-keyed.
+  expect(screen.getByText(/VELCRO/)).toBeInTheDocument();
+  expect(screen.getByText(/N\.BLUE\/RED/)).toBeInTheDocument();
+
+  // Cartons are typed, not computed.
+  const cartons=screen.getAllByLabelText(/^Cartons for size/);
+  expect(cartons.length).toBeGreaterThan(0);
+  await user.clear(cartons[0]); await user.type(cartons[0],"3");
+  // The running total is split across elements, so match on the container.
+  await waitFor(()=>{
+    const summary=screen.getByText("Packing list").parentElement.textContent.replace(/\s+/g," ");
+    expect(summary).toMatch(/3 cartons/);
+  });
 });
 
 /* A packing report can be mis-keyed. Removing one returns its pairs to the

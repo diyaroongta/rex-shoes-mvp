@@ -55,6 +55,80 @@ order back to the automatic planner.
 
 ---
 
+**Fabricators and internal lines are ONE list.** `shared/fabricators.js` keeps
+them apart by `type` only — `internal_line`, `external`, `sample` — so the job
+work issue screen asks "who is doing this" once, whether the answer is Line 2 or
+an outside worker. Two lists would mean two dropdowns and two ways to get the
+same question wrong. What each type requires genuinely differs and is enforced,
+not merely hinted at in the form:
+
+| | rate | contact | payable |
+|---|---|---|---|
+| internal_line | none — a typed rate is an error | optional | **never**, whatever the form sends |
+| external | per piece, required | required | always |
+| sample | flat charge, required | required | optional |
+
+`payableFor()` derives payability from the type rather than trusting the
+caller, so the factory's own line can never end up in the payables. The same
+`RULES` object drives the form's fields and the server's validation, so a field
+cannot be demanded in one place and hidden in the other.
+
+**A fabricator is never deleted, only deactivated.** A name on a past job card
+has to stay resolvable; `DELETE` sets `active=false` and says so. Inactive
+entries stay listed and take no new work (`selectableFor`), and sample makers
+are kept out of bulk issuing.
+
+**It lives in `api/parties.js` behind `?resource=fabricators`** — not because
+it belongs there conceptually but because Vercel's Hobby plan allows 12
+serverless functions and the project is at exactly 12. Parties are who work
+comes in from, fabricators who it goes out to; both are counterparty master
+data under the same admin-only policy, so the neighbour is a reasonable one.
+
+**Components are a BREAKDOWN of a material, never extra demand.** The revised
+BOM hangs cut pieces off a material row — ARMOR REXION becomes VAMP, ADDI,
+PALTA — and the material rate already covers all of them. Counting a component
+as demand in its own right would order the rexine once for the sheet and again
+for every piece cut out of it. So there are two views of one BOM, and
+`shared/bom-components.js` owns the split:
+
+| View | Shows | Used by |
+|---|---|---|
+| material-wise | the material, combined | every BOM screen, procurement, netting, stock |
+| component-wise | the cut pieces, per stage | the job card only |
+
+`materialTotals()` is asserted to return identical figures with and without
+component data, which is the test that stops this leaking into procurement.
+Components live at `combos[COMBO].components[STAGE][MATERIAL]` — beside `rates`,
+never inside it, so every existing reader of `rates` is untouched.
+
+**A job card is per stage, and falls back rather than printing blank.** The
+client's ARMOUR 17004 card is two stages in one document: rows 1–14 are CUTTING
+(cut pieces), the thread/labels/velcro/PP-bag list is STITCHING (consumables
+with no components). So a stage prints its COMPONENTS where they exist and its
+MATERIALS where they do not — an empty cutting list would read as "nothing to
+cut". Cutting materials with no components are named in `missing_components`,
+never silently dropped.
+
+**The Dispatch Book prints the factory's own Packing List.** The layout is a
+faithful copy of the client's sheet, because it travels with the lorry and is
+checked at the customer's gate. Two levels, and conflating them gets the S.NO
+column wrong: an **S.NO** is one article/closure/colour and spans however many
+size rows it needs; a **carton group** is the set of sizes sharing a box, and
+that is what the C/N numbers follow. The sample sheet's S.NO 1 holds three
+groups of one carton (1/49, 2/49, 3/49) while its S.NO 3 holds one group of two
+sizes in a single box (5/49). `tests/packing-list.test.mjs` reproduces that
+whole sheet — 971 pairs, 49 cartons — so a change that breaks the numbering
+fails loudly.
+
+**Cartons are COUNTED on the dispatch screen now, never derived.** The old
+screen showed `pairs / packing rate` to two decimals — "2.67 cartons" — which
+cannot go on a lorry and is wrong whenever sizes inside a range pack at
+different rates. The packer enters the count. C/N numbers ARE derived, because
+numbering is not quantity. `dispatched` stays per size range and keeps driving
+the pending balance and the ledger; the packing list is the document beside it,
+and `api/dispatches.js` refuses a sheet whose pairs disagree with the dispatch
+so the gate pass and the order book can never differ.
+
 **The menu names the factory's own books.** Orders & dispatch is the **Order
 Book**, Dispatch & packing is the **Dispatch Book**. Bulk upload is not a
 top-level screen: it is a second way of doing what PI generation does — getting
@@ -118,6 +192,9 @@ shared/            imported by BOTH browser and server — pure, testable
   order-import.js  parsing bulk order spreadsheets
   intake.js        photo-read normalization; preserves exact sizes and V/L
   mis.js           pure executive MIS KPIs: health, dispatch gap, output/utilisation
+  packing-list.js  the dispatch document: carton numbering, totals, reconciliation
+  bom-components.js  cut pieces per material: job cards read these, procurement never does
+  fabricators.js   internal lines and job workers in one list; what each type requires
   inputs.js        SEED reference data only — real data lives in Postgres
   catalogue-seed.js article photos + MRP bands from the catalogue PDF
 src/
@@ -126,6 +203,8 @@ src/
   PiDocument.jsx   the invoice, matching the factory's existing layout
   BomRemovalPanel.jsx  bulk BOM removal: articles, ranges and materials in one action
   JobOrdersTab.jsx     releasing PI quantities into production, one run at a time
+  FabricatorsTab.jsx   the fabricator master: lines, job workers, sample makers
+  PackingList.jsx      the dispatch document, in the factory's own layout
   lib/refdata.js   hydrates live reference data over the seed at startup
   lib/client.js    the only thing the browser calls — never a provider directly
 api/
@@ -135,7 +214,7 @@ api/
   pis.js           PI master, release into production, and PI number allocation
   reference.js     BOM upload, stock, MRP, sole type, molding machine, bulk removal
   dispatches.js    packing reports
-  parties.js       customers and their locked commercial terms
+  parties.js       customers, AND fabricators (?resource=fabricators) — see below
 db/schema.sql      safe to re-run; everything uses IF NOT EXISTS
 tests/             4 suites, ~26 checks
 ```
@@ -265,6 +344,10 @@ Each of these was a real bug found in production. Most have a regression test no
 | A range emptied instead of removed | Removing the last material from a size range left the range in place with no rates. Orders could still be placed on it, and it then booked machine capacity while requiring zero material — the same silent failure as an unpriced line. `planRemoval` promotes that to removing the range itself, and says so in the preview rather than doing it quietly. Same rule one level up: an article whose every range is selected goes too. |
 | A thirteenth serverless function | Vercel's Hobby plan builds one function per file under `api/` and allows 12. Adding `api/auth.js` made it 13, and the DEPLOYMENT was rejected even though the build succeeded — so tests, coverage and `vite build` all passed while the app could not ship. PI number allocation moved into `api/pis.js` as `action:"next_number"`, and a shape test in `tests/api/auth.test.js` now asserts the count. Helpers go under `api/_lib/`, which Vercel ignores because of the underscore. |
 | A session that invented a role | `signSession` defaulted a missing role to `"admin"` (`user.role \|\| "admin"`), and `readSession` did the same on the way back. Any path that produced a user without a role — a hand-written row, a future SSO mapping, a bug — therefore minted an ADMINISTRATOR session. Access control has to fail closed: the default is gone, an absent role reaches `can()` as absent, and it is refused with a message telling the user to have it set. |
+| A guess wearing the reading's clothes | The Match &amp; Check card was titled by the article the matcher CHOSE, in confident bold, while the words actually on the slip sat beside it as grey `read: "Spike Blue"` micro-text. So a card headed "JACK LACE BLACK-BLUE (BLUE SKINFIT)" was really an unconfirmed guess at "Spike Blue", and the person checking the order could not see what was written — only what the machine decided. The slip's own words are the card's title now; the product is a labelled field under it. |
+| A warning that could never be cleared | `onArticleChange` remapped the card but left `ambiguous` set, so "More than one product fits" stayed up after the correction was made. A banner that survives the fix teaches people to scroll past every banner. Choosing from the list now IS the confirmation. |
+| A range mistaken for an invented size | Match &amp; Check bolded the RANGE (`11X1`) while the slip's own `12, 13, 1` sat in ten-point grey, so a range covering a size nobody wrote looked like the app adding one. It is not: a range is only the RATE BASIS, and an unwritten size carries no quantity, so nothing extra is priced or made. The written sizes lead now and the range follows as "mapped to 11X1". The warning fires only when an unwritten size actually carries pairs — which would be the real invented-size fault. |
+| Refusing where a warning would do | Issuing a PI was blocked by five separate refusals — customer, colours, size range, packing rate, MRP — each stopping the clerk dead at a different point. During setup, and on a genuinely urgent order, that is the wrong trade. They are collected and shown ONCE with "Issue the PI anyway". What is not negotiable is honesty about the cost: a line with no size range or no packing rate prices to zero pairs and is DROPPED from the invoice entirely, so those two say so in as many words rather than reading as cosmetic. |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---
