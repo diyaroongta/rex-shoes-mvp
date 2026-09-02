@@ -180,6 +180,29 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("button",{name:"Release production runs for PI77"})).toBeNull();
   });
 
+  /* Sizes inside one range do not pack alike. SPIKE's 11X1 packs 12s and 13s
+     at 24 to a carton and size 1 at 18, so a slip reading 12/18, 13/18, 1/36
+     is 432 + 432 + 648 = 1,512 pairs — not the 72 x 24 = 1,728 the PAIRS
+     column was printing from the line rate alone. */
+  it("totals a line from its own sizes, not cartons x the line rate",async()=>{
+    const { buildPhotoCards } = await import("../../shared/intake.js");
+    const { INPUTS } = await import("../../shared/inputs.js");
+    const { cards } = buildPhotoCards({orders:[{
+      category:"SPIKE", color:"BLUE", party:"X", type:"VELCRO",
+      lines:[{sizes:["12"],cartons:18,type:"VELCRO"},
+             {sizes:["13"],cartons:18,type:"VELCRO"},
+             {sizes:["1"], cartons:36,type:"VELCRO"}]}]}, INPUTS);
+    const line = cards[0].lines[0];
+    expect(line.cartons).toBe(72);
+    expect(line.ppc).toBe(24);
+    // Each size costed at ITS OWN rate.
+    expect(line.sizes).toEqual({ "1":648, "12s":432, "13s":432 });
+    expect(line.qty).toBe(1512);
+    // The trap: the line rate alone would have said 1,728.
+    expect(line.cartons * line.ppc).toBe(1728);
+    expect(line.qty).not.toBe(line.cartons * line.ppc);
+  });
+
   /* Missing reference data used to stop the clerk dead, five separate
      refusals deep. During setup that is the wrong trade — but overriding must
      never be silent about a line that will vanish from the invoice. */

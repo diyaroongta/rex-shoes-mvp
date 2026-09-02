@@ -1467,10 +1467,18 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                        sizes already on the line, remainder to the earliest —
                        the same rule the invoice uses to split a range. */
                     if(!l.sizes||!Number(l.ppc)){setLine(i,k,{cartons});return;}
-                    const names=Object.keys(l.sizes);
-                    const total=Math.max(0,Math.round(cartons*Number(l.ppc)));
-                    const base=Math.floor(total/names.length), rem=total-base*names.length;
-                    const sizes=Object.fromEntries(names.map((n,idx)=>[n,base+(idx<rem?1:0)]));
+                    /* SCALE the mix, never flatten it. This used to spread the
+                       new total EVENLY across the sizes, which threw away what
+                       the slip actually wrote — a line reading 12/18, 13/18,
+                       1/36 came back as three equal thirds. The proportions are
+                       the clerk's data; only the scale is being changed here. */
+                    const entries=Object.entries(l.sizes);
+                    const before=entries.reduce((a,[,v])=>a+(Number(v)||0),0);
+                    const oldCartons=Number(l.cartons)||0;
+                    if(!before||!oldCartons){ setLine(i,k,{cartons}); return; }
+                    const factor=cartons/oldCartons;
+                    const sizes=Object.fromEntries(entries.map(([n,v])=>[n,Math.round((Number(v)||0)*factor)]));
+                    const total=Object.values(sizes).reduce((a,v)=>a+v,0);
                     setLine(i,k,{cartons,sizes,qty:total});
                   }}
                   title={l.sizes?"Sets the whole range; the pairs are spread across its sizes below":""}
@@ -1486,7 +1494,16 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                       qty:Object.values(nextSizes).reduce((sum,pairs)=>sum+Number(pairs||0),0)});
                   }}
                   className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"/>
-                <div className="mono text-sm text-right font-semibold">{fmt((Number(l.cartons)||0)*(Number(l.ppc)||0))}</div>
+                {/* Sizes inside one range do not pack alike, so cartons x the
+                    LINE rate is wrong whenever they differ: SPIKE's 11X1 packs
+                    12s/13s at 24 and size 1 at 18, and 72 cartons printed as
+                    1,728 pairs where the sizes actually total 1,512. When the
+                    line carries a per-size breakdown, that breakdown IS the
+                    quantity. */}
+                <div className="mono text-sm text-right font-semibold">
+                  {fmt(l.sizes
+                    ? Object.values(l.sizes).reduce((a,v)=>a+(Number(v)||0),0)
+                    : (Number(l.cartons)||0)*(Number(l.ppc)||0))}</div>
                 <button onClick={()=>delLine(i,k)} className="text-rose-500 text-lg leading-none">−</button>
                 {/* A line keeps the rate it was built with, so a draft opened
                     before the packing list changed silently keeps the old one.

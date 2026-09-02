@@ -28,6 +28,39 @@ it("does not derive a carton count from the packing rate any more",async()=>{
   expect(screen.getByRole("button",{name:"Fill in the packing list"})).toBeInTheDocument();
 });
 
+/* The packing list is the document that travels with the lorry, so it has to
+   be reprintable long after the dispatch was keyed in — not only in the moment.
+   It was being stored and never rendered again. */
+it("reopens a stored packing list from the dispatch history, and offers to print it",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO1",party:"THE UNIFORM WORLD",article:"SPIKE",article_code:"SPIKE",
+               lines:[{combo:"7X10S",qty:240}]};
+  const dispatched=[{id:1,order_no:"JO1",dispatched:{"7X10S":56},cartons:{"7X10S":3},
+    kind:"partial",dispatched_on:"2026-04-15",closes_order:false,
+    packing_list:{customer:"THE UNIFORM WORLD",lines:[
+      {article:"SPIKE",closure:"VELCRO",colour:"N.BLUE/RED",
+       groups:[{sizes:[{size:"8s",pairs:28}],cartons:1},{sizes:[{size:"9s",pairs:28}],cartons:2}]}]}}];
+  render(<DispatchTab orders={[order]} dispatches={dispatched} onChanged={()=>{}}/>);
+
+  await user.click(screen.getByRole("button",{name:"Packing list for JO1"}));
+
+  // The document itself, with its carton numbering computed from the stored counts.
+  expect(await screen.findByText("Packing List")).toBeInTheDocument();
+  expect(screen.getByText("1/3")).toBeInTheDocument();
+  expect(screen.getByText("2-3/3")).toBeInTheDocument();
+  expect(screen.getAllByText("THE UNIFORM WORLD").length).toBeGreaterThan(0);
+  expect(screen.getByRole("button",{name:"Print / Save PDF"})).toBeInTheDocument();
+});
+
+it("does not offer a packing list for a dispatch that never had one",async()=>{
+  const order={order_no:"JO1",party:"P",article:"SPIKE",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240}]};
+  render(<DispatchTab orders={[order]}
+    dispatches={[{id:2,order_no:"JO1",dispatched:{"7X10S":24},kind:"partial",
+                  dispatched_on:"2026-04-15",closes_order:false}]}
+    onChanged={()=>{}}/>);
+  expect(screen.queryByRole("button",{name:"Packing list for JO1"})).toBeNull();
+});
+
 it("counts cartons per size on the packing list, and totals what was entered",async()=>{
   const user=userEvent.setup();
   const order={order_no:"JO1",party:"THE UNIFORM WORLD",article:"SPIKE",article_code:"SPIKE",

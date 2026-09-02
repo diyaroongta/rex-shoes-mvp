@@ -23,6 +23,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      opens it — a dispatch can still be recorded without one, because a
      shortage close has nothing to pack. */
   const [sheet,setSheet]=useState(null);
+  /* A stored packing list opened for viewing/printing. The document is the
+     thing that travels with the lorry, so it has to be reprintable long after
+     the dispatch was recorded — not only at the moment it was keyed in. */
+  const [viewing,setViewing]=useState(null);
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
@@ -97,6 +101,28 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       if(onChanged) await onChanged();   // reloads the shared dispatch list
     }catch(e){ setErr(String(e.message||e)); }
     finally{ setBusy(false); }
+  }
+
+  /* Printed into its own window rather than by hiding the app with CSS, the
+     same way the invoice is. A print stylesheet has to anticipate every piece
+     of chrome on the page; a clean document cannot get one wrong, and what is
+     saved as a PDF is then exactly the sheet and nothing else. */
+  function printPackingList(){
+    const node=document.querySelector(".packing-list");
+    if(!node) return;
+    const w=window.open("","_blank","width=900,height=1000");
+    if(!w){ setErr("Popup blocked — allow popups to print the packing list."); return; }
+    w.document.open();
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
+      + `<title>Packing list ${viewing?viewing.order_no:""}</title>`
+      + `<style>*{box-sizing:border-box}`
+      + `body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}`
+      + `table{width:100%;border-collapse:collapse}`
+      + `[data-noprint]{display:none!important}@page{size:A4 portrait;margin:10mm}</style></head>`
+      + `<body>${node.outerHTML}`
+      + `<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script>`
+      + `</body></html>`);
+    w.document.close();
   }
 
   if(!orders || !orders.length) return <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm text-center text-slate-500 text-sm">
@@ -242,6 +268,21 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       </table>
     </div>
 
+    {viewing && (
+      <div className="mb-4 rounded-2xl border border-slate-300 bg-white p-3 shadow-sm">
+        <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
+          <div className="text-sm font-semibold text-slate-800">
+            Packing list · <span className="mono">{viewing.order_no}</span>
+          </div>
+          <button onClick={printPackingList}
+            className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">
+            Print / Save PDF</button>
+          <button onClick={()=>setViewing(null)}
+            className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
+        </div>
+        <PackingList data={viewing.sheet} />
+      </div>)}
+
     {!!dispatches.length && (
       <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm mt-4">
         <div className="text-sm font-semibold text-slate-700 mb-2">Dispatch history</div>
@@ -262,7 +303,13 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                 <td>{d.closes_order ? <span className="text-rose-700 font-semibold">closed short</span> : d.kind}</td>
                 <td className="mono">{Object.entries(d.dispatched).map(([c,v])=>`${c}:${fmt(v)}`).join("  ")}</td>
                 <td className="text-slate-500">{d.note||""}</td>
-                <td className="text-right">
+                <td className="text-right whitespace-nowrap">
+                  {/* Only offered where a sheet was actually entered — an
+                      empty document would be worse than none. */}
+                  {d.packing_list && <button
+                    onClick={()=>setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}})}
+                    aria-label={`Packing list for ${d.order_no}`}
+                    className="font-semibold text-indigo-700 hover:underline mr-2">Packing list</button>}
                   {confirmDel===d.id
                     ? <span className="inline-flex gap-1.5 items-center">
                         <span className="text-rose-800">Put these pairs back?</span>

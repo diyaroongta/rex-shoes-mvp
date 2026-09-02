@@ -120,6 +120,22 @@ sizes in a single box (5/49). `tests/packing-list.test.mjs` reproduces that
 whole sheet — 971 pairs, 49 cartons — so a change that breaks the numbering
 fails loudly.
 
+**The letterhead and mark are part of the FORM, not configuration.** REX and
+"Mark Of Originality" ship as defaults in `DEFAULT_PACKING_CONFIG` and print on
+every sheet — they are on every one the factory issues, so requiring them to be
+configured before the first sheet can go out would be wrong. `logo` and
+`footer_logo` take image data URLs (the same way catalogue photos are stored)
+so the real artwork drops in without a code change; the wordmark prints until
+it does. EVERYTHING BELOW the letterhead is data: customer, order number,
+sizes, pairs, cartons.
+
+**A packing list is reprintable, not a one-off.** It travels with the lorry and
+is checked at the customer's gate, so it can be reopened from the dispatch
+history and printed long after it was keyed in. Printing opens its own clean
+window rather than hiding the app with CSS — the same mechanism the invoice
+uses, because a print stylesheet has to anticipate every piece of chrome on the
+page and a clean document cannot get one wrong.
+
 **Cartons are COUNTED on the dispatch screen now, never derived.** The old
 screen showed `pairs / packing rate` to two decimals — "2.67 cartons" — which
 cannot go on a lorry and is wrong whenever sizes inside a range pack at

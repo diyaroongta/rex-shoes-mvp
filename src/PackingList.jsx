@@ -16,13 +16,23 @@ const CELL = { border:B, padding:"3px 5px", fontSize:11, verticalAlign:"middle" 
 const HEAD = { ...CELL, fontWeight:700, textAlign:"center", background:"#fff" };
 const LBL  = { ...CELL, fontWeight:600 };
 
-/* The letterhead is CONFIGURATION, not part of the format. The sample sheet
-   carries a REX mark, but hardcoding it would put one factory's branding into
-   the app itself — and this document is otherwise entirely data-driven. It
-   comes from the same pi_config the invoice uses, and defaults to nothing
-   rather than to a name that was only ever an example. */
+/* The letterhead, mark and footer are part of the FORM — they are printed on
+   every one of these the factory issues, so they ship as defaults rather than
+   being something to configure before the first sheet can go out. Everything
+   below them is data: customer, numbers, sizes, cartons.
+   `logo` and `footer_logo` take image data URLs (the same way catalogue photos
+   are stored) so the real artwork can be dropped in without a code change; the
+   wordmark below is what prints until it is. */
+export const DEFAULT_PACKING_CONFIG = {
+  company_name: "REX",
+  tagline: "Mark Of Originality",
+  logo: null,
+  footer_logo: null,
+  footer_note: "",
+};
+
 export default function PackingList({ data, articleName, config = {} }){
-  const company = String(config.company_name || "").trim();
+  const cfg = { ...DEFAULT_PACKING_CONFIG, ...(config || {}) };
   const list = buildPackingList(data || {});
   const { lines, total_pairs, total_cartons } = list;
 
@@ -36,9 +46,15 @@ export default function PackingList({ data, articleName, config = {} }){
       }
     `}</style>
 
-    {company && <div style={{textAlign:"center",marginBottom:6}}>
-      <div style={{fontSize:26,fontWeight:800,letterSpacing:"-.02em"}}>{company}</div>
-    </div>}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16,marginBottom:6}}>
+      {cfg.logo
+        ? <img src={cfg.logo} alt={cfg.company_name} style={{height:44,objectFit:"contain"}} />
+        : <div style={{textAlign:"center"}}>
+            <div style={{fontSize:26,fontWeight:800,letterSpacing:"-.02em"}}>{cfg.company_name}</div>
+            {cfg.tagline && <div style={{fontSize:9,color:"#444",marginTop:-2}}>{cfg.tagline}</div>}
+          </div>}
+      {cfg.footer_logo && <img src={cfg.footer_logo} alt="" style={{height:52,objectFit:"contain"}} />}
+    </div>
     <div style={{textAlign:"center",fontSize:16,fontWeight:700,margin:"8px 0 10px"}}>Packing List</div>
 
     {/* The header block, in the sheet's own two rows. */}
@@ -117,6 +133,8 @@ export default function PackingList({ data, articleName, config = {} }){
         </tr>
       </tfoot>
     </table>
+
+    {cfg.footer_note && <div style={{fontSize:9,color:"#444",textAlign:"center",marginTop:6}}>{cfg.footer_note}</div>}
 
     {!list.ok && <div data-noprint style={{marginTop:10,padding:"8px 10px",border:"1px solid #FECDD3",
         background:"#FFF1F2",color:"#9F1239",fontSize:11.5,borderRadius:6}}>
