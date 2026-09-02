@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { validateFabricator, payableFor, jobCost, selectableFor,
-         DEFAULT_LINES, TYPES, RULES } from "../shared/fabricators.js";
+         DEFAULT_LINES, TYPES, RULES, optionLabel } from "../shared/fabricators.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -152,16 +152,22 @@ test("a sample marked not payable costs nothing", () => {
   assert.equal(jobCost({type:"sample",rate:500,payable:false}, 6).amount, 0);
 });
 
-console.log("\nG — the four lines offered on first run");
+console.log("\nG — the two confirmed starting options");
 
-test("are the factory's own, free, and flag their placeholder turnaround", () => {
-  assert.deepEqual(DEFAULT_LINES.map(l=>l.name), ["Line 1","Line 2","Line 3","Line 4"]);
+test("are Rex Internal and New Durga Line, with unknown values left unset", () => {
+  assert.deepEqual(DEFAULT_LINES.map(l=>l.name), ["Rex Internal","New Durga Line"]);
+  assert.deepEqual(DEFAULT_LINES.map(l=>l.type), ["internal_line","external"]);
+  assert.equal(DEFAULT_LINES[0].payable, false);
+  assert.equal(DEFAULT_LINES[1].payable, true);
   for(const l of DEFAULT_LINES){
-    assert.equal(l.type, "internal_line");
-    assert.equal(l.payable, false);
-    assert.match(l.note, /placeholder/i, "a guessed lead time must be labelled as one");
-    assert.equal(validateFabricator(l).ok, true);
+    assert.equal(l.tat_days, 0);
+    assert.match(l.note, /still to be entered/i);
   }
+});
+
+test("dropdown labels state the two types in brackets",()=>{
+  assert.equal(optionLabel(DEFAULT_LINES[0]),"Rex Internal (Internal)");
+  assert.equal(optionLabel(DEFAULT_LINES[1]),"New Durga Line (External)");
 });
 
 test("every type has a rule set, and every rule set a type", () => {

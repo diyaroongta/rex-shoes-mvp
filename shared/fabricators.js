@@ -109,13 +109,32 @@ export function validateFabricator(input = {}){
   };
 }
 
-/* The four internal lines, offered on first run so nobody has to type them.
-   Their turnaround is left at 1 day as a stated PLACEHOLDER rather than a
-   guess dressed up as fact — the real figure comes from the factory. */
-export const DEFAULT_LINES = [1,2,3,4].map(n => ({
-  name: `Line ${n}`, type: "internal_line", rate: 0, tat_days: 1,
-  payable: false, active: true, note: "Turnaround is a placeholder — confirm with the factory",
-}));
+/* The two choices confirmed for the first working version. The factory has
+   named the people/places but has NOT supplied Durga's commercial details or
+   either turnaround, so zero means "not set" here — it is never presented as
+   a real rate or lead time. The master screen keeps those gaps visible. */
+export const DEFAULT_FABRICATORS = [
+  {
+    name:"Rex Internal", type:"internal_line", rate:0, tat_days:0,
+    contact_person:null, contact_phone:null, payable:false, active:true,
+    note:"Internal option confirmed; turnaround time still to be entered",
+  },
+  {
+    name:"New Durga Line", type:"external", rate:0, tat_days:0,
+    contact_person:null, contact_phone:null, payable:true, active:true,
+    note:"External option confirmed; rate, contact and turnaround still to be entered",
+  },
+];
+
+/* Kept as an alias so older callers do not break while the UI/API wording is
+   changed from "seed lines" to "add the two starting options". */
+export const DEFAULT_LINES = DEFAULT_FABRICATORS;
+
+export const optionLabel = fabricator => {
+  const f = fabricator || {};
+  const short = { internal_line:"Internal", external:"External", sample:"Sample" };
+  return `${f.name || ""} (${short[f.type] || f.type || "Unknown"})`;
+};
 
 /* Who can be offered for a piece of work. Inactive fabricators stay in the
    list — their past job cards must still make sense — but cannot take new

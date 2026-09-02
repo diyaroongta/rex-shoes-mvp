@@ -2,6 +2,7 @@ import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { buildPackingList } from "../shared/packing-list.js";
 import { validateIssue, receive, slipFor } from "../shared/job-work.js";
+import { jobOrderBalance } from "../shared/job-orders.js";
 import { INPUTS } from "../shared/inputs.js";
 import { pairsPerCarton, setReference } from "../shared/bridge.js";
 
@@ -26,7 +27,7 @@ async function jobWork(req, res){
     const { rows } = await q(
       `select id, fabricator, fabricator_type, article, stage, order_no, qty,
               received, shortage, status, slip, sample, sample_status, rate,
-              payable, note, issued_on
+              payable, note, issued_on, card
          from job_work order by status, issued_on desc, id desc`);
     return res.status(200).json(rows.map(r => ({ ...r,
       qty:Number(r.qty), received:Number(r.received),
@@ -44,19 +45,58 @@ async function jobWork(req, res){
     if(!check.ok) return fail(res, 400, check.problems.join("; "));
     const v = check.value;
 
+    /* A job card is allocated from the Order Book, never straight from the PI.
+       Refuse a stale browser that tries to allocate more than is still free. */
+    if(v.order_no){
+      const {rows:[order]}=await q(
+        `select order_no, article_code, lines from orders where order_no=$1 and active`,[v.order_no]);
+      if(!order) return fail(res,404,`no such active Order Book row: ${v.order_no}`);
+      if(String(order.article_code)!==v.article)
+        return fail(res,400,`${v.order_no} is for ${order.article_code}, not ${v.article}`);
+      const {rows:prior}=await q(
+        `select order_no, qty, card from job_work where order_no=$1`,[v.order_no]);
+      const balance=jobOrderBalance(order,prior);
+      if(v.qty>balance.remaining)
+        return fail(res,409,`${v.order_no} has only ${balance.remaining} pairs left for job cards`);
+
+      const cardLines=Array.isArray(b.card?.lines)?b.card.lines:[];
+      if(!cardLines.length) return fail(res,400,"Issue Order Book work through a size-wise Job Card");
+      const named=new Set();
+      let cardTotal=0;
+      for(const line of cardLines){
+        const combo=String(line?.combo||"");
+        const available=balance.lines.find(row=>row.combo===combo);
+        const amount=Math.max(0,Math.round(Number(line?.qty)||0));
+        if(!available) return fail(res,400,`${combo||"(blank)"} is not on ${v.order_no}`);
+        if(named.has(combo)) return fail(res,400,`${combo} appears twice on the Job Card`);
+        named.add(combo); cardTotal+=amount;
+        if(amount>available.remaining)
+          return fail(res,409,`${v.order_no} ${combo} has only ${available.remaining} pairs left for job cards`);
+        if(line.sizes&&typeof line.sizes==="object"){
+          const sizeTotal=Object.values(line.sizes).reduce((a,n)=>a+Math.max(0,Math.round(Number(n)||0)),0);
+          if(sizeTotal!==amount) return fail(res,400,`${combo} size quantities total ${sizeTotal}, not ${amount}`);
+          for(const [size,n] of Object.entries(line.sizes)){
+            if(available.remaining_sizes&&Math.max(0,Math.round(Number(n)||0))>Number(available.remaining_sizes[size]||0))
+              return fail(res,409,`${v.order_no} ${combo} size ${size} exceeds its Order Book balance`);
+          }
+        }
+      }
+      if(cardTotal!==v.qty) return fail(res,400,`Job Card lines total ${cardTotal}, not ${v.qty}`);
+    }
+
     /* The rate is SNAPSHOTTED onto the job. Renegotiating a fabricator's rate
        next month must not silently rewrite what last month's work cost. */
     const { rows } = await q(
       `insert into job_work (fabricator, fabricator_type, article, stage, order_no,
                              qty, slip, sample, sample_status, rate, payable, note,
-                             issued_on)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, coalesce($13::date, current_date))
+                             issued_on, card)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, coalesce($13::date, current_date),$14)
        returning id, fabricator, fabricator_type, article, stage, order_no, qty,
                  received, shortage, status, slip, sample, sample_status, rate,
-                 payable, note, issued_on`,
+                 payable, note, issued_on, card`,
       [v.fabricator, v.fabricator_type, v.article, v.stage, v.order_no, v.qty,
        v.slip, v.sample, v.sample_status, Number(fab.rate), fab.payable, v.note,
-       v.issued_on]);
+       v.issued_on, b.card ? JSON.stringify(b.card) : null]);
     return res.status(201).json({ ...rows[0], qty:Number(rows[0].qty),
       received:Number(rows[0].received), rate:Number(rows[0].rate) });
   }

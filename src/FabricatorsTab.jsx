@@ -63,7 +63,7 @@ export default function FabricatorsTab(){
     try{
       const out = await api.seedInternalLines();
       await reload();
-      setMsg(out.seeded.length ? `Added ${out.seeded.join(", ")}.` : "The internal lines are already there.");
+      setMsg(out.seeded.length ? `Added ${out.seeded.join(", ")}.` : "The two starting options are already there.");
     }catch(e){ setErr(e.message || String(e)); }
     finally{ setBusy(false); }
   }
@@ -140,10 +140,10 @@ export default function FabricatorsTab(){
         </button>
         {editing && <button onClick={()=>{ setForm(BLANK); setEditing(null); }}
           className="text-xs font-semibold rounded-lg px-3 py-2 border border-slate-300 bg-white">Cancel</button>}
-        {!list.some(f=>f.type==="internal_line") &&
+        {(!list.some(f=>f.name==="Rex Internal") || !list.some(f=>f.name==="New Durga Line")) &&
           <button onClick={seed} disabled={busy}
             className="ml-auto text-xs font-semibold rounded-lg px-3 py-2 border border-slate-300 bg-white">
-            Add the four internal lines</button>}
+            Add Rex Internal and New Durga Line</button>}
       </div>
     </div>
 
@@ -167,8 +167,8 @@ export default function FabricatorsTab(){
               {rows.map(f => <tr key={f.name} className="border-t border-slate-100">
                 <td className="px-3 py-1.5 font-medium text-slate-800">{f.name}
                   {f.note && <div className="text-[10.5px] text-slate-500">{f.note}</div>}</td>
-                <td className="text-right px-2 mono">{RULES[t].rate === "none" ? "—" : f.rate}</td>
-                <td className="text-right px-2 mono">{f.tat_days}d</td>
+                <td className="text-right px-2 mono">{RULES[t].rate === "none" ? "—" : (f.rate > 0 ? f.rate : "Not set")}</td>
+                <td className="text-right px-2 mono">{f.tat_days > 0 ? `${f.tat_days}d` : "Not set"}</td>
                 <td className="px-2 text-slate-600">
                   {[f.contact_person, f.contact_phone].filter(Boolean).join(" · ") || "—"}</td>
                 <td className="px-2">{f.payable
@@ -192,7 +192,8 @@ export default function FabricatorsTab(){
     })}
 
     {!list.length && <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">
-      No fabricators yet. Add the four internal lines to start, then onboard outside job workers as you use them.
+      No options yet. Add Rex Internal and New Durga Line to start; complete New Durga Line's rate,
+      contact and turnaround before settling its payment.
     </div>}
   </div>;
 }

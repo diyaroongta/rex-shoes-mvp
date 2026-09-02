@@ -16,10 +16,10 @@ import PartiesTab from "./PartiesTab.jsx";
 import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
-import JobOrdersTab from "./JobOrdersTab.jsx";
 import FabricatorsTab from "./FabricatorsTab.jsx";
-import JobWorkTab from "./JobWorkTab.jsx";
+import JobOrdersTab from "./JobOrdersTab.jsx";
 import JobCardTab from "./JobCardTab.jsx";
+import JobWorkTab from "./JobWorkTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -63,6 +63,7 @@ export default function App({ user=null, onSignOut=null }={}){
   const tab = canSeeTab(role, rawTab) ? rawTab : defaultTab(role);
   const [intakeMode, setIntakeMode] = useState("slip");   // "slip" | "sheet", inside PI generation
   const [selected, setSelected] = useState(null);
+  const [jobCardOrder, setJobCardOrder] = useState("");
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
 
   const [loadErr, setLoadErr] = useState("");
@@ -274,15 +275,12 @@ export default function App({ user=null, onSignOut=null }={}){
          inside that screen rather than beside it. */
       ["intake","PI generation"],
       ["pis","PI database"],
-      /* Creating the production job order was a button inside the PI database,
-         which buried a shop-floor decision inside a commercial record. */
-      ["jobs","Job orders"],
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
+      ["jobs","Job Orders"],
+      ["jobcards","Job Cards"],
       ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
-      /* Assigning stitching to a line or an outside fabricator. */
-      ["jobcards","Job cards"],
       ["jobwork","Job work"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
@@ -374,7 +372,7 @@ export default function App({ user=null, onSignOut=null }={}){
               <div key={group} style={{marginBottom:14}}>
                 <div className="sign" style={{color:"#5C7A99",fontSize:10,padding:"0 8px 5px",fontWeight:600}}>{group}</div>
                 {items.map(([k,label,badge])=>(
-                  <button key={k} onClick={()=>setTab(k)} data-on={tab===k?"1":"0"} className="navitem">
+                  <button key={k} onClick={()=>{if(k==="jobcards")setJobCardOrder("");setTab(k);}} data-on={tab===k?"1":"0"} className="navitem">
                     <span>{label}</span>
                     {badge && badge.n>0 && <span className="navbadge" style={{background:badge.tone}}>{badge.n}</span>}
                   </button>
@@ -392,7 +390,7 @@ export default function App({ user=null, onSignOut=null }={}){
 
         <div data-noprint className="md:hidden" style={{position:"sticky",top:0,zIndex:20,background:"#0F2233",padding:"10px 12px"}}>
           <div className="sign" style={{color:"#fff",fontSize:16,fontWeight:700,marginBottom:8}}>Factory OS</div>
-          <select value={tab} onChange={e=>setTab(e.target.value)}
+          <select value={tab} onChange={e=>{if(e.target.value==="jobcards")setJobCardOrder("");setTab(e.target.value);}}
             style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #24425E",
                     background:"#183149",color:"#fff",fontSize:14}}>
             {nav.map(([group,items])=>(
@@ -517,16 +515,17 @@ export default function App({ user=null, onSignOut=null }={}){
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
-        {tab==="jobcards" && <JobCardTab orders={(state&&state.orders)||[]} />}
-        {tab==="jobwork" && <JobWorkTab orders={orders||[]} />}
+        {tab==="jobs" && <JobOrdersTab orders={orders||[]} shortfall={state?state.procurement_by_pi:null}
+                              onCreateCard={no=>{setJobCardOrder(no);setTab("jobcards");}} />}
+        {tab==="jobcards" && <JobCardTab orders={orders||[]} initialOrderNo={jobCardOrder}
+                              onIssued={syncAll} />}
+        {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
-        {tab==="jobs" && <JobOrdersTab orders={orders} shortfall={state?state.procurement_by_pi:null}
-                            onScheduled={syncAll} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
         {tab==="catalogue" && <CatalogueTab
@@ -624,6 +623,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [printing,setPrinting]=useState(false);
   const [attachment,setAttachment]=useState(null);
   const [discountPct,setDiscountPct]=useState(40);
+  // A discount changed while raising an invoice belongs to that PI only. Keep
+  // it separate from the party master so an invoice correction cannot silently
+  // rewrite the customer's agreed terms for every future order.
+  const [discountOverrides,setDiscountOverrides]=useState({});
   const [parties,setParties]=useState([]);
   const [piTerms,setPiTerms]=useState(null);
   const [piConfig,setPiConfig]=useState(null);
@@ -678,16 +681,22 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       upper_colour: merged.upper_colour || articleColour(merged.article,"upper_colour")};
   };
   const sourceCards=piCards||cards||[];
+  const partyKey=name=>String(name||"").trim().toLowerCase();
   /* Extracted so an edit made ON the invoice can re-stamp the signature. That
      edit changes the cards and the preview together, so the preview is not
      stale — without re-stamping, correcting a cell would disable Save. */
-  const signatureOf=list=>JSON.stringify((list||[]).map(c=>({
-    article:c.article,party:c.party,customer_city:c.customer_city,order_date:c.order_date,
-    priority:c.priority,order_nature:c.order_nature,stitching:c.stitching,
-    printing:c.printing,vl:c.vl,sole_colour:c.sole_colour,upper_colour:c.upper_colour,
-    dispatch_timeline:c.dispatch_timeline,
-    lines:(c.lines||[]).map(l=>({combo:l.combo,cartons:l.cartons,ppc:l.ppc,qty:l.qty,sizes:l.sizes}))
-  })));
+  const signatureOf=list=>JSON.stringify({
+    discounts:Object.fromEntries([...new Set((list||[]).map(c=>partyKey(c.party)))].sort()
+      .map(key=>[key,Object.prototype.hasOwnProperty.call(discountOverrides,key)
+        ? discountOverrides[key] : null])),
+    cards:(list||[]).map(c=>({
+      article:c.article,party:c.party,customer_city:c.customer_city,order_date:c.order_date,
+      priority:c.priority,order_nature:c.order_nature,stitching:c.stitching,
+      printing:c.printing,vl:c.vl,sole_colour:c.sole_colour,upper_colour:c.upper_colour,
+      dispatch_timeline:c.dispatch_timeline,
+      lines:(c.lines||[]).map(l=>({combo:l.combo,cartons:l.cartons,ppc:l.ppc,qty:l.qty,sizes:l.sizes}))
+    }))
+  });
   const sourceSignature=signatureOf(sourceCards);
   const previewStale=!!piPreviewCards && piPreviewSignature!==sourceSignature;
   const termsForParty = (name, partyRows=parties, baseTerms=piTerms, fallbackDiscount=discountPct) => {
@@ -709,15 +718,27 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
      pressed. The preview is then a stable snapshot: a party-master change made
      after the page was opened cannot leave the new PI on an old discount. */
   const generatePiPreview=async()=>{
+    const relevantKeys=new Set(sourceCards.map(card=>partyKey(card.party)));
+    const invalid=Object.entries(discountOverrides).find(([key,value])=>
+      relevantKeys.has(key) && (String(value).trim()==="" || !Number.isFinite(Number(value))
+        || Number(value)<0 || Number(value)>100));
+    if(invalid){
+      const card=sourceCards.find(c=>partyKey(c.party)===invalid[0]);
+      setErr(`Enter a discount from 0 to 100 for ${card?.party||"the customer"}.`);
+      return;
+    }
     setGeneratingPi(true); setErr("");
     try{
       const [latestSettings,latestParties]=await Promise.all([api.getSettings(),api.listParties()]);
       const base=latestSettings.pi_terms||piTerms||{};
       const snapshot=structuredClone(sourceCards).map(card=>{
         const commercial=termsForParty(card.party,latestParties,base,base.discount_pct);
+        const key=partyKey(card.party);
+        const hasOverride=Object.prototype.hasOwnProperty.call(discountOverrides,key);
+        const appliedDiscount=hasOverride?Number(discountOverrides[key]):commercial.discount_pct;
         const timeline=String(card.dispatch_timeline||commercial.dispatch_timeline||"45 days").trim();
         return {...card,dispatch_timeline:timeline,
-          commercial_terms:{...commercial,dispatch_timeline:timeline}};
+          commercial_terms:{...commercial,discount_pct:appliedDiscount,dispatch_timeline:timeline}};
       });
       setPiTerms(base); setPiConfig(latestSettings.pi_config||piConfig);
       setParties(latestParties||[]);
@@ -747,6 +768,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     if(a>-1&&b>-1) text=text.slice(a,b+1);
     setRawRead(text);
     const parsed=JSON.parse(text);
+    setDiscountOverrides({});
     // A sheet routinely lists several customers. Each order carries its own
     // party; the header field is only a fallback for a genuinely single-party
     // sheet, so it is never used to overwrite a party the reader actually read.
@@ -785,6 +807,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       if(a>-1&&z>-1) text=text.slice(a,z+1);
       const d=JSON.parse(text);
       setRawRead(JSON.stringify(d,null,1));
+      setDiscountOverrides({});
 
       // Same rule as a photo read: this PI's customer, or none — never the
       // customer left over from the last thing that was read.
@@ -793,7 +816,10 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       if(d.customer_city) setCustomerCity(d.customer_city);
       if(d.pi_date && /^\d{4}-\d{2}-\d{2}$/.test(d.pi_date)) setOrderDate(d.pi_date);
       if(d.order_no) setPiNo(d.order_no);
-      if(d.discount_pct!=null) setDiscountPct(Number(d.discount_pct));
+      if(d.discount_pct!=null){
+        setDiscountPct(Number(d.discount_pct));
+        setDiscountOverrides({[partyKey(d.customer)]:String(Number(d.discount_pct))});
+      }
 
       const built=[]; const notes=[];
       for(const item of (d.items||[])){
@@ -880,7 +906,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art)[0];
     return withArticleDetails({article:art, vl:type==="ALL"?"":comboType(art,c), matched:true, raw:"",
       lines:[{combo:c,type:comboType(art,c),exact:true,raw:"",cartons:0,ppc:packQty(art,c)??""}]}); }
-  const startBlank=()=>{ setCards([blankCard()]); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setErr(""); setSavedMsg(""); };
+  const startBlank=()=>{ setCards([blankCard()]); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setDiscountOverrides({}); setErr(""); setSavedMsg(""); };
 
   const setCard=(i,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setPiCard=(i,patch)=>setPiCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
@@ -1238,6 +1264,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       const created=await onSaved(drafts);
       setSavedMsg((created||[]).map(o=>o.order_no).join(", ")+" saved to the order sheet and scheduled.");
       setCards(null); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setImg(null); setAttachment(null);
+      setDiscountOverrides({});
       setPiNo(""); allocatePiNo();
     }catch(e){ setErr("Could not save: "+(e.message||e)); }
     finally{ setSaving(false); }
@@ -1274,7 +1301,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         <div className="serif text-lg font-semibold">1 · Order photo or PI</div>
         {(cards||piCards||piPreviewCards||img) && <button onClick={()=>{
           if(!window.confirm("Close this PI and discard the current draft?")) return;
-          setCards(null);setPiCards(null);setPiPreviewCards(null);setPiPreviewSignature("");setImg(null);setAttachment(null);setRawRead("");setSavedMsg("");setErr("");
+          setCards(null);setPiCards(null);setPiPreviewCards(null);setPiPreviewSignature("");setImg(null);setAttachment(null);setRawRead("");setSavedMsg("");setErr("");setDiscountOverrides({});
           setPiNo("");allocatePiNo();
         }} className="text-xs font-semibold text-rose-700 border border-rose-200 rounded-lg px-3 py-1.5 bg-white">Close PI</button>}
       </div>
@@ -1698,10 +1725,22 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
             className="block mt-0.5 w-full text-xs" />
           {attachment && <span className="text-xs text-emerald-700">attached — will save with this order</span>}
         </label>
-        <div className="text-xs text-slate-500">Commercial terms
-          <div className="block mt-0.5 w-full text-sm border border-slate-200 bg-slate-50 rounded-lg px-2 py-1.5">
-            Party master · {sourceCards.map(c=>`${c.party||"Unlisted party"} ${termsForParty(c.party).discount_pct}%`).join(" · ")}
+        <div className="text-xs text-slate-500">Discount (%)
+          <div className="mt-0.5 space-y-1">
+            {[...new Map(sourceCards.map(c=>[partyKey(c.party),c.party||"Unlisted party"])).entries()].map(([key,name])=>{
+              const masterDiscount=termsForParty(name).discount_pct;
+              const value=Object.prototype.hasOwnProperty.call(discountOverrides,key)
+                ? discountOverrides[key] : String(masterDiscount);
+              return <label key={key} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
+                <input type="number" min="0" max="100" step="0.01" value={value}
+                  aria-label={`Discount % (${name})`}
+                  onChange={e=>setDiscountOverrides(current=>({...current,[key]:e.target.value}))}
+                  className="w-20 text-sm text-right border border-slate-300 rounded-lg px-2 py-1.5" />
+              </label>;
+            })}
           </div>
+          <div className="mt-1 text-[10px] text-slate-400">This PI only · customer master stays unchanged</div>
         </div>
         <label className="text-xs text-slate-500">Special remarks
           <input type="text" value={remarks} onChange={e=>setRemarks(e.target.value)}
@@ -1838,10 +1877,10 @@ const VIEWS = {
   mis:         {title:"Executive MIS",       sub:"Live order health, delivery outlook, dispatch gap and planned capacity"},
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
-  jobs:        {title:"Job orders",         sub:"Release PI quantities into production, one run at a time"},
-  jobcards:    {title:"Job cards",          sub:"Raise the card that goes out with a production run — check it, then issue it"},
-  jobwork:     {title:"Job work",           sub:"Assign stitching to an internal line or an outside fabricator, and take it back in"},
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
+  jobs:        {title:"Job Orders",         sub:"Every Order Book quantity waiting to be assigned on a job card"},
+  jobcards:    {title:"Job Cards",          sub:"Enter the size-wise cutting quantities, issue the source-format card and send the work"},
+  jobwork:     {title:"Job work",           sub:"Receive issued work back, record shortage and calculate external payment"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},

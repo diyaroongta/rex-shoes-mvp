@@ -1,7 +1,7 @@
 import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
-import { validateFabricator, DEFAULT_LINES } from "../shared/fabricators.js";
+import { validateFabricator, DEFAULT_FABRICATORS } from "../shared/fabricators.js";
 
 const termsOf = row => ({
   discount_pct: Number(row.discount_pct),
@@ -30,16 +30,18 @@ async function fabricators(req, res){
 
   if(req.method === "PUT"){
     const b = req.body || {};
-    /* Seeding the four internal lines is an explicit action, not something
-       that happens on first read: a line the factory does not run should not
-       appear because nobody had opened the screen yet. */
+    /* Add only the two starting choices the factory has named. Their missing
+       commercial details stay at zero/null and are labelled as incomplete;
+       no rate, contact or turnaround is invented. */
     if(b.seed_lines){
       const made = [];
-      for(const line of DEFAULT_LINES){
+      for(const line of DEFAULT_FABRICATORS){
         const { rowCount } = await q(
-          `insert into fabricators (name, type, rate, tat_days, payable, active, note)
-           values ($1,$2,$3,$4,$5,true,$6) on conflict (name) do nothing`,
-          [line.name, line.type, line.rate, line.tat_days, line.payable, line.note]);
+          `insert into fabricators (name, type, rate, tat_days, contact_person,
+                                    contact_phone, payable, active, note)
+           values ($1,$2,$3,$4,$5,$6,$7,true,$8) on conflict (name) do nothing`,
+          [line.name, line.type, line.rate, line.tat_days, line.contact_person,
+           line.contact_phone, line.payable, line.note]);
         if(rowCount) made.push(line.name);
       }
       return res.status(200).json({ seeded: made });

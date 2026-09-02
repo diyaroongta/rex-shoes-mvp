@@ -12,7 +12,7 @@ const mocks=vi.hoisted(()=>({
   listArchivedPis:vi.fn(),archivePi:vi.fn(),restorePi:vi.fn(),deletePi:vi.fn(),
   nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),setPlanOverride:vi.fn(),
-  releasePiParts:vi.fn(),
+  releasePiParts:vi.fn(),listFabricators:vi.fn(),listJobWork:vi.fn(),issueJobWork:vi.fn(),
 }));
 
 vi.mock("../../src/lib/client.js",()=>({
@@ -54,6 +54,12 @@ beforeEach(()=>{
   mocks.nextPiNumber.mockResolvedValue({pi_no:"PI-2026-000001"});
   mocks.setPlanOverride.mockResolvedValue({});
   mocks.releasePiParts.mockResolvedValue({created:[],outstanding:[]});
+  mocks.listFabricators.mockResolvedValue([
+    {name:"Rex Internal",type:"internal_line",rate:0,tat_days:0,payable:false,active:true},
+    {name:"New Durga Line",type:"external",rate:0,tat_days:0,payable:true,active:true},
+  ]);
+  mocks.listJobWork.mockResolvedValue([]);
+  mocks.issueJobWork.mockResolvedValue({id:55,fabricator:"Rex Internal",fabricator_type:"internal_line",article:"SPIKE",order_no:"JO77",qty:100,received:0,status:"issued",rate:0,payable:false});
   mocks.previewPartyTerms.mockResolvedValue({orders:0,pis:[],changing:0,terms:{discount_pct:40}});
   mocks.applyPartyTerms.mockResolvedValue({updated:0,pis:[],terms:{discount_pct:40}});
 });
@@ -164,7 +170,7 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("button",{name:"Dispatch & packing"})).toBeNull();
   });
 
-  it("gives job order creation its own screen, and takes it out of the PI database", async ()=>{
+  it("places Job Orders immediately after the Order Book", async ()=>{
     const user = userEvent.setup();
     mocks.listPis.mockResolvedValue([{ pi_no:"PI77", pi_date:"2026-08-01", party:"Buyer",
       status:"produced", revision:0, snapshot:{ orders:[{ order_no:"S1", article_code:"SPIKE",
@@ -172,7 +178,8 @@ describe("critical UI contracts",()=>{
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
 
-    expect(screen.getByRole("button",{name:"Job orders"})).toBeInTheDocument();
+    const navLabels=screen.getAllByRole("button").map(button=>button.textContent.trim());
+    expect(navLabels.indexOf("Job Orders")).toBe(navLabels.indexOf("Order Book")+1);
 
     // The commercial record reports what is owed but no longer releases it.
     await user.click(screen.getByRole("button",{name:"PI database"}));
@@ -342,7 +349,7 @@ describe("critical UI contracts",()=>{
     await waitFor(()=>expect(mocks.saveParty).toHaveBeenCalledWith(expect.objectContaining({name:"Test Buyer"})));
   });
 
-  it("reloads the latest party discount and per-order dispatch timeline when Generate PI is pressed",async()=>{
+  it("lets the clerk override discount in PI generation while reloading the latest dispatch timeline",async()=>{
     mocks.listParties
       .mockResolvedValueOnce([{name:"Test Buyer",discount_pct:35,dispatch_timeline:"45 days",deductions:[],gst_pct:5,payment_split_pct:50}])
       .mockResolvedValue([{name:"Test Buyer",discount_pct:27,dispatch_timeline:"30 days",deductions:[],gst_pct:5,payment_split_pct:50}]);
@@ -355,70 +362,70 @@ describe("critical UI contracts",()=>{
     await user.type(screen.getByLabelText("Upper colour *"),"Navy");
     const carton=screen.getAllByLabelText(/cartons$/)[0];
     await user.clear(carton);await user.type(carton,"1");
-    await waitFor(()=>expect(screen.getByText(/Test Buyer 35%/)).toBeInTheDocument());
-    expect(screen.queryByLabelText("Discount %")).not.toBeInTheDocument();
+    const discount=await screen.findByLabelText("Discount % (Test Buyer)");
+    expect(discount).toHaveValue(35);
+    await user.clear(discount);await user.type(discount,"22");
     expect(screen.getByLabelText("Dispatch timeline *")).toHaveAttribute("placeholder","45 days");
     await user.click(screen.getByRole("button",{name:"Generate PI from these edits"}));
-    await waitFor(()=>expect(screen.getAllByText("27%").length).toBeGreaterThan(0));
+    await waitFor(()=>expect(screen.getAllByText("22%").length).toBeGreaterThan(0));
     expect(screen.getByText("30 days")).toBeInTheDocument();
     expect(mocks.listParties.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await user.click(screen.getByRole("button",{name:/Save & send 1 order/}));
+    await user.click(await screen.findByRole("button",{name:"Issue the PI anyway"}));
+    await waitFor(()=>expect(mocks.createOrders).toHaveBeenCalled());
+    expect(mocks.createOrders.mock.calls[0][0][0].pi).toEqual(expect.objectContaining({
+      discount_pct:22,
+      terms:expect.objectContaining({discount_pct:22}),
+    }));
   });
 
-  /* RELEASING PART OF A QUANTITY. A large order for one shoe is made in
-     several runs, so a PI order is a ceiling and each release is its own
-     production order. Asking "is it on the schedule" answered yes while half
-     the pairs had never been made. */
-  const piWith=(pi_no,lines)=>({pi_no,pi_date:"2026-08-22",party:"Buyer",status:"produced",revision:0,
-    snapshot:{orders:[{order_no:"JO77",order_date:"2026-08-22",article_code:"SPIKE",
-      party:"Buyer",priority:2,lines,pi:{pi_no}}]}});
+  const liveJobOrder=()=>({order_no:"JO77",order_date:"2026-08-22",article_code:"SPIKE",priority:2,party:"Buyer",
+    lines:[{combo:"7X10S",qty:100,label:"7X10S",sizes:{"7s":40,"8s":60}}],pi:{pi_no:"PI77"},plan_override:{},version:1});
 
-  it("releases only part of a quantity and keeps the rest owed", async()=>{
-    mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:2400,label:"7X10S"}])]);
-    mocks.releasePiParts.mockResolvedValue({created:[{order_no:"JO77",pairs:600}],
-      outstanding:[{order_no:"JO77",article_code:"SPIKE",remaining:1800}],partial:true});
+  it("takes every live Order Book row into Job Orders and opens its Job Card",async()=>{
+    mocks.listOrders.mockResolvedValue([liveJobOrder()]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job orders"}));
-    // The button offers the pairs still owed, not "is this linked".
-    await user.click(await screen.findByRole("button",{name:"Create job orders for PI77"}));
-
-    const box=await screen.findByLabelText("Pairs of 7X10S to release from JO77");
-    expect(box).toHaveValue(2400);                 // defaults to everything owed
-    await user.clear(box); await user.type(box,"600");
-    await user.click(screen.getByRole("button",{name:/Create job order for 600 pairs/}));
-
-    await waitFor(()=>expect(mocks.releasePiParts).toHaveBeenCalledWith("PI77",
-      [{order_no:"JO77",qty:{"7X10S":600}}]));
-    expect(await screen.findByText(/1,800 pairs still owed/)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button",{name:"Job Orders"}));
+    expect(await screen.findByLabelText("100 unassigned of 100")).toBeInTheDocument();
+    await user.click(screen.getByRole("button",{name:"Create job card for JO77"}));
+    expect(await screen.findByRole("heading",{name:"Job Cards"})).toBeInTheDocument();
+    expect(screen.getByLabelText("Job Order")).toHaveValue("JO77");
+    expect(screen.getByLabelText("Job card date").value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(screen.getByLabelText("7X10S size 7s pairs")).toHaveValue(40);
   });
 
-  it("counts runs already made, so a half-released PI still offers the balance", async()=>{
-    // 600 of 2400 already on the schedule, as its own production order.
-    mocks.listOrders.mockResolvedValue([{order_no:"JO77",order_date:"2026-08-22",
-      article_code:"SPIKE",priority:2,party:"Buyer",lines:[{combo:"7X10S",qty:600}],
-      pi:{pi_no:"PI77",source_order:"JO77"},plan_override:{},version:1}]);
-    mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:2400,label:"7X10S"}])]);
+  it("subtracts issued cards and leaves a partial Order Book balance",async()=>{
+    mocks.listOrders.mockResolvedValue([liveJobOrder()]);
+    mocks.listJobWork.mockResolvedValue([{id:1,order_no:"JO77",qty:40,card:{lines:[
+      {combo:"7X10S",qty:40,sizes:{"7s":20,"8s":20}},
+    ]}}]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job orders"}));
-    await user.click(await screen.findByRole("button",{name:"Create job orders for PI77"}));
-    expect(await screen.findByLabelText("Pairs of 7X10S to release from JO77")).toHaveValue(1800);
+    await user.click(await screen.findByRole("button",{name:"Job Orders"}));
+    expect(await screen.findByLabelText("60 unassigned of 100")).toBeInTheDocument();
+    await user.click(screen.getByRole("button",{name:"Create job card for JO77"}));
+    expect(await screen.findByLabelText("7X10S size 7s pairs")).toHaveValue(20);
+    expect(screen.getByLabelText("7X10S size 8s pairs")).toHaveValue(40);
   });
 
-  it("refuses to release more than is owed", async()=>{
-    mocks.listPis.mockResolvedValue([piWith("PI77",[{combo:"7X10S",qty:100,label:"7X10S"}])]);
+  it("accepts size inputs and saves the issued source-format card",async()=>{
+    mocks.listOrders.mockResolvedValue([liveJobOrder()]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job orders"}));
-    await user.click(await screen.findByRole("button",{name:"Create job orders for PI77"}));
-    const box=await screen.findByLabelText("Pairs of 7X10S to release from JO77");
-    await user.clear(box); await user.type(box,"500");
-    expect(screen.getByText(/More than is owed/)).toBeInTheDocument();
-    // The release button is disabled, so an over-release cannot be sent at all.
-    const go=screen.getByRole("button",{name:/^Create job order for/});
-    expect(go).toBeDisabled();
-    await user.click(go);
-    expect(mocks.releasePiParts).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button",{name:"Job Cards"}));
+    await user.selectOptions(await screen.findByLabelText("Job Order"),"JO77");
+    await user.selectOptions(screen.getByLabelText("Send to"),"Rex Internal");
+    const size7=screen.getByLabelText("7X10S size 7s pairs");
+    await user.clear(size7); await user.type(size7,"20");
+    await user.click(screen.getByRole("button",{name:"Generate the job card"}));
+    expect(screen.getAllByText("RECEIVED UPPER").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button",{name:"Issue this job card"}));
+    await waitFor(()=>expect(mocks.issueJobWork).toHaveBeenCalled());
+    expect(mocks.issueJobWork.mock.calls[0][0]).toEqual(expect.objectContaining({
+      order_no:"JO77",fabricator:"Rex Internal",qty:80,
+      card:expect.objectContaining({article:"SPIKE",lines:[expect.objectContaining({combo:"7X10S",qty:80})]}),
+    }));
   });
 
   /* The schedule is computed from the capacities saved in settings. The

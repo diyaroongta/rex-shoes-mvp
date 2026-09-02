@@ -30,7 +30,7 @@ const ALL_WRITES = ["orders","pis","dispatches","reference","catalogue","parties
    judged on the body keys, not on the endpoint. */
 const STOCK_KEYS = ["stock","stock_meta"];
 
-const EVERY_TAB = ["mis","intake","pis","jobs","jobcards","jobwork","orders","dispatch","schedule",
+const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobcards","jobwork","dispatch","schedule",
                    "plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -67,7 +67,7 @@ export const ROLE_DEFS = {
     label:"Planner",
     summary:"Day-to-day production: orders, PIs, scheduling, dispatch and stock. "
       +"Cannot change the article master, BOM, parties or capacities.",
-    tabs:["mis","intake","pis","jobs","jobcards","jobwork","orders","dispatch","schedule",
+    tabs:["mis","intake","pis","orders","jobs","jobcards","jobwork","dispatch","schedule",
           "plan","machines","procurement","stock","copilot"],
     writes:["orders","pis","dispatches","read-order-photo","read-pi","copilot"],
     reference:"stock",

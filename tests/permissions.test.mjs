@@ -146,21 +146,21 @@ test("no file under api/ is missing from the policy", () => {
 console.log("\nG — screens follow the same rules");
 
 test("a viewer is not offered screens whose every button would be refused", () => {
-  for(const tab of ["data","rules","catalogue","parties","intake","jobs","copilot"])
+  for(const tab of ["data","rules","catalogue","parties","intake","jobs","jobcards","copilot"])
     assert.equal(canSeeTab("viewer", tab), true, "a viewer SEES everything — it just cannot change it");
   for(const tab of ["mis","orders","schedule","procurement","stock","jobwork"])
     assert.equal(canSeeTab("viewer", tab), true, `viewer should see ${tab}`);
 });
 
 test("a planner gets the production screens but not the setup ones", () => {
-  for(const tab of ["intake","jobs","jobwork","orders","schedule","plan","machines","stock","copilot"])
+  for(const tab of ["intake","jobs","jobcards","jobwork","orders","schedule","plan","machines","stock","copilot"])
     assert.equal(canSeeTab("planner", tab), true, `planner should see ${tab}`);
   for(const tab of ["data","rules","catalogue","parties","fabricators"])
     assert.equal(canSeeTab("planner", tab), false, `planner should not see ${tab}`);
 });
 
 test("an admin sees everything", () => {
-  for(const tab of ["mis","intake","jobs","orders","dispatch","schedule","plan","machines",
+  for(const tab of ["mis","intake","jobs","jobcards","orders","dispatch","schedule","plan","machines",
                     "procurement","stock","jobwork","parties","fabricators","catalogue","rules","data","copilot"])
     assert.equal(canSeeTab("admin", tab), true);
 });

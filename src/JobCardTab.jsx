@@ -4,220 +4,158 @@ import { REF as INPUTS } from "./lib/refdata.js";
 import JobCard from "./JobCard.jsx";
 import { slipFor } from "../shared/job-work.js";
 import { comboSizesForArticle } from "../shared/bridge.js";
-
-/* Job cards — the same three-step shape as PI generation, because it is the
- * same kind of job: something is read out of the system, a person CHECKS and
- * CORRECTS it, and only then is the document raised.
- *
- *   1  choose      which production order, and who is doing the work
- *   2  check       size by size, editable — this is where mistakes are caught
- *   3  confirm     generate the card, then issue it
- *
- * The card is not raised from step 2's values until Generate is pressed, and
- * editing after that marks the preview stale — exactly as the PI does. A
- * document that quietly drifts from the numbers on screen is worse than one
- * that refuses to print.
- */
+import { optionLabel } from "../shared/fabricators.js";
+import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
+const today = () => new Date().toISOString().slice(0,10);
 
-export default function JobCardTab({ orders = [] }){
-  const [fabricators, setFabricators] = useState(null);
-  const [orderNo, setOrderNo] = useState("");
-  const [fabricator, setFabricator] = useState("");
-  const [stage, setStage] = useState("CUTTING & STITCHING");
-  const [qty, setQty] = useState({});          // combo -> pairs for this run
-  const [sizes, setSizes] = useState({});      // combo -> { size: pairs }
-  const [card, setCard] = useState(null);      // the generated preview
-  const [stale, setStale] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [msg, setMsg] = useState("");
+/* Editable source-format Job Card. The Order Book supplies the article and
+   ceiling; the operator supplies who receives it, the date and the exact
+   size-wise cutting quantities. */
+export default function JobCardTab({ orders=[], initialOrderNo="", embedded=false, onIssued=null }){
+  const [fabricators,setFabricators]=useState(null);
+  const [jobs,setJobs]=useState(null);
+  const [orderNo,setOrderNo]=useState("");
+  const [fabricator,setFabricator]=useState("");
+  const [date,setDate]=useState(today);
+  const [qty,setQty]=useState({});
+  const [sizes,setSizes]=useState({});
+  const [card,setCard]=useState(null);
+  const [stale,setStale]=useState(false);
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState("");
+  const [msg,setMsg]=useState("");
 
   useEffect(()=>{ (async()=>{
-    try{ setFabricators(await api.listFabricators()); }
-    catch(e){ setErr(e.message||String(e)); setFabricators([]); }
+    try{
+      const [f,j]=await Promise.all([api.listFabricators(),api.listJobWork()]);
+      setFabricators(f); setJobs(j);
+    }catch(e){ setErr(e.message||String(e)); setFabricators([]); setJobs([]); }
   })(); },[]);
 
-  const order = orders.find(o => o.order_no === orderNo) || null;
-  const article = order ? (INPUTS.articles||{})[order.article_code] : null;
-  const who = (fabricators||[]).find(f => f.name === fabricator) || null;
+  const queue=useMemo(()=>jobOrderQueue(orders,jobs||[]),[orders,jobs]);
+  const openOrders=queue.filter(row=>row.remaining>0);
+  const order=orders.find(o=>o.order_no===orderNo)||null;
+  const balance=order?jobOrderBalance(order,jobs||[]):null;
+  const article=order?(INPUTS.articles||{})[order.article_code]:null;
+  const who=(fabricators||[]).find(f=>f.name===fabricator)||null;
 
-  /* Choosing an order seeds the run with everything on it — the common case is
-     the whole order — and the clerk cuts it down. */
   function chooseOrder(no){
     setOrderNo(no); setCard(null); setStale(false); setErr(""); setMsg("");
-    const o = orders.find(x => x.order_no === no);
-    if(!o){ setQty({}); setSizes({}); return; }
-    const q = {}, s = {};
-    for(const l of o.lines || []){
-      q[l.combo] = Number(l.qty) || 0;
-      if(l.sizes && Object.keys(l.sizes).length) s[l.combo] = { ...l.sizes };
+    const row=queue.find(x=>x.order.order_no===no);
+    if(!row){ setQty({}); setSizes({}); return; }
+    const nextQty={},nextSizes={};
+    for(const line of row.lines){
+      nextQty[line.combo]=line.remaining;
+      if(line.remaining_sizes) nextSizes[line.combo]={...line.remaining_sizes};
     }
-    setQty(q); setSizes(s);
+    setQty(nextQty); setSizes(nextSizes);
   }
 
-  const lines = useMemo(() => Object.entries(qty)
-    .filter(([,v]) => Number(v) > 0)
-    .map(([combo, v]) => ({
-      combo, qty: Number(v),
-      sizes: sizes[combo],
-      size_order: order ? comboSizesForArticle(order.article_code, combo) : [],
-    })), [qty, sizes, order]);
+  useEffect(()=>{
+    if(initialOrderNo&&jobs!==null&&orders.some(o=>o.order_no===initialOrderNo)&&orderNo!==initialOrderNo)
+      chooseOrder(initialOrderNo);
+  },[initialOrderNo,jobs,orders]);
 
-  const totalPairs = lines.reduce((a,l) => a + l.qty, 0);
-  const ready = !!order && !!who && totalPairs > 0;
+  const lines=useMemo(()=>Object.entries(qty).filter(([,value])=>Number(value)>0).map(([combo,value])=>({
+    combo, qty:Number(value), sizes:sizes[combo],
+    size_order:order?comboSizesForArticle(order.article_code,combo):[],
+  })),[qty,sizes,order]);
+  const totalPairs=lines.reduce((a,line)=>a+line.qty,0);
+  const over=balance?balance.lines.filter(line=>Number(qty[line.combo]||0)>line.remaining):[];
+  const ready=!!order&&!!who&&totalPairs>0&&!over.length;
 
-  const touch = fn => (...args) => { fn(...args); if(card) setStale(true); };
+  function touched(){ if(card)setStale(true); }
+  function setRange(combo,value){ setQty(q=>({...q,[combo]:value})); touched(); }
+  function setSize(combo,size,value){
+    setSizes(current=>{
+      const group={...(current[combo]||{}),[size]:value};
+      setQty(q=>({...q,[combo]:Object.values(group).reduce((a,n)=>a+(Number(n)||0),0)}));
+      return {...current,[combo]:group};
+    });
+    touched();
+  }
 
   function generate(){
-    if(!ready) return;
-    setCard({
-      article: order.article_code,
-      order_no: order.order_no,
-      fabricator: who.name,
-      slip: `JOB CARD — ${slipFor(who)}`,
-      stage,
-      date: new Date().toISOString().slice(0,10),
-      card_no: "",                 // allocated when it is issued
-      lines,
-    });
+    if(!ready)return;
+    setCard({article:order.article_code,order_no:order.order_no,fabricator:who.name,
+      slip:`JOB CARD — ${slipFor(who)}`,stage:"CUTTING & STITCHING",date,card_no:"",lines});
     setStale(false); setMsg("");
   }
 
-  /* Issuing is what makes it real: it creates the job work record, which is
-     what gives the card its number and puts the pairs into that fabricator's
-     bucket. Until then this is a preview. */
   async function issue(){
     setBusy(true); setErr(""); setMsg("");
     try{
-      const made = await api.issueJobWork({
-        fabricator: who.name, article: order.article_code, qty: totalPairs,
-        stage: "STITCHING", order_no: order.order_no,
-        note: `Job card for ${order.order_no}`,
-      });
-      setCard(c => ({ ...c, card_no: String(made.id) }));
+      const snapshot={...card,lines};
+      const made=await api.issueJobWork({fabricator:who.name,article:order.article_code,qty:totalPairs,
+        stage:"STITCHING",order_no:order.order_no,issued_on:date,
+        note:`Job card for ${order.order_no}`,card:snapshot});
+      setCard(c=>({...c,card_no:String(made.id)}));
+      setJobs(current=>[made,...(current||[])]);
       setMsg(`Job card ${made.id} issued to ${made.fabricator} for ${fmt(made.qty)} pairs.`);
+      if(onIssued)await onIssued(made);
     }catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
   }
 
   function print(){
-    const node = document.querySelector(".job-card");
-    if(!node) return;
-    const w = window.open("","_blank","width=900,height=1000");
-    if(!w){ setErr("Popup blocked — allow popups to print the job card."); return; }
+    const node=document.querySelector(".job-card");
+    if(!node)return;
+    const w=window.open("","_blank","width=900,height=1000");
+    if(!w){setErr("Popup blocked — allow popups to print the job card.");return;}
     w.document.open();
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Job card</title>`
-      + `<style>*{box-sizing:border-box}body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}`
-      + `table{width:100%;border-collapse:collapse}[data-noprint]{display:none!important}`
-      + `@page{size:A4 portrait;margin:10mm}</style></head><body>${node.outerHTML}`
-      + `<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script></body></html>`);
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Job card</title><style>*{box-sizing:border-box}body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}table{width:100%;border-collapse:collapse}[data-noprint]{display:none!important}.job-card-page{page-break-after:always}.job-card-page:last-child{page-break-after:auto}@page{size:A4 portrait;margin:10mm}</style></head><body>${node.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script></body></html>`);
     w.document.close();
   }
 
-  if(fabricators === null) return <div className="p-5 text-sm text-slate-500">Loading…</div>;
+  if(fabricators===null||jobs===null)return <div className="p-5 text-sm text-slate-500">Loading Job Cards…</div>;
 
-  return <div className="p-4 md:p-5">
-    {msg && <div role="status" className="mb-3 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
-    {err && <div role="alert" className="mb-3 text-xs rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2">{err}</div>}
+  return <div className={embedded?"p-4 md:p-5 pb-3":"p-4 md:p-5"}>
+    {msg&&<div role="status" className="mb-3 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
+    {err&&<div role="alert" className="mb-3 text-xs rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2">{err}</div>}
 
-    {/* 1 — CHOOSE */}
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
-      <div className="serif text-base font-semibold mb-2">1 · Choose the work</div>
+      <div className="serif text-base font-semibold mb-2">1 · Job details</div>
       <div className="flex gap-3 flex-wrap items-end">
-        <label className="text-xs text-slate-600">Production order
-          <select value={orderNo} aria-label="Production order"
-            onChange={e=>chooseOrder(e.target.value)}
-            className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-52">
+        <label className="text-xs text-slate-600">Job Order
+          <select value={orderNo} aria-label="Job Order" onChange={e=>chooseOrder(e.target.value)} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-60">
+            <option value="">— choose from Order Book —</option>
+            {openOrders.map(row=><option key={row.order.order_no} value={row.order.order_no}>{row.order.order_no} · {row.order.article_code} · {fmt(row.remaining)} left</option>)}
+          </select>
+        </label>
+        <label className="text-xs text-slate-600">Internal or external
+          <select value={fabricator} aria-label="Send to" onChange={e=>{setFabricator(e.target.value);touched();}} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56">
             <option value="">— choose —</option>
-            {orders.map(o => <option key={o.order_no} value={o.order_no}>
-              {o.order_no} · {o.article_code} · {fmt(o.qty)} pr</option>)}
-          </select></label>
-
-        <label className="text-xs text-slate-600">Send to
-          <select value={fabricator} aria-label="Send to"
-            onChange={touch(e=>setFabricator(e.target.value))}
-            className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-52">
-            <option value="">— choose a line or fabricator —</option>
-            {fabricators.filter(f=>f.active).map(f =>
-              <option key={f.name} value={f.name}>{f.name}</option>)}
-          </select></label>
-
-        <label className="text-xs text-slate-600">Stage
-          <input value={stage} aria-label="Stage" onChange={touch(e=>setStage(e.target.value))}
-            className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm" /></label>
+            {fabricators.filter(f=>f.active).map(f=><option key={f.name} value={f.name}>{optionLabel(f)}</option>)}
+          </select>
+        </label>
+        <label className="text-xs text-slate-600">Date
+          <input type="date" value={date} aria-label="Job card date" onChange={e=>{setDate(e.target.value);touched();}} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/>
+        </label>
       </div>
-      {who && <div className="text-[11px] text-slate-600 mt-2">
-        This raises a <b>{slipFor(who)}</b>.{" "}
-        {who.payable ? <>Payable at ₹{who.rate}{who.type==="sample"?" flat":" per piece"}.</>
-                     : <>Internal line — nothing payable.</>}</div>}
+      {order&&<div className="mt-2 text-xs text-slate-600">Article <b>{order.article_code}</b> · Party <b>{order.party||"—"}</b> · <b>{fmt(balance.remaining)}</b> pairs still available for cards.</div>}
+      {who&&<div className="text-[11px] text-slate-600 mt-1">This raises a <b>{slipFor(who)}</b>. {who.payable?(who.rate>0?<>Payable at ₹{who.rate} per piece.</>:<>External rate/contact are still marked incomplete in Setup.</>):<>Internal work — nothing payable.</>}</div>}
     </div>
 
-    {/* 2 — CHECK. Editable, and the card follows it. */}
-    {order && <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
-      <div className="serif text-base font-semibold mb-1">2 · Check the quantities</div>
-      <p className="text-xs text-slate-500 mb-3">
-        Everything below is editable and the card follows it. Cut a run down by lowering a
-        figure, or set it to 0 to leave that range out.
-      </p>
-      <table className="w-full text-xs">
-        <thead className="text-slate-500"><tr>
-          <th className="text-left py-1">Size range</th>
-          <th className="text-right">On the order</th>
-          <th className="text-right">This run</th>
-          <th className="text-left pl-4">Sizes</th>
-        </tr></thead>
-        <tbody>
-          {(order.lines||[]).map(l => (
-            <tr key={l.combo} className="border-t border-slate-100">
-              <td className="py-1.5 mono font-semibold">{l.combo}</td>
-              <td className="text-right mono text-slate-500">{fmt(l.qty)}</td>
-              <td className="text-right">
-                <input type="number" min="0" max={l.qty} value={qty[l.combo] ?? 0}
-                  aria-label={`Pairs of ${l.combo} on this card`}
-                  onChange={touch(e=>setQty(q=>({...q,[l.combo]:e.target.value})))}
-                  className="w-24 border border-slate-300 rounded px-1.5 py-0.5 mono text-right" /></td>
-              <td className="pl-4 mono text-slate-400" style={{fontSize:10.5}}>
-                {(comboSizesForArticle(order.article_code, l.combo)||[]).join("  ")}</td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot><tr className="border-t border-slate-200">
-          <td className="py-1.5 font-semibold">Total</td><td></td>
-          <td className="text-right mono font-semibold">{fmt(totalPairs)}</td><td></td>
-        </tr></tfoot>
-      </table>
-
-      {!article && <div className="mt-2 text-[11px] rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">
-        <b>{order.article_code} has no BOM loaded</b>, so the card will have nothing to issue.
-        Load it under Data &amp; BOM first.
-      </div>}
-
-      <div className="flex gap-2 items-center mt-3">
-        <button onClick={generate} disabled={!ready}
-          className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">
-          {card ? (stale ? "Regenerate with these edits" : "Generate again") : "Generate the job card"}
-        </button>
-        {stale && <span className="text-[11px] text-amber-800 font-semibold">
-          Edited since the card was made — regenerate before issuing.</span>}
-        {!who && <span className="text-[11px] text-slate-500">Choose who the work is going to.</span>}
-      </div>
+    {order&&<div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
+      <div className="serif text-base font-semibold mb-1">2 · Enter cutting quantities by size</div>
+      <p className="text-xs text-slate-500 mb-3">These are the fields printed in the ARMOUR job-card size grid. The card total is calculated from your size entries.</p>
+      <div className="overflow-x-auto"><table className="w-full text-xs"><thead className="text-slate-500"><tr><th className="text-left py-1">Range</th><th className="text-right">Available</th><th className="text-left pl-4">This job card — pairs by size</th><th className="text-right">Total</th></tr></thead>
+        <tbody>{balance.lines.map(line=>{
+          const names=comboSizesForArticle(order.article_code,line.combo)||[];
+          const hasExact=!!line.remaining_sizes&&names.length>0;
+          return <tr key={line.combo} className="border-t border-slate-100"><td className="py-2 mono font-semibold">{line.combo}</td><td className="text-right mono text-slate-500">{fmt(line.remaining)}</td>
+            <td className="pl-4 py-1">{hasExact?<div className="flex gap-2 flex-wrap">{names.map(size=><label key={size} className="text-[10px] text-slate-500">{size}<input type="number" min="0" max={line.remaining_sizes[size]||0} value={sizes[line.combo]?.[size]??0} aria-label={`${line.combo} size ${size} pairs`} onChange={e=>setSize(line.combo,size,e.target.value)} className="block w-16 border border-slate-300 rounded px-1 py-0.5 mono text-right text-xs"/></label>)}</div>
+              :<input type="number" min="0" max={line.remaining} value={qty[line.combo]??0} aria-label={`Pairs of ${line.combo} on this card`} onChange={e=>setRange(line.combo,e.target.value)} className="w-24 border border-slate-300 rounded px-1.5 py-0.5 mono text-right"/>}</td>
+            <td className="text-right mono font-semibold">{fmt(qty[line.combo]||0)}</td></tr>;
+        })}</tbody><tfoot><tr className="border-t border-slate-200"><td className="py-2 font-semibold">TOTAL (PAIR)</td><td></td><td></td><td className="text-right mono font-semibold">{fmt(totalPairs)}</td></tr></tfoot>
+      </table></div>
+      {!!over.length&&<div className="mt-2 text-xs font-semibold text-rose-700">More than the unassigned balance was entered for {over.map(line=>line.combo).join(", ")}.</div>}
+      {!article&&<div className="mt-2 text-[11px] rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5"><b>{order.article_code} has no BOM loaded</b>, so material rows will be blank until its BOM is loaded.</div>}
+      <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Regenerate with these edits":"Generate again"):"Generate the job card"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — regenerate before issuing.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 
-    {/* 3 — CONFIRM */}
-    {card && <div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm">
-      <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
-        <div className="text-sm font-semibold text-slate-800">3 · Confirm and issue</div>
-        <button onClick={issue} disabled={busy || stale || !!card.card_no}
-          className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">
-          {card.card_no ? `Issued as ${card.card_no}` : busy ? "Issuing…" : "Issue this job card"}
-        </button>
-        <button onClick={print} disabled={stale}
-          className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">
-          Print / Save PDF</button>
-      </div>
-      <JobCard card={card} article={article} />
-    </div>}
+    {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">3 · Confirm and issue</div><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Issued as ${card.card_no}`:busy?"Issuing…":"Issue this job card"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><JobCard card={card} article={article}/></div>}
   </div>;
 }

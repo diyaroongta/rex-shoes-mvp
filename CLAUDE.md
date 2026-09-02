@@ -80,8 +80,8 @@ fabricator's rate next month cannot rewrite what last month's work cost.
 
 **Fabricators and internal lines are ONE list.** `shared/fabricators.js` keeps
 them apart by `type` only — `internal_line`, `external`, `sample` — so the job
-work issue screen asks "who is doing this" once, whether the answer is Line 2 or
-an outside worker. Two lists would mean two dropdowns and two ways to get the
+card issue screen asks "who is doing this" once, whether the answer is Rex Internal or
+New Durga Line. Two lists would mean two dropdowns and two ways to get the
 same question wrong. What each type requires genuinely differs and is enforced,
 not merely hinted at in the form:
 
@@ -196,13 +196,13 @@ orders in — so it is a mode inside that screen. `NewOrderFlow` stays MOUNTED
 when the spreadsheet mode is showing, because it holds an unsaved draft and
 switching modes must not discard a slip the clerk has already checked.
 
-**Creating a production job order is its own screen** (`JobOrdersTab`), not a
-button inside the PI database. It was nested under the PI row's Release action,
-which put a shop-floor decision inside a commercial record and meant hunting
-through issued invoices to find the work still owed. The PI database now only
-REPORTS what is owed and links across. Releasing is still partial by design —
-each release is one production order that schedules and dispatches on its own,
-and what is left stays owed on the PI without touching the invoice.
+**Job Orders follows the Order Book** (`JobOrdersTab`). Every active Order Book
+row appears there; an issued job card consumes its exact range/size quantities,
+and a partial card leaves the remaining balance open. The PI is not used to
+decide eligibility. `shared/job-orders.js` owns this derivation and the server
+also refuses an issue above the Order Book balance. Job Cards accept the date,
+destination and size-wise cutting quantities, then save the issued card snapshot
+on `job_work.card` so the balance is auditable instead of reconstructed by guess.
 
 **BOM removal is bulk, previewed, and undoable.** `shared/bom-removal.js` is a
 pure planner: give it the reference document and a selection of articles, size

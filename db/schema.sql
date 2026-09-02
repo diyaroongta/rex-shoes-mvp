@@ -237,6 +237,22 @@ create table if not exists fabricators (
 );
 create index if not exists fabricators_type_idx on fabricators (active, type, name);
 
+-- The two starting choices named by the factory. Unknown commercial values
+-- stay zero/null and are visibly marked incomplete; do not invent them.
+insert into fabricators (name, type, rate, tat_days, payable, active, note)
+values
+  ('Rex Internal', 'internal_line', 0, 0, false, true,
+   'Internal option confirmed; turnaround time still to be entered'),
+  ('New Durga Line', 'external', 0, 0, true, true,
+   'External option confirmed; rate, contact and turnaround still to be entered')
+on conflict (name) do nothing;
+
+-- Retire only the old generated placeholders. Historical job-work rows keep
+-- their names and foreign keys; they simply stop appearing as new choices.
+update fabricators set active=false, updated_at=now()
+ where name in ('Line 1','Line 2','Line 3','Line 4')
+   and note = 'Turnaround is a placeholder — confirm with the factory';
+
 -- ---------------------------------------------------------------------------
 -- Job work: what has been sent out to a line or a fabricator, and what has
 -- come back. ONE table for both, because the movement is identical — only the
@@ -269,6 +285,10 @@ create table if not exists job_work (
   updated_at      timestamptz not null default now()
 );
 create index if not exists job_work_open_idx on job_work (status, fabricator, issued_on desc);
+
+-- Immutable copy of the editable size-wise card that was actually issued.
+-- This is also what lets Job Orders calculate a reliable range/size balance.
+alter table job_work add column if not exists card jsonb;
 
 -- Hiding a dispatch is NOT undoing it. The goods really did ship, so the pairs
 -- must keep counting against the order — the row is only taken off the history

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./lib/client.js";
 import { REF as INPUTS } from "./lib/refdata.js";
-import { selectableFor, TYPE_LABEL } from "../shared/fabricators.js";
+import { selectableFor, optionLabel } from "../shared/fabricators.js";
 import { validateIssue, summarise, withFabricators, slipFor,
          SAMPLE_STATUS, SAMPLE_LABEL } from "../shared/job-work.js";
 
@@ -19,7 +19,7 @@ const inr = n => "₹" + Number(n||0).toLocaleString("en-IN",{maximumFractionDig
 
 const BLANK = { fabricator:"", article:"", qty:"", stage:"STITCHING", order_no:"", note:"" };
 
-export default function JobWorkTab({ orders=[] }){
+export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue=true, refreshKey=0 }){
   const [fabricators, setFabricators] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [form, setForm] = useState(BLANK);
@@ -36,7 +36,7 @@ export default function JobWorkTab({ orders=[] }){
       setFabricators(f); setJobs(j); setErr("");
     }catch(e){ setErr(e.message||String(e)); setFabricators([]); }
   }
-  useEffect(()=>{ reload(); },[]);
+  useEffect(()=>{ reload(); },[refreshKey]);
 
   const articles = Object.keys(INPUTS.articles||{});
   const chosen = (fabricators||[]).find(f => f.name === form.fabricator) || null;
@@ -106,7 +106,7 @@ export default function JobWorkTab({ orders=[] }){
       lines and any outside job workers under <b>Setup → Fabricators &amp; lines</b> first.
     </div></div>;
 
-  return <div className="p-4 md:p-5">
+  return <div className={embedded ? "px-4 md:px-5 pb-4" : "p-4 md:p-5"}>
     {msg && <div role="status" className="mb-3 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
     {err && <div role="alert" className="mb-3 text-xs rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2">{err}</div>}
 
@@ -122,7 +122,7 @@ export default function JobWorkTab({ orders=[] }){
       </div>
     </div>}
 
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-4">
+    {allowDirectIssue && <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-4">
       <div className="text-sm font-semibold text-slate-800 mb-2">Assign work</div>
       <div className="flex gap-3 flex-wrap items-end">
         <label className="text-xs text-slate-600">Send to
@@ -131,7 +131,7 @@ export default function JobWorkTab({ orders=[] }){
             className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56">
             <option value="">— choose a line or fabricator —</option>
             {everyone.map(f => <option key={f.name} value={f.name}>
-              {f.name} · {TYPE_LABEL[f.type]}</option>)}
+              {optionLabel(f)}</option>)}
           </select></label>
 
         <label className="text-xs text-slate-600">Article
@@ -164,8 +164,10 @@ export default function JobWorkTab({ orders=[] }){
 
       {chosen && <div className="text-[11px] text-slate-600 mt-2">
         This will raise an <b>{slipFor(chosen)}</b>.{" "}
-        {chosen.payable
+        {chosen.payable && chosen.rate > 0
           ? <>Payable at {inr(chosen.rate)}{chosen.type==="sample"?" flat":" per piece"}.</>
+          : chosen.payable
+          ? <>Payable, but the rate is not set yet.</>
           : <>Internal line — nothing payable.</>}
         {chosen.tat_days ? ` Turnaround ${chosen.tat_days} day${chosen.tat_days===1?"":"s"}.` : ""}
       </div>}
@@ -179,7 +181,7 @@ export default function JobWorkTab({ orders=[] }){
         className="mt-3 text-xs font-semibold text-white rounded-lg px-3 py-2 bg-slate-800 disabled:opacity-40">
         {busy ? "Issuing…" : chosen ? `Raise the ${slipFor(chosen)}` : "Issue"}
       </button>
-    </div>
+    </div>}
 
     {slipFor_ && <JobSlip job={slipFor_} onPrint={printSlip} onClose={()=>setSlip(null)} />}
 
@@ -222,7 +224,9 @@ function Register({ title, rows, empty, onReceive, onSlip, onVerdict, busy,
               <td className={`text-right px-2 mono ${closed&&r.shortage>0?"text-rose-700 font-semibold":""}`}>
                 {fmt(closed ? r.shortage : r.outstanding)}</td>
               <td className="text-right px-2 mono">
-                {r.payable ? inr(r.amount) : <span className="text-slate-400">—</span>}</td>
+                {r.payable
+                  ? (Number(r.rate)>0 ? inr(r.amount) : <span className="text-amber-700 font-semibold">Not set</span>)
+                  : <span className="text-slate-400">—</span>}</td>
               <td className="px-2">
                 {r.sample
                   ? <span className="font-semibold" style={{color:
