@@ -143,6 +143,13 @@ sizes in a single box (5/49). `tests/packing-list.test.mjs` reproduces that
 whole sheet — 971 pairs, 49 cartons — so a change that breaks the numbering
 fails loudly.
 
+**The REX mark is in `public/brand/`, not inlined.** Real files served at
+`/brand/...`, so the header, the login banner and every printed document use
+the same artwork and it can be replaced without touching code. Catalogue photos
+are data URLs because they are DATA, uploaded per article; branding is an ASSET
+and belongs on disk. The header mark carries `data-noprint` — a document has
+its own letterhead, and a second logo on an invoice is worse than none.
+
 **The letterhead and mark are part of the FORM, not configuration.** REX and
 "Mark Of Originality" ship as defaults in `DEFAULT_PACKING_CONFIG` and print on
 every sheet — they are on every one the factory issues, so requiring them to be
@@ -256,6 +263,7 @@ api/
   reference.js     BOM upload, stock, MRP, sole type, molding machine, bulk removal
   dispatches.js    packing reports, AND job work (?resource=job_work)
   parties.js       customers, AND fabricators (?resource=fabricators) — see below
+public/brand/      the factory's own artwork — rex-logo.jpg, rex-banner.jpg
 db/schema.sql      safe to re-run; everything uses IF NOT EXISTS
 tests/             4 suites, ~26 checks
 ```
@@ -281,8 +289,24 @@ These came from the original handoff and still hold:
 
 ## Domain model — corrections that were expensive to learn
 
-**Work centres and routing.** Seven stages:
-`CUTTING → PREPARATION → STITCHING → UPPER_QC → MOLDING → PACKING → DISPATCH`
+**Work centres and routing.** The order a shoe is actually made in, confirmed
+by the client:
+
+`CUTTING → PREPARATION (printing) → STITCHING → UPPER_QC (qc & prep) → MOLDING → PACKING → DISPATCH`
+
+`STAGE_SEQUENCE` in `shared/engine.js` is the ONE definition; `workCentresInOrder()`
+sorts any list of lines by it. Every screen that lists stages or work centres
+uses those — reading `Object.keys(workcenters)` gave the reference document's
+storage order, which on live data put PACKING second and DISPATCH third.
+
+**Outside stitching adds a TRANSIT leg, not a release delay.** Work sent out
+has to come back before it can be QC'd, so `TRANSIT_STAGE` sits between
+STITCHING and UPPER_QC for `stitching:"outside"` orders, lasting
+`stitching_outside_transport_days`. It books NO capacity and never appears on
+the machine board — nothing is being made — but it is real elapsed time and
+every dispatch date depends on it. It used to be added to `extraLeadDays`, i.e.
+to the RELEASE date, which delayed cutting for a lorry that had nothing to
+carry yet and put the wait in the wrong place on the schedule.
 
 - PREPARATION is printing and preparing cutting. UPPER_QC sits before molding.
 - Packing and dispatch are **separate stages**; dispatch has its own capacity.
@@ -390,6 +414,12 @@ Each of these was a real bug found in production. Most have a regression test no
 | A range mistaken for an invented size | Match &amp; Check bolded the RANGE (`11X1`) while the slip's own `12, 13, 1` sat in ten-point grey, so a range covering a size nobody wrote looked like the app adding one. It is not: a range is only the RATE BASIS, and an unwritten size carries no quantity, so nothing extra is priced or made. The written sizes lead now and the range follows as "mapped to 11X1". The warning fires only when an unwritten size actually carries pairs — which would be the real invented-size fault. |
 | Refusing where a warning would do | Issuing a PI was blocked by five separate refusals — customer, colours, size range, packing rate, MRP — each stopping the clerk dead at a different point. During setup, and on a genuinely urgent order, that is the wrong trade. They are collected and shown ONCE with "Issue the PI anyway". What is not negotiable is honesty about the cost: a line with no size range or no packing rate prices to zero pairs and is DROPPED from the invoice entirely, so those two say so in as many words rather than reading as cosmetic. |
 | Reading pairs as cartons | The slip stacks size over quantity, and that bottom figure is sometimes cartons and sometimes PAIRS. The factory's rule is the size of the number: a carton count for ONE size is small, so anything above ten is pairs (`CARTON_LIMIT` in `shared/intake.js`). Read the other way round it is multiplied by the packing rate — the 2026-27 SPIKE BLUE revised order is 288 pairs and came back with a single line reading 1,728. `readQuantity()` decides, `basis` says which way it went so the screen can show it, and the AI prompt now says to transcribe the figure verbatim rather than convert it. |
+| One button for two different intentions | Dispatch history had a single "Remove" that put the pairs back. But "this report was mis-keyed" and "I do not want this row on screen any more" are opposite instructions: the first must return the pairs to pending, the second must NOT, because the goods really shipped. They are now separate actions — **Undo dispatch** (moves to `dispatches_removed`, pairs return) and **Just remove from history** (`hidden=true`, pairs keep counting). A hidden row is still summed into `already` when validating a new dispatch, or hiding one would let the same pairs ship twice. |
+| A 404 that read as a bug | Undoing a dispatch that was already undone — a second click, or a stale tab — answered a bare "404 — no such dispatch", which looks like the app is broken rather than like the screen being out of date. It now says the report may already have been undone and to reload, and the list refreshes on the failure as well as on success. |
+| Four copies of the stage order, one wrong | The stage-targets editor carried its own list: it omitted PREPARATION and UPPER_QC — so neither could ever be given a delivery target — and included PRINTING, which is part of PREPARATION and not a stage at all. `STAGE_SEQUENCE` in `shared/engine.js` is now the single definition and everything that lists stages sorts by it. |
+| One material on several component rows | The revised BOM writes a row per CUT PIECE, so `MESH 58" WHITE` appears as VAMP MESH and again as MESH TOUNGE. The importer read those as duplicate materials and rejected the file. Removing the check naively is worse: the first row wins and the rest are discarded, understating MESH by 25% and REXINE 54" by 75% — silently, in the figure procurement buys from. Rates now ACCUMULATE (`+=`), a true duplicate is the same COMPONENT twice, and the components are stored beside `rates` so nothing that reads rates changes. |
+| A column nobody thought was missing | The factory's sheet heads that column "Cutting componenet" — with the typo. It fell into the unrecognised-column flow, so components were silently not stored at all while the upload otherwise looked fine. Their spelling is aliased. Read the client's actual header, not the one the template says. |
+| Tests that hide their own coverage | `process.exit()` at the end of a core test kills the process before V8 writes its coverage file. It looked like six new modules had no tests at all and dropped the gate to 68%. `process.exitCode` instead. (The real cause that day was a broken chain — but the exit pattern makes any such failure much harder to read.) |
 | Treating repeated numerals as one size run | The factory can have both Small `7S–12S` and Large `7–12`. Explicit S/L always wins. When omitted, preserve the client’s ascending written order: all Small entries first; `1–6` starts Large; later repeated `7–13` remain Large. Never key packing/MRP only by bare size when two BOM ranges can use it — store `RANGE::SIZE`. |
 
 ---
@@ -454,9 +484,22 @@ centres, 13 screens, 7 API endpoints.
   ship without a session. It **denies anything it does not recognise**, so a new
   endpoint is admin-only until classified, and a shape test fails the build until
   someone classifies it.
+  Roles come from the factory's own access list and each is TWO things and no
+  more: the screens it may open (`tabs`) and the endpoints it may change
+  (`writes`). Reading follows the screens.
   - `admin` — everything, including the article master, BOM, parties, capacities
-  - `planner` — orders, PIs, scheduling, dispatch, AI readers, and stock figures
-  - `viewer` — reads everything, writes nothing
+  - `owner` — sees the whole factory, changes nothing (Owner / Director)
+  - `planner` — orders, PIs, scheduling, dispatch, AI readers, stock (unchanged)
+  - `sales` — PIs, bulk orders, parties and their terms
+  - `dispatch` — records dispatch ONLY; reads the order book and packing rules
+  - `procurement` / `store` — the buying list and stock figures, never the BOM
+  - `data` — the article master, BOM workbooks, packing and MRP
+  - `auditor` / `viewer` — read-only
+  The three-role model could not express a dispatch clerk who records a shipment
+  but must not raise an invoice, which is why it is a table now rather than a
+  chain of ifs. Roles are NOT constrained in the database: adding one would
+  otherwise mean a schema migration to hand somebody a login, and a role the app
+  does not recognise is refused everything anyway.
   The one split worth knowing: `api/reference.js` carries BOTH stock figures (daily
   clerical work, planner) and the BOM (master data, admin), so it is judged on the
   body keys, not the endpoint. Mixing a BOM change in beside a stock change sinks the

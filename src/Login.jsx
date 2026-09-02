@@ -39,8 +39,13 @@ export default function Login({ onSignedIn, notice }){
     <main style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",
                   background:"#0F2237",padding:20,
                   fontFamily:"ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif"}}>
-      <form onSubmit={submit} style={{width:"100%",maxWidth:380,background:"#fff",borderRadius:14,
-                                      padding:"30px 28px",boxShadow:"0 18px 50px rgba(0,0,0,.35)"}}>
+      <form onSubmit={submit} style={{width:"100%",maxWidth:460,background:"#fff",borderRadius:14,
+                                      overflow:"hidden",boxShadow:"0 18px 50px rgba(0,0,0,.35)"}}>
+        {/* The factory's own banner. This is the first screen anyone sees, and
+            it should say whose system this is before it asks who they are. */}
+        <img src="/brand/rex-banner.jpg" alt="REX"
+             style={{display:"block",width:"100%",height:"auto"}} />
+        <div style={{padding:"22px 28px 30px"}}>
         <div style={{fontSize:22,fontWeight:700,letterSpacing:"-.01em",color:"#0F2237"}}>Factory OS</div>
         <div style={{fontSize:13,color:"#6B7C90",marginTop:3,marginBottom:22}}>
           {notice || "Sign in to continue"}
@@ -81,6 +86,7 @@ export default function Login({ onSignedIn, notice }){
         <div style={{fontSize:11.5,color:"#8A9AAC",marginTop:16,lineHeight:1.5}}>
           Accounts are issued by the administrator. There is no self sign-up and
           no password reset by email — ask for a reset if you are locked out.
+        </div>
         </div>
       </form>
     </main>

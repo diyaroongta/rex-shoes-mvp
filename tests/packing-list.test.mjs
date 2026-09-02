@@ -193,4 +193,8 @@ test("the draft leaves the carton count at zero — that is the number to count"
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+/* exitCode, not exit(): process.exit() kills the process before V8 flushes
+   its coverage file, so a suite that passed reported 0% and dragged the whole
+   threshold down. Letting it end naturally keeps both the exit status and the
+   coverage. */
+process.exitCode = failed ? 1 : 0;

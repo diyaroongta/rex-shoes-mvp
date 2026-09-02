@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
-import { compute, fromDay, dayIndex, queueOrder } from "../shared/engine.js";
+import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards, sizesNotWritten } from "../shared/intake.js";
@@ -238,7 +238,7 @@ export default function App({ user=null, onSignOut=null }={}){
         worst_stage: worstStage(o),
         unknown_combos: o.unknown_combos && o.unknown_combos.length ? o.unknown_combos : undefined,
       })),
-      sla_targets: targets || {CUTTING:8,STITCHING:15,PRINTING:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30},
+      sla_targets: targets || {},
       machines: state.machine_load.map(m=>({
         center:m.name, work_center:m.work_center, capacity_per_day:m.capacity_per_day,
         peak_util_pct:m.peak_util_pct, avg_util_pct:m.avg_util_pct, busy_days:m.busy_days,
@@ -2470,7 +2470,10 @@ function PlanTab({state,caps,setPlanOverride}){
   const editOrder = state.orders.find(o=>o.order_no===editing);
   const queue = queueOrder(state.orders,
     Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]))).map(o=>o.order_no);
-  const centres = Object.keys(INPUTS.workcenters);
+  /* In the order a shoe passes through them. Reading the reference document's
+     own key order put PACKING second and DISPATCH third — the columns were the
+     storage order, not the production order. */
+  const centres = workCentresInOrder(INPUTS.workcenters);
   // The schedule was built from the edited capacities; reading the seed here
   // made this screen disagree with Machine load the moment one was changed.
   const capacityOf = c => (caps && caps[c]) ?? INPUTS.workcenters[c].capacity_per_day;
@@ -2846,12 +2849,7 @@ function MachinesTab({state,caps,setCaps,targets,setTargets}){
   // Derived from reference data, not hardcoded — add a work centre and it
   // appears here automatically. Ordered by production sequence so the strips
   // read the way the factory flows, and rows never re-order while editing.
-  const STAGE_SEQ=["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","ASSEMBLY","PACKING","DISPATCH"];
-  const ORDER=Object.keys(INPUTS.workcenters).sort((a,b)=>{
-    const wa=INPUTS.workcenters[a], wb=INPUTS.workcenters[b];
-    const d=STAGE_SEQ.indexOf(wa.stage)-STAGE_SEQ.indexOf(wb.stage);
-    return d!==0?d:a.localeCompare(b);
-  });
+  const ORDER=workCentresInOrder(INPUTS.workcenters);
   const maxDay=Math.max(...state.orders.map(o=>o.dispatch_day),1);
   const days=Array.from({length:maxDay+1},(_,i)=>i);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
@@ -2950,8 +2948,13 @@ function MoldingAssignment(){
 /* How On track / At risk / Delayed is decided — stated plainly and editable,
    because these targets are the factory's delivery promise, not a constant. */
 function SlaTargets({targets,setTargets}){
-  const DEF={CUTTING:8,STITCHING:15,PRINTING:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30};
-  const cur=targets||DEF;
+  /* Every stage a shoe actually goes through, in production order and ending
+     at DISPATCH. This list used to omit PREPARATION and UPPER_QC — so neither
+     could ever be given a delivery target — and carried a PRINTING stage that
+     is part of PREPARATION rather than a step of its own. */
+  const DEF=Object.fromEntries(STAGE_SEQUENCE.map(st=>[st,
+    ({CUTTING:8,PREPARATION:11,STITCHING:15,UPPER_QC:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30})[st]]));
+  const cur={...DEF,...(targets||{})};
   const [draft,setDraft]=useState(cur);
   const [busy,setBusy]=useState(false);
   const [msg,setMsg]=useState("");

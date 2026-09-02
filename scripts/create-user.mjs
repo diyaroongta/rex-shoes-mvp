@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* Create, reset, list and test Factory OS accounts.
  *
- *   node scripts/create-user.mjs <username> [--role admin|planner|viewer]
+ *   node scripts/create-user.mjs <username> [--role <role>]   (--roles to list)
  *   node scripts/create-user.mjs --list             # who has an account
  *   node scripts/create-user.mjs --verify <user>    # does this password work?
  *   node scripts/create-user.mjs <user> --set-role planner   # change role only
@@ -28,6 +28,12 @@ const fromFile = loadEnvLocal();
 const args = process.argv.slice(2);
 const flag = name => { const i = args.indexOf(name); return i > -1 ? (args[i+1] || "") : null; };
 
+if(args.includes("--roles")){
+  console.log("Roles Factory OS understands:\n");
+  for(const r of VALID_ROLES) console.log(`  ${r.padEnd(12)} ${ROLE_SUMMARY[r]}`);
+  process.exit(0);
+}
+
 if(args.includes("--secret")){
   console.log(randomBytes(48).toString("base64url"));
   process.exit(0);
@@ -46,7 +52,7 @@ const username = String(verifying || unlocking ||
                         args.find(a => !a.startsWith("--") && a !== role) || "").trim().toLowerCase();
 
 if(!listing && !username){
-  console.error("Usage: node scripts/create-user.mjs <username> [--role admin|planner|viewer]");
+  console.error("Usage: node scripts/create-user.mjs <username> [--role <role>]");
   console.error("       node scripts/create-user.mjs --list | --verify <user> | --unlock <user> | --secret");
   process.exit(1);
 }

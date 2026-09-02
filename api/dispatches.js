@@ -103,8 +103,12 @@ export default wrap(async (req, res) => {
 
   if(req.method === "GET"){
     const { rows } = await q(
-      `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list
-         from dispatches order by dispatched_on desc, id desc`);
+      `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order,
+              packing_list, hidden
+         from dispatches
+        where $1::boolean or not hidden
+        order by dispatched_on desc, id desc`,
+      [String((req.query||{}).include_hidden||"") === "1"]);
     return res.status(200).json(rows.map(r => ({
       ...r,
       dispatched_on: r.dispatched_on instanceof Date
@@ -131,6 +135,8 @@ export default wrap(async (req, res) => {
     const ordered = {};
     for(const l of ord[0].lines) ordered[l.combo] = (ordered[l.combo] || 0) + Number(l.qty);
 
+    /* Hidden rows are INCLUDED here on purpose: hiding takes a report off the
+       history list, it does not un-ship the pairs. */
     const { rows: prev } = await q("select dispatched from dispatches where order_no = $1", [order_no]);
     const already = {};
     for(const p of prev)
@@ -202,6 +208,28 @@ export default wrap(async (req, res) => {
   if(req.method === "DELETE"){
     const id = Number(req.query.id);
     if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+
+    /* TWO DIFFERENT THINGS, and conflating them loses pairs or invents them.
+         hide  — "I do not want to see this in the history any more." The goods
+                 shipped; the row keeps counting against the order.
+         undo  — "this report was mis-keyed." The pairs go back to pending and
+                 the record moves to dispatches_removed.
+       `mode=hide` is the new, safe one; undo stays the default so nothing that
+       already calls this changes behaviour without being asked to. */
+    if(String((req.query||{}).mode||"") === "hide"){
+      const { rowCount } = await q(
+        "update dispatches set hidden = true where id = $1 and not hidden", [id]);
+      if(!rowCount) return fail(res, 404, "That report is not in the history — it may already be hidden or undone.");
+      return res.status(200).json({ id, hidden:true,
+        note:"Hidden from the history. The pairs still count as dispatched." });
+    }
+    if(String((req.query||{}).mode||"") === "unhide"){
+      const { rowCount } = await q(
+        "update dispatches set hidden = false where id = $1", [id]);
+      if(!rowCount) return fail(res, 404, "no such dispatch");
+      return res.status(200).json({ id, hidden:false });
+    }
+
     const client = await db().connect();
     try{
       await client.query("begin");
@@ -213,7 +241,12 @@ export default wrap(async (req, res) => {
       const { rows } = await client.query(
         `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order
            from dispatches where id = $1 for update`, [id]);
-      if(!rows.length){ await client.query("rollback"); return fail(res, 404, "no such dispatch"); }
+      if(!rows.length){
+        await client.query("rollback");
+        /* Almost always a stale screen: the report was already undone in
+           another tab, or Undo was pressed twice. Saying so beats "404". */
+        return fail(res, 404, "That packing report is no longer there — it may already have been undone. Reload the dispatch list.");
+      }
       const d = rows[0];
       await client.query(
         `insert into dispatches_removed (id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order)

@@ -26,10 +26,13 @@ test("empty plan is stable", () => {
   assert.equal(s.totals.last_dispatch, null);
   assert.deepEqual(s.schedule_problems, []);
 });
-test("in-house preparation is not counted twice as a release buffer", () => {
+test("only printing delays the release; transport is a leg of the route", () => {
   const rules={stitching_inhouse_prep_days:1,stitching_outside_transport_days:2,printing_days:1};
   assert.equal(extraLeadDays({stitching:"inhouse",printing:false},rules),0);
-  assert.equal(extraLeadDays({stitching:"outside",printing:false},rules),2);
+  /* Outside-stitching transport used to be added HERE, which pushed the whole
+     order later — cutting waited for a lorry that had nothing to carry yet.
+     It happens AFTER stitching, so it is now a transit stage in the route. */
+  assert.equal(extraLeadDays({stitching:"outside",printing:false},rules),0);
   assert.equal(extraLeadDays({stitching:"inhouse",printing:true},rules),1);
 });
 
@@ -365,6 +368,55 @@ test("an orphan does not consume stock it can no longer compute a need for", () 
   const s = run(orders);
   assert.equal(s.procurement.length, 0, "no article means no BOM means no material demand");
 });
+
+/* OUTSIDE STITCHING. Work sent out has to come back before it can be QC'd,
+   and that journey is real elapsed time. It is NOT a work centre: it books no
+   capacity and must stay off the machine board. It used to be added to the
+   RELEASE date instead, which delayed cutting for no reason and put the wait
+   in the wrong place on the schedule. */
+{
+  const wcs2 = {...wcs, _lead_time_rules:{stitching_outside_transport_days:2}};
+  const mk = (no, st) => ({ order_no:no, order_date:"2026-07-06", article_code:"SPIKE",
+                            priority:2, party:"P", stitching:st, lines:[{combo:"11X1", qty:120}] });
+  const out = compute([mk("IN","inhouse"), mk("OUT","outside")],
+                      articles, materials, wcs2, origin, {});
+  const inhouse = out.orders.find(o=>o.order_no==="IN");
+  const outside = out.orders.find(o=>o.order_no==="OUT");
+
+  test("outside stitching does not delay the release — cutting starts the same day", () => {
+    assert.equal(outside.release_date, inhouse.release_date);
+  });
+
+  test("the transit leg sits between STITCHING and UPPER_QC", () => {
+    const names = outside.stages.map(s=>s.stage);
+    assert.equal(names[names.indexOf("STITCHING")+1], "TRANSIT_IN");
+    assert.equal(names[names.indexOf("TRANSIT_IN")+1], "UPPER_QC");
+    assert.ok(!inhouse.stages.some(s=>s.stage==="TRANSIT_IN"), "in-house work never travels");
+  });
+
+  test("it takes the configured number of days, and pushes dispatch by exactly that", () => {
+    const leg = outside.stages.find(s=>s.stage==="TRANSIT_IN");
+    assert.equal(leg.end - leg.start + 1, 2);
+    assert.equal(outside.dispatch_day - inhouse.dispatch_day, 2);
+  });
+
+  test("it books NO capacity and never appears on the machine board", () => {
+    const leg = outside.stages.find(s=>s.stage==="TRANSIT_IN");
+    assert.equal(leg.work_center, null, "there is no machine doing it");
+    assert.equal(leg.transit, true);
+    assert.ok(!out.machine_load.some(m=>/TRANSIT/.test(m.work_center||"")));
+    assert.ok(!Object.keys(out.daily_load).some(k=>/TRANSIT/.test(k)));
+  });
+
+  test("and the schedule is still valid with it in", () => {
+    assert.deepEqual(out.schedule_problems, []);
+  });
+
+  test("no transport configured means no transit leg at all", () => {
+    const none = compute([mk("OUT","outside")], articles, materials, wcs, origin, {});
+    assert.ok(!none.orders[0].stages.some(s=>s.stage==="TRANSIT_IN"));
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

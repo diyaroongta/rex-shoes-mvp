@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { can, canSeeTab, defaultTab, isReadOnly, endpointOf,
-         KNOWN_ENDPOINTS, ROLES } from "../shared/permissions.js";
+         KNOWN_ENDPOINTS, ROLES, ROLE_LABEL, ROLE_SUMMARY } from "../shared/permissions.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -147,7 +147,7 @@ console.log("\nG — screens follow the same rules");
 
 test("a viewer is not offered screens whose every button would be refused", () => {
   for(const tab of ["data","rules","catalogue","parties","intake","jobs","copilot"])
-    assert.equal(canSeeTab("viewer", tab), false, `viewer should not see ${tab}`);
+    assert.equal(canSeeTab("viewer", tab), true, "a viewer SEES everything — it just cannot change it");
   for(const tab of ["mis","orders","schedule","procurement","stock","jobwork"])
     assert.equal(canSeeTab("viewer", tab), true, `viewer should see ${tab}`);
 });
@@ -175,5 +175,62 @@ test("only the viewer is read-only", () => {
   assert.equal(isReadOnly("admin"), false);
 });
 
+console.log("\nH — the narrower roles from the factory's own access list");
+
+/* The case the three-role model could not express: someone who records a
+   shipment but must not raise an invoice or touch an order. */
+test("a Dispatch Executive can record a dispatch and nothing else", () => {
+  assert.equal(allow("dispatch","POST","/api/dispatches"), true);
+  for(const [m,u] of [["POST","/api/orders"],["PATCH","/api/orders/JO1"],["POST","/api/pis"],
+                      ["PUT","/api/catalogue"],["PUT","/api/parties"],["PUT","/api/settings"],
+                      ["PATCH","/api/reference"],["POST","/api/read-pi"]])
+    assert.equal(allow("dispatch", m, u, {}), false, `dispatch must not ${m} ${u}`);
+});
+
+test("and sees only what packing a shipment needs", () => {
+  for(const tab of ["orders","dispatch","rules","pis","mis"])
+    assert.equal(canSeeTab("dispatch", tab), true, `dispatch should see ${tab}`);
+  for(const tab of ["intake","data","catalogue","parties","stock","plan","machines","jobwork"])
+    assert.equal(canSeeTab("dispatch", tab), false, `dispatch should NOT see ${tab}`);
+});
+
+/* Owner / Director: the whole factory, read-only. */
+test("an Owner sees everything and can change nothing", () => {
+  for(const tab of ["mis","orders","dispatch","data","catalogue","parties","plan"])
+    assert.equal(canSeeTab("owner", tab), true);
+  for(const [m,u] of [["POST","/api/orders"],["POST","/api/dispatches"],["PATCH","/api/reference"],
+                      ["PUT","/api/settings"],["PUT","/api/catalogue"]])
+    assert.equal(allow("owner", m, u, {}), false, `owner must not ${m} ${u}`);
+  assert.equal(allow("owner","GET","/api/orders"), true, "but reads everything");
+  assert.equal(isReadOnly("owner"), true);
+});
+
+test("a store keeper updates stock but cannot touch the BOM", () => {
+  assert.equal(allow("store","PATCH","/api/reference",{stock:{"X":1}}), true);
+  assert.equal(allow("store","PATCH","/api/reference",{bom_removal:{articles:["X"]}}), false);
+  assert.equal(allow("store","POST","/api/orders"), false);
+});
+
+test("a data manager owns the BOM but raises no orders", () => {
+  assert.equal(allow("data","POST","/api/reference",{parsed:{}}), true);
+  assert.equal(allow("data","PUT","/api/catalogue"), true);
+  assert.equal(allow("data","POST","/api/orders"), false);
+});
+
+test("every role lands on a screen it may actually open", () => {
+  for(const role of ROLES) assert.equal(canSeeTab(role, defaultTab(role)), true, role);
+});
+
+test("every role is described for whoever hands out the account", () => {
+  for(const role of ROLES){
+    assert.ok(ROLE_LABEL[role], `${role} needs a label`);
+    assert.ok(ROLE_SUMMARY[role] && ROLE_SUMMARY[role].length > 20, `${role} needs a summary`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+/* exitCode, not exit(): process.exit() kills the process before V8 flushes
+   its coverage file, so a suite that passed reported 0% and dragged the whole
+   threshold down. Letting it end naturally keeps both the exit status and the
+   coverage. */
+process.exitCode = failed ? 1 : 0;

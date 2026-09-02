@@ -359,3 +359,61 @@ assert.deepEqual(templateHeadings.columns,[],"the template's own headings are un
 assert.equal(templateHeadings.boms[0].combos["7X10"].size_run,"LARGE");
 assert.ok(templateHeadings.boms[0].materials["MESH BLACK||MTR"]);
 console.log("  pass  colours split a material, standard colours prefill an order, and unknown columns are asked about\n");
+
+/* ---------------------------------------------------------------------------
+   CUTTING COMPONENTS. The revised sheet writes one row per cut piece, so one
+   material appears several times with a rate each. Those are NOT duplicates:
+   the material's consumption is the SUM. Read as duplicates the file was
+   rejected outright; keeping the first row understated MESH by 25% and
+   REXINE 54" by 75%, which is worse than a rejection because it is silent. */
+{
+  const rows = [
+    ["Article Code","Sole Type","Size Range","Stage","Cutting componenet","Material","Material Colour (optional)","UOM","Rate per Pair"],
+    ["BOLT","EVA","7X10","CUTTING","VAMP MESH","MESH 58\"","WHITE","MTR",0.06],
+    ["BOLT","EVA","7X10","CUTTING","MESH TOUNGE","MESH 58\"","WHITE","MTR",0.02],
+    ["BOLT","EVA","7X10","CUTTING","U-TAPE","REXINE 54\"","WHITE","MTR",0.01],
+    ["BOLT","EVA","7X10","CUTTING","RING STRIP","REXINE 54\"","WHITE","MTR",0],
+    ["BOLT","EVA","7X10","CUTTING","COUNTER","REXINE 54\"","WHITE","MTR",0.01],
+  ];
+  const out = parseReferenceWorkbook([{name:"BOM",rows}],{articles:{},materials:{}});
+  assert.deepEqual(out.errors, [], "a row per component is a normal file, not an error");
+  assert.deepEqual(out.columns, [], "the factory's own spelling of the column is understood");
+
+  const cutting = out.boms[0].combos["7X10"].rates.CUTTING;
+  assert.equal(cutting['MESH 58" WHITE||MTR'], 0.08, "0.06 + 0.02 — procurement buys the sum");
+  assert.equal(cutting['REXINE 54" WHITE||MTR'], 0.02, "0.01 + 0 + 0.01");
+
+  /* Components are stored BESIDE the rates, so every existing reader of
+     `rates` — the planner, the netting, every BOM screen — is untouched. */
+  const comps = out.boms[0].combos["7X10"].components.CUTTING;
+  assert.deepEqual(comps['MESH 58" WHITE||MTR'].map(c=>c.name), ["VAMP MESH","MESH TOUNGE"]);
+  assert.equal(comps['REXINE 54" WHITE||MTR'].length, 3, "including the zero-rate piece");
+
+  /* A zero rate is fine for a COMPONENT — a piece cut from material already
+     being bought for another piece consumes nothing extra. */
+  assert.equal(comps['REXINE 54" WHITE||MTR'].find(c=>c.name==="RING STRIP").per_pair, 0);
+}
+
+/* The same piece listed twice IS a mistake, and a different one from two rows
+   for one material. */
+{
+  const rows = [
+    ["Article Code","Sole Type","Size Range","Stage","Cutting componenet","Material","UOM","Rate per Pair"],
+    ["BOLT","EVA","7X10","CUTTING","VAMP MESH","MESH 58\"","MTR",0.06],
+    ["BOLT","EVA","7X10","CUTTING","VAMP MESH","MESH 58\"","MTR",0.02],
+  ];
+  const out = parseReferenceWorkbook([{name:"BOM",rows}],{articles:{},materials:{}});
+  assert.ok(out.errors.some(e=>/duplicate BOM component VAMP MESH/.test(e)),
+    "the same cut piece twice, not two pieces from one material");
+}
+
+/* Without a component, a zero rate still orders none of a material the shoe
+   uses — and the message must say which material, not "a required field". */
+{
+  const rows = [
+    ["Article Code","Sole Type","Size Range","Stage","Material","UOM","Rate per Pair"],
+    ["BOLT","EVA","7X10","STITCHING","D-RING 25 MM","PCS",0],
+  ];
+  const out = parseReferenceWorkbook([{name:"BOM",rows}],{articles:{},materials:{}});
+  assert.ok(out.errors.some(e=>/D.RING 25 MM has no rate per pair/.test(e)), out.errors.join("; "));
+}

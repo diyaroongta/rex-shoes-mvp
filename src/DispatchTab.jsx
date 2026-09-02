@@ -39,15 +39,36 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   /* A packing report can be mis-keyed. Removing one returns its pairs to the
      order's pending balance, so this is a correction — not a way to make a
      shipment disappear, which is why it is confirmed and says what it does. */
-  async function removeDispatch(d){
+  /* UNDO: the report was mis-keyed, so the pairs go back to pending. */
+  async function undoDispatch(d){
     setBusy(true); setErr(""); setMsg("");
     try{
-      await api.deleteDispatch(d.id);
+      await api.undoDispatch(d.id);
       const pairs=Object.values(d.dispatched||{}).reduce((a,b)=>a+(Number(b)||0),0);
-      setMsg(`Packing report removed. ${fmt(pairs)} pair(s) are pending again on ${d.order_no}.`);
+      setMsg(`Dispatch undone. ${fmt(pairs)} pair(s) are pending again on ${d.order_no}.`);
       setConfirmDel(null);
       if(onChanged) await onChanged();
-    }catch(e){ setErr(String(e.message||e)); }
+    }catch(e){
+      setErr(String(e.message||e));
+      /* A stale row is the usual cause, and the list is wrong either way. */
+      if(onChanged) await onChanged();
+    }
+    finally{ setBusy(false); }
+  }
+
+  /* HIDE: the goods shipped. This only takes the row off the list — the pairs
+     keep counting, and the order's pending balance does not move. */
+  async function hideDispatch(d){
+    setBusy(true); setErr(""); setMsg("");
+    try{
+      await api.hideDispatch(d.id);
+      setMsg(`Removed from the history. ${d.order_no} still counts those pairs as dispatched.`);
+      setConfirmDel(null);
+      if(onChanged) await onChanged();
+    }catch(e){
+      setErr(String(e.message||e));
+      if(onChanged) await onChanged();
+    }
     finally{ setBusy(false); }
   }
 
@@ -311,18 +332,25 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                     aria-label={`Packing list for ${d.order_no}`}
                     className="font-semibold text-indigo-700 hover:underline mr-2">Packing list</button>}
                   {confirmDel===d.id
-                    ? <span className="inline-flex gap-1.5 items-center">
-                        <span className="text-rose-800">Put these pairs back?</span>
-                        <button disabled={busy} onClick={()=>removeDispatch(d)}
-                          aria-label={`Confirm removing the ${d.order_no} packing report`}
-                          className="font-semibold text-white bg-rose-700 rounded px-2 py-0.5 disabled:opacity-50">Remove report</button>
+                    ? <span className="inline-flex gap-1.5 items-center flex-wrap justify-end">
+                        <span className="text-slate-700">Which one?</span>
+                        <button disabled={busy} onClick={()=>undoDispatch(d)}
+                          aria-label={`Undo the ${d.order_no} dispatch and put the pairs back`}
+                          title="The report was wrong. The pairs go back to pending."
+                          className="font-semibold text-white bg-rose-700 rounded px-2 py-0.5 disabled:opacity-50">
+                          Undo dispatch — pairs go back</button>
+                        <button disabled={busy} onClick={()=>hideDispatch(d)}
+                          aria-label={`Remove the ${d.order_no} report from the history only`}
+                          title="The goods shipped. This only takes the row off this list."
+                          className="font-semibold border border-slate-300 bg-white rounded px-2 py-0.5 disabled:opacity-50">
+                          Just remove from history</button>
                         <button onClick={()=>setConfirmDel(null)}
-                          className="font-semibold border border-slate-300 bg-white rounded px-2 py-0.5">Keep</button>
+                          className="font-semibold border border-slate-300 bg-white rounded px-2 py-0.5">Cancel</button>
                       </span>
                     : <button onClick={()=>setConfirmDel(d.id)}
                         aria-label={`Remove the ${d.order_no} packing report`}
-                        title="Remove this packing report and return its pairs to the order's pending balance"
-                        className="text-rose-600 font-semibold hover:underline">Remove</button>}
+                        title="Undo the dispatch, or just take this row off the history"
+                        className="text-slate-600 font-semibold hover:underline">Remove…</button>}
                 </td>
               </tr>))}
           </tbody>

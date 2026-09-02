@@ -103,9 +103,17 @@ export const retireFabricator  = name => j(
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);
-/* Removing a dispatch puts those pairs back into the order's pending balance,
-   so it is a correction of a mis-keyed report, not a way to hide a shipment. */
-export const deleteDispatch  = id      => j(`/api/dispatches?id=${id}`, { method:"DELETE" });
+/* TWO DIFFERENT ACTIONS, deliberately not one button.
+   undoDispatch  — the report was mis-keyed: the pairs go back to pending and
+                   the record moves to dispatches_removed.
+   hideDispatch  — the goods really shipped; this only takes the row off the
+                   history list. The pairs keep counting against the order. */
+export const undoDispatch    = id      => j(`/api/dispatches?id=${id}`, { method:"DELETE" });
+export const hideDispatch    = id      => j(`/api/dispatches?id=${id}&mode=hide`, { method:"DELETE" });
+export const unhideDispatch  = id      => j(`/api/dispatches?id=${id}&mode=unhide`, { method:"DELETE" });
+export const listDispatchesWithHidden = () => j("/api/dispatches?include_hidden=1");
+/* Kept so nothing that already calls it changes meaning. */
+export const deleteDispatch  = undoDispatch;
 
 /* ---- job work: what is out with a line or a fabricator ----
    Served by /api/dispatches to stay within Vercel's 12-function limit — a job

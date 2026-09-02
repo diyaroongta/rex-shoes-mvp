@@ -281,8 +281,9 @@ function JobSlip({ job, onPrint, onClose }){
       <button onClick={onClose} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
     </div>
     <div className="job-slip" style={{color:"#000",fontFamily:"Arial,Helvetica,sans-serif"}}>
-      <div style={{textAlign:"center",fontSize:18,fontWeight:800,marginBottom:2}}>REX</div>
-      <div style={{textAlign:"center",fontSize:9,color:"#444",marginBottom:8}}>Mark Of Originality</div>
+      <div style={{textAlign:"center",marginBottom:8}}>
+        <img src="/brand/rex-logo.jpg" alt="REX" style={{height:38,objectFit:"contain"}} />
+      </div>
       <div style={{textAlign:"center",fontSize:15,fontWeight:700,marginBottom:10}}>{job.slip}</div>
       <table style={{width:"100%",borderCollapse:"collapse"}}>
         <tbody>

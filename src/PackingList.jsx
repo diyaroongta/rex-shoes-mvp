@@ -26,7 +26,9 @@ const LBL  = { ...CELL, fontWeight:600 };
 export const DEFAULT_PACKING_CONFIG = {
   company_name: "REX",
   tagline: "Mark Of Originality",
-  logo: null,
+  /* The factory's own mark, shipped with the app. A document carries its
+     letterhead whether or not anyone has been into settings. */
+  logo: "/brand/rex-logo.jpg",
   footer_logo: null,
   footer_note: "",
 };

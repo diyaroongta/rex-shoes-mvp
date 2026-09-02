@@ -3,13 +3,17 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
-const mocks=vi.hoisted(()=>({listDispatches:vi.fn(),addDispatch:vi.fn(),deleteDispatch:vi.fn()}));
+const mocks=vi.hoisted(()=>({listDispatches:vi.fn(),addDispatch:vi.fn(),
+  undoDispatch:vi.fn(),hideDispatch:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>({
-  listDispatches:mocks.listDispatches,addDispatch:mocks.addDispatch,deleteDispatch:mocks.deleteDispatch,
+  listDispatches:mocks.listDispatches,addDispatch:mocks.addDispatch,
+  undoDispatch:mocks.undoDispatch,hideDispatch:mocks.hideDispatch,deleteDispatch:mocks.undoDispatch,
 }));
 import DispatchTab from "../../src/DispatchTab.jsx";
 
-beforeEach(()=>{vi.clearAllMocks();mocks.listDispatches.mockResolvedValue([]);mocks.addDispatch.mockResolvedValue({});mocks.deleteDispatch.mockResolvedValue({});});
+beforeEach(()=>{vi.clearAllMocks();mocks.listDispatches.mockResolvedValue([]);
+  mocks.addDispatch.mockResolvedValue({});
+  mocks.undoDispatch.mockResolvedValue({});mocks.hideDispatch.mockResolvedValue({});});
 
 /* The screen used to show a carton figure derived as pairs / packing rate —
    "10.00" for 240 pairs. The factory's own packing list counts cartons instead,
@@ -87,22 +91,44 @@ it("counts cartons per size on the packing list, and totals what was entered",as
 /* A packing report can be mis-keyed. Removing one returns its pairs to the
    order's pending balance — a correction, not a way to hide a shipment, which
    is why it is confirmed and says what it did. */
-it("removes a packing report and says the pairs are pending again",async()=>{
+/* Undo and delete are DIFFERENT things and must not share a button.
+   Undo says the report was mis-keyed — the pairs go back to pending.
+   Removing from history says the goods shipped and you just don't want the
+   row on screen; the pairs keep counting. */
+it("offers undo and hide as separate choices, not one Remove",async()=>{
   const user=userEvent.setup();
-  const order={order_no:"JO1",party:"Buyer",article:"SPIKE",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240}]};
-  const onChanged=vi.fn();
-  render(<DispatchTab orders={[order]}
-    dispatches={[{id:7,order_no:"JO1",dispatched:{"7X10S":48},kind:"partial",dispatched_on:"2026-08-25"}]}
-    onChanged={onChanged}/>);
+  const order={order_no:"JO1",party:"P",article:"SPIKE",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240}]};
+  const d=[{id:7,order_no:"JO1",dispatched:{"7X10S":48},kind:"partial",
+            dispatched_on:"2026-04-15",closes_order:false}];
+  render(<DispatchTab orders={[order]} dispatches={d} onChanged={()=>{}}/>);
 
-  await user.click(screen.getByLabelText("Remove the JO1 packing report"));
-  expect(mocks.deleteDispatch).not.toHaveBeenCalled();          // one click must not destroy
-  expect(screen.getByText(/Put these pairs back\?/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button",{name:"Remove the JO1 packing report"}));
+  expect(screen.getByRole("button",{name:/Undo the JO1 dispatch and put the pairs back/})).toBeInTheDocument();
+  expect(screen.getByRole("button",{name:/Remove the JO1 report from the history only/})).toBeInTheDocument();
+});
 
-  await user.click(screen.getByLabelText("Confirm removing the JO1 packing report"));
-  await waitFor(()=>expect(mocks.deleteDispatch).toHaveBeenCalledWith(7));
-  // Shown twice on purpose: once at the top, once beside the history table
-  // where the button actually is.
-  expect((await screen.findAllByText(/48 pair\(s\) are pending again on JO1/)).length).toBe(2);
-  expect(onChanged).toHaveBeenCalled();                          // every tab re-reads
+it("undoing puts the pairs back",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO1",party:"P",article:"SPIKE",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240}]};
+  const d=[{id:7,order_no:"JO1",dispatched:{"7X10S":48},kind:"partial",
+            dispatched_on:"2026-04-15",closes_order:false}];
+  render(<DispatchTab orders={[order]} dispatches={d} onChanged={()=>{}}/>);
+  await user.click(screen.getByRole("button",{name:"Remove the JO1 packing report"}));
+  await user.click(screen.getByRole("button",{name:/Undo the JO1 dispatch/}));
+  await waitFor(()=>expect(mocks.undoDispatch).toHaveBeenCalledWith(7));
+  expect(mocks.hideDispatch).not.toHaveBeenCalled();
+  expect((await screen.findAllByText(/pending again/)).length).toBeGreaterThan(0);
+});
+
+it("removing from history does NOT put the pairs back",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO1",party:"P",article:"SPIKE",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240}]};
+  const d=[{id:7,order_no:"JO1",dispatched:{"7X10S":48},kind:"partial",
+            dispatched_on:"2026-04-15",closes_order:false}];
+  render(<DispatchTab orders={[order]} dispatches={d} onChanged={()=>{}}/>);
+  await user.click(screen.getByRole("button",{name:"Remove the JO1 packing report"}));
+  await user.click(screen.getByRole("button",{name:/from the history only/}));
+  await waitFor(()=>expect(mocks.hideDispatch).toHaveBeenCalledWith(7));
+  expect(mocks.undoDispatch).not.toHaveBeenCalled();
+  expect((await screen.findAllByText(/still counts those pairs as dispatched/)).length).toBeGreaterThan(0);
 });

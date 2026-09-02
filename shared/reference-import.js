@@ -23,6 +23,11 @@ const HEADER_ALIASES={
   sizerun:"sizerun",run:"sizerun",smalllarge:"sizerun",
   bomrange:"bomrange",appliestorange:"bomrange",sourcebomrange:"bomrange",bomrangeforindividualsize:"bomrange",
   process:"stage",operation:"stage",
+  /* The factory's own sheet heads this column "Cutting componenet". Reading
+     their spelling — typo included — is the difference between a file that
+     uploads and one that reports a column nobody believes is missing. */
+  cuttingcomponent:"component",cuttingcomponenet:"component",componenet:"component",
+  cutcomponent:"component",part:"component",cutpart:"component",
   item:"material",itemdescription:"material",materialname:"material",
   unit:"uom",unitofmeasure:"uom",
   rate:"rateperpair",burn:"rateperpair",consumption:"rateperpair",consumptionperpair:"rateperpair",
@@ -196,6 +201,8 @@ function pendingColumns(label,rows,required,chosen){
   return out;
 }
 
+const round6=n=>Math.round(n*1e6)/1e6;
+
 function sheet(sheets,name){
   const wanted=key(name);
   const aliases={bom:new Set(["bom","bommaster","billofmaterials","billofmaterial"]),
@@ -253,16 +260,46 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
     const soleColour=cleanColour(r.get("Sole Colour"));
     const upperColour=cleanColour(r.get("Upper Colour"));
     const prefix=`BOM row ${r.row}`;
-    if(!article||!sole||!combo||!stage||!material||!uom||!Number.isFinite(rate)||rate<=0){
-      errors.push(`${prefix}: complete every required field and use a rate greater than 0.`);continue;
+    /* A COMPONENT row may legitimately be zero — a piece cut from what is
+       already being bought for another component consumes nothing extra. The
+       material's total is what procurement uses, and that is the sum. Without
+       a component named, zero is still a missing rate. */
+    const zeroIsFine = !!component && Number.isFinite(rate) && rate === 0;
+    if(!article||!sole||!combo||!stage||!material||!uom||!Number.isFinite(rate)||(rate<0)||(rate===0&&!zeroIsFine)){
+      /* Name what is actually wrong. "Complete every required field" sent
+         people hunting across twelve columns; a zero rate in particular looks
+         filled in, and it is the one that silently orders none of a material
+         the shoe genuinely uses. */
+      const missing=[["Article Code",article],["Sole Type",sole],["Size Range",combo],
+                     ["Stage",stage],["Material",material],["UOM",uom]]
+        .filter(([,v])=>!v).map(([k])=>k);
+      errors.push(missing.length
+        ? `${prefix}: ${missing.join(", ")} ${missing.length===1?"is":"are"} blank.`
+        : `${prefix}: ${material} has no rate per pair. A rate of 0 would order none of it — `
+          +`enter the consumption, or name a cutting component if it is cut from another material.`);
+      continue;
     }
     if(!SOLES.has(sole)){errors.push(`${prefix}: Sole Type must be EVA, PVC, PU or STUCK-ON.`);continue;}
     if(!STAGES.has(stage)){errors.push(`${prefix}: unknown Stage ${stage}.`);continue;}
     if(sizeRun&&!['SMALL','LARGE'].includes(sizeRun)){errors.push(`${prefix}: Size Run must be Small or Large.`);continue;}
     const tooLong=[["Sole Colour",soleColour],["Upper Colour",upperColour]].find(([,v])=>v.length>MAX_COLOUR);
     if(tooLong){errors.push(`${prefix}: ${tooLong[0]} must be ${MAX_COLOUR} characters or fewer.`);continue;}
-    const duplicate=[article,combo,stage,material,uom].join("|");
-    if(seen.has(duplicate)){errors.push(`${prefix}: duplicate BOM material for ${article} ${combo} ${stage}.`);continue;}
+    /* ONE MATERIAL, SEVERAL COMPONENTS. The revised sheet writes a row per cut
+       piece, so MESH 58" WHITE appears once as VAMP MESH and again as MESH
+       TOUNGE. Those are not duplicates: the material's consumption is the SUM
+       of its components. Treating them as duplicates rejected the whole file;
+       keeping the first row silently understated MESH by 25% and REXINE 54" by
+       75%, which is worse. A true duplicate is the SAME component twice. */
+    const duplicate=[article,combo,stage,material,uom,component||""].join("|");
+    if(seen.has(duplicate)){
+      /* Without a component these really are two rows for one material, which
+         is the long-standing error and keeps its wording. With a component it
+         is the same PIECE listed twice, which is a different mistake. */
+      errors.push(component
+        ? `${prefix}: duplicate BOM component ${component} for ${article} ${combo} ${stage} ${material}.`
+        : `${prefix}: duplicate BOM material for ${article} ${combo} ${stage}.`);
+      continue;
+    }
     seen.add(duplicate);
     const bom=boms[article]||(boms[article]={article,soleType:sole,soleColour:null,upperColour:null,
       combo_order:[],combos:{},materials:{},warnings:[]});
@@ -283,7 +320,18 @@ export function parseReferenceWorkbook(sheets,reference={},opts={}){
     else if(sizeRun) bom.combos[combo].size_run=sizeRun;
     const materialKey=`${material}||${uom}`;
     bom.combos[combo].rates[stage]=bom.combos[combo].rates[stage]||{};
-    bom.combos[combo].rates[stage][materialKey]=rate;
+    /* += , not = . Procurement reads this figure. */
+    bom.combos[combo].rates[stage][materialKey]=
+      round6((bom.combos[combo].rates[stage][materialKey]||0)+rate);
+    if(component){
+      /* Kept BESIDE the rates, never inside them, so every existing reader of
+         `rates` is untouched: the BOM screens and procurement stay
+         material-wise, and only the job card looks in here. */
+      const comps=bom.combos[combo].components=bom.combos[combo].components||{};
+      const byStage=comps[stage]=comps[stage]||{};
+      const list=byStage[materialKey]=byStage[materialKey]||[];
+      list.push({name:component,per_pair:rate,uom});
+    }
     const rowNotes=r.notes();
     bom.materials[materialKey]={name:material,uom,
       ...(materialColour?{colour:materialColour}:{}),

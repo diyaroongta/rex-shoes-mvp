@@ -192,7 +192,7 @@ create table if not exists users (
   username       text primary key,               -- stored lower-case; compared lower-case
   password_hash  text        not null,           -- scrypt$N$r$p$salt$hash
   display_name   text,
-  role           text        not null default 'admin' check (role in ('admin','planner','viewer')),
+  role           text        not null default 'admin',
   active         boolean     not null default true,
   -- Brute force against a single shared password on a public URL is the
   -- realistic attack here, so failures are counted and the account is held
@@ -269,3 +269,15 @@ create table if not exists job_work (
   updated_at      timestamptz not null default now()
 );
 create index if not exists job_work_open_idx on job_work (status, fabricator, issued_on desc);
+
+-- Hiding a dispatch is NOT undoing it. The goods really did ship, so the pairs
+-- must keep counting against the order — the row is only taken off the history
+-- list. Undoing (see dispatches_removed) is the other thing entirely: it says
+-- the report was mis-keyed and puts the pairs back into pending.
+alter table dispatches add column if not exists hidden boolean not null default false;
+
+-- Roles are validated in shared/permissions.js, not by a CHECK constraint. The
+-- constraint listed three roles; adding an Owner/Director or a Dispatch
+-- Executive then meant a schema migration to hand somebody a login, and an
+-- account whose role the app does not recognise is refused everything anyway.
+alter table users drop constraint if exists users_role_check;

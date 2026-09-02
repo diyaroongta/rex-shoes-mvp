@@ -7,6 +7,28 @@
    PLACEHOLDERS — they encode a 30-day promise nobody has confirmed. Editable
    in Machine load; PREPARATION and UPPER_QC are new and slot between their
    neighbours until the factory gives real figures. */
+/* THE ORDER A SHOE IS ACTUALLY MADE IN. One definition, exported, because it
+   had drifted into four copies and one of them was wrong — the stage-targets
+   editor listed PRINTING (which is part of PREPARATION, not a stage of its
+   own) and omitted PREPARATION and UPPER_QC altogether, so two real stages
+   could never be given a target. Anything that lists stages sorts by this. */
+export const STAGE_SEQUENCE = ["CUTTING","PREPARATION","STITCHING","UPPER_QC",
+                               "MOLDING","ASSEMBLY","PACKING","DISPATCH"];
+export const inStageOrder = stages => [...(stages||[])].sort((a,z)=>{
+  const ia=STAGE_SEQUENCE.indexOf(a), iz=STAGE_SEQUENCE.indexOf(z);
+  return (ia<0?99:ia)-(iz<0?99:iz) || String(a).localeCompare(String(z));
+});
+
+/* Work centres in the order a shoe passes through them. Every screen that
+   lists lines uses this: reading them in whatever order the reference document
+   happens to store them put DISPATCH third and PACKING second, which is not a
+   plan anyone can follow. */
+export const workCentresInOrder = workcenters => Object.keys(workcenters||{}).sort((a,z)=>{
+  const sa=(workcenters[a]||{}).stage, sz=(workcenters[z]||{}).stage;
+  const ia=STAGE_SEQUENCE.indexOf(sa), iz=STAGE_SEQUENCE.indexOf(sz);
+  return (ia<0?99:ia)-(iz<0?99:iz) || String(a).localeCompare(String(z));
+});
+
 export const TARGETS = {CUTTING:8,PREPARATION:11,STITCHING:15,UPPER_QC:18,PRINTING:18,MOLDING:22,ASSEMBLY:22,PACKING:28,DISPATCH:30};
 export const RANK = {on_track:0,at_risk:1,breach:2};
 export const round2 = (n,d)=>{const f=10**d;return Math.round(n*f)/f;};
@@ -38,8 +60,24 @@ export const moldingUnassigned = a =>
   a.sole_type === "PVC" && !a.molding_machine;
 
 /* DISPATCH is now a real stage with its own capacity, not an instant marker. */
-export function route(a){
-  return a.routing.map(st => [st, wcFor(st, a.sole_type, a), "normal"]);
+/* Work stitched OUTSIDE has to come back before it can be QC'd, and that
+   journey takes days. It is NOT a work centre: it books no capacity and must
+   not appear on the machine board — but it is real elapsed time and every
+   dispatch date depends on it, so it belongs in the route rather than being
+   bolted onto the release date. Adding it to the release pushed the whole
+   order later instead, which delays cutting for no reason and puts the delay
+   in the wrong place on the schedule. */
+export const TRANSIT_STAGE = "TRANSIT_IN";
+
+export function route(a, order, rules){
+  const base = a.routing.map(st => [st, wcFor(st, a.sole_type, a), "normal"]);
+  const days = ((order && order.stitching) === "outside")
+    ? Number((rules || {}).stitching_outside_transport_days) || 0 : 0;
+  if(!days) return base;
+  const after = base.findIndex(([st]) => st === "STITCHING");
+  if(after < 0) return base;
+  const leg = [TRANSIT_STAGE, null, "transit", days];
+  return [...base.slice(0, after + 1), leg, ...base.slice(after + 1)];
 }
 
 export function orderReq(order, article){
@@ -74,8 +112,11 @@ export function netting(total, materials){
 export function extraLeadDays(order, rules){
   if(!rules) return 0;
   let d = 0;
-  const st = (order && order.stitching) || "inhouse";
-  if(st === "outside") d += Number(rules.stitching_outside_transport_days) || 0;
+  /* Outside-stitching transport is NOT counted here any more. It happens
+     AFTER stitching, not before cutting, so it is a leg of the route (see
+     TRANSIT_STAGE). Counting it here delayed the release — the whole order
+     started later — which is both the wrong duration and the wrong place on
+     the schedule. */
   // In-house preparation is already an explicit PREPARATION work-centre in
   // every route. Adding another day here created a duplicate one-day buffer
   // before Cutting in the UI schedule.
@@ -162,8 +203,16 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
     const ov=normalizeOverride(overrides[o.order_no]);
     const art=articles[o.article_code]; const qty=o.lines.reduce((s,l)=>s+l.qty,0);
     const r=rel(o); let prevEnd=r; let firstStage=true; const stages=[];
-    for(const [stage,autoWc,kind] of route(art)){
+    for(const [stage,autoWc,kind,legDays] of route(art, o, wcs && wcs._lead_time_rules)){
       if(kind==="instant"){ stages.push({stage,work_center:autoWc,start:prevEnd,end:prevEnd,instant:true}); continue; }
+      /* Elapsed days, no capacity, no machine. It is shown on the schedule
+         because the customer waits for it, and left off the machine board
+         because nothing is being made. */
+      if(kind==="transit"){
+        const start=prevEnd+1, end=start+Math.max(1,Number(legDays)||1)-1;
+        stages.push({stage,work_center:null,start,end,transit:true});
+        prevEnd=end; continue;
+      }
       /* A forced work centre that does not exist would crash the planner, so
          it falls back to the automatic one and says so. Everything else about
          the override is obeyed. */
