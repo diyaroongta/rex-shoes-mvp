@@ -123,6 +123,26 @@ Assigning is master data — the `reference` allowlist refuses
 `assign_product_codes` to everyone but admin and the data manager, without
 needing a rule of its own.
 
+**A customer's history is the SHOE first, the variant second.** "Which variant
+had been given to that customer" is asked one level up ("have they had Jack?")
+before it is asked one level down ("which Jack?"), so `shared/customer-history.js`
+returns families with variants nested, reusing `familyOf`. A variant is the
+ARTICLE plus what the PI recorded — the same article once in velcro and once in
+lace is two variants, and collapsing them answers the question wrongly. History
+covers COMPLETED orders too; a history of only live work would answer the
+opposite of what was asked. Two spellings of one customer are one customer
+(`partyKey`), but two genuinely different names are never merged — the live book
+holds both `K.P. Burgav` and `K.P. Nurgav`, which is probably a typo and is the
+factory's to fix, not the app's to guess at.
+
+**The packing report follows the PI's three steps** — choose what is leaving,
+check the packing list, confirm — for the same reason the job card does:
+something is read out of the system, a person corrects it, and only then is the
+document raised. Editing after Generate marks the preview stale and blocks
+recording. The sheet is reconciled against the dispatch IN THE SCREEN, because
+`api/dispatches.js` refuses a mismatch outright and discovering that after
+pressing Record turns a visible disagreement into a server error.
+
 **A component carries a RATE, not a piece count.** The revised workbook writes
 `VAMP MESH  MESH 58"  MTR  0.06` — consumption of its material, in that
 material's unit. The factory's paper card also shows `VAMP 1824 PCS`, and
@@ -270,6 +290,7 @@ shared/            imported by BOTH browser and server — pure, testable
   packing-list.js  the dispatch document: carton numbering, totals, reconciliation
   bom-components.js  cut pieces per material: job cards read these, procurement never does
   product-codes.js the article families and their codes — assigned once, then kept
+  customer-history.js what a customer has been given before: shoes, then variants
   fabricators.js   internal lines and job workers in one list; what each type requires
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs
   inputs.js        SEED reference data only — real data lives in Postgres
@@ -451,6 +472,12 @@ Each of these was a real bug found in production. Most have a regression test no
 | One material on several component rows | The revised BOM writes a row per CUT PIECE, so `MESH 58" WHITE` appears as VAMP MESH and again as MESH TOUNGE. The importer read those as duplicate materials and rejected the file. Removing the check naively is worse: the first row wins and the rest are discarded, understating MESH by 25% and REXINE 54" by 75% — silently, in the figure procurement buys from. Rates now ACCUMULATE (`+=`), a true duplicate is the same COMPONENT twice, and the components are stored beside `rates` so nothing that reads rates changes. |
 | A column nobody thought was missing | The factory's sheet heads that column "Cutting componenet" — with the typo. It fell into the unrecognised-column flow, so components were silently not stored at all while the upload otherwise looked fine. Their spelling is aliased. Read the client's actual header, not the one the template says. |
 | Tests that hide their own coverage | `process.exit()` at the end of a core test kills the process before V8 writes its coverage file. It looked like six new modules had no tests at all and dropped the gate to 68%. `process.exitCode` instead. (The real cause that day was a broken chain — but the exit pattern makes any such failure much harder to read.) |
+| A colour outranking the product | `matchArticle("Spike Blue")` returned JACK LACE BLACK-BLUE. `blue` occurs TWICE in that name — once in `BLACK-BLUE`, again in the `(BLUE SKINFIT)` note — so a colour mentioned in passing scored 2 while SPIKE, the product actually written, scored 1; `COLOURS` was only `["black","white"]`, so every other colour counted as part of the name. `thunder red` reached JACK too. The match is made on the FAMILY alone now, tokens are deduped, bracketed notes are dropped before the family is read, and a colour or closure can only choose BETWEEN articles of the family the slip named. |
+| The narrowing order inside a family | Fixing the above by narrowing on colour/closure BEFORE the fewest-unmentioned-words rule sent `Gola` to REX GOLA PLUS — PLUS carries no closure, so "prefer the plain name" picked it. Fewest-unmentioned-words settles WHICH PRODUCT and must run first; colour then closure settle which one of it. Colour before closure, or `Jill Blue` answers plain JILL and silently drops the only word that narrowed anything. |
+| A date that was really a Date | Postgres returns `order_date` as a Date OBJECT. `String(date).slice(0,10)` is `"Wed Aug 20"`, which sorts alphabetically — so the most-recent customer came out wrong and every first/last-supplied date was nonsense. `isoDate()` normalises, and reads LOCAL time: `toISOString()` on a date-only value stored at local midnight rolls back a day and dates an order to the day before it was placed. |
+| A hidden dispatch the browser could not see | `GET /api/dispatches` hides hidden rows by default, and the browser built its ledger from that — while the server has always counted hidden rows when checking what is outstanding. So an order with 60 shipped and 30 hidden showed **40 pairs pending when 10 remained**, and the save was refused with "only 10 pairs remain outstanding"; its packed cartons were invisible too. The app fetches WITH hidden now and only the history LIST filters. |
+| Sorting the cut pieces alphabetically | The job card's component rows went through `localeCompare`, so the factory's cutting order — VAMP, ADDI, PALTA, U TAPE, TOE PUFF — printed as ADDI, CALLER FOAM, PALTA. The cutter reads that list top-down; the order is the point of it. Rows keep the BOM's own row order via a `seq` stamped at first sight. |
+| A job order thrown away by a tab click | `{tab==="jobs" && <JobCardTab/>}` UNMOUNTS the component, so the fabricator, article and size-by-size quantities were discarded the moment the user looked at another screen. Unsaved work stays MOUNTED behind `display:none`, the same way the intake screen already did. |
 | Refusing an oversized PI instead of shrinking it | The factory's own PI export is ONE page of text carrying 3.4 MB of letterhead artwork — 3.7 MB total, which is 4.9 MB as base64 and past Vercel's 4.5 MB body cap, so every PI they raise came back `413`. The content was never the problem. The browser now re-renders an oversized PDF to one JPEG per page (`pdfPagesToJpeg`, pdf.js lazy-loaded): 3.71 MB -> 0.30 MB in 846 ms, every figure still legible. A file that already fits is sent untouched, because a PDF read AS a PDF beats a picture of one. |
 | Rendering only the first page | The obvious version of that fix renders page 1 and sends it. A two-page PI would come back looking complete and be short whole lines — the same silent-loss failure as a dropped row. Every page is rendered, `api/read-pi.js` takes a page ARRAY as readily as one file, and `tests/api/read-pi.test.js` asserts three pages produce three image blocks. |
 | Measuring a render in a hidden tab | Timing `page.render` in a background tab said 20 s and "hangs"; the same call in a fronted tab took 846 ms. Background tabs throttle timers to ~1/s and pdf.js schedules its work through them. Front the tab before timing anything that renders. |

@@ -17,6 +17,13 @@ const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
    second copy meant this screen and the dashboard could show different totals
    for the same day — whichever had refreshed last won. One source, one set of
    numbers. */
+/* `dispatches` now arrives WITH hidden rows. Hiding a report takes it off the
+   history list; it does not un-ship the pairs, and the server has always
+   counted hidden rows when checking what is still outstanding. The browser
+   was counting only the visible ones, so a hidden report made the screen show
+   MORE pending than really existed and the clerk was refused on save with
+   "only N pairs remain outstanding". The ledger below sees everything; only
+   the history list filters. */
 export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [open,setOpen]=useState(null);
   /* The packing list for the dispatch being recorded. Null until the packer
@@ -34,6 +41,11 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
   const [confirmDel,setConfirmDel]=useState(null);
+  /* The PI's three steps — choose, check, confirm — and its most important
+     property: editing after Generate marks the preview STALE and blocks
+     recording, so what is confirmed is always what was checked. */
+  const [preview,setPreview]=useState(null);
+  const [stale,setStale]=useState(false);
   const historyMsgRef=useRef(null);
 
   /* A packing report can be mis-keyed. Removing one returns its pairs to the
@@ -85,8 +97,26 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
     const d={}; for(const r of rec.rows) d[r.combo]=r.pending>0?r.pending:0;
-    setDraft(d);
+    setDraft(d); setSheet(null); setPreview(null); setStale(false);
   }
+
+  /* Any change to what is leaving, or to how it is boxed, invalidates a
+     preview already generated. */
+  function touched(){ if(preview) setStale(true); }
+  const editDraft=(combo,value)=>{ setDraft(d=>({...d,[combo]:value})); touched(); };
+  const editSheet=next=>{ setSheet(next); touched(); };
+
+  function generate(rec){
+    const built=sheet?buildPackingList({...sheet,dispatch_pairs:enteredPairs()}):null;
+    setPreview({order_no:rec.order.order_no, sheet, built});
+    setStale(false);
+  }
+  const enteredPairs=()=>Object.values(draft).reduce((a,v)=>a+(Number(v)||0),0);
+  /* The server REFUSES a sheet whose pairs disagree with the dispatch, so
+     letting Record be pressed here only turns a visible mismatch into a
+     server error after the fact. */
+  const sheetProblems=()=>sheet
+    ? buildPackingList({...sheet,dispatch_pairs:enteredPairs()}).problems : [];
 
   async function submit(rec, closes=false){
     const closing=closes||kind==="shortage";
@@ -115,7 +145,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
         kind: closing ? "shortage" : kind, note, closes_order: closing,
         ...(sheet ? { packing_list: sheet } : {}) });
-      setOpen(null);
+      setOpen(null); setPreview(null); setStale(false); setSheet(null);
       setMsg(closing
         ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
         : `Packing report recorded for ${rec.order.order_no}.`);
@@ -157,6 +187,8 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       <span className="text-slate-500">Ordered <b className="mono text-slate-800">{fmt(totals.ordered)}</b></span>
       <span className="text-slate-500">Dispatched <b className="mono text-emerald-700">{fmt(totals.dispatched)}</b></span>
       <span className="text-slate-500">Pending <b className="mono text-amber-700">{fmt(totals.pending)}</b></span>
+      {(()=>{const c=Object.values(pending).reduce((a,r)=>a+(r.total_cartons||0),0);
+        return c>0?<span className="text-slate-500">Packed <b className="mono text-slate-800">{fmt(c)}</b> cartons</span>:null;})()}
       {totals.shortfall>0 && <span className="text-slate-500">Closed short <b className="mono text-rose-700">{fmt(totals.shortfall)}</b></span>}
     </div>
 
@@ -165,7 +197,8 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
         <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
           <th className="text-left py-2">Order</th><th className="text-left">Party</th>
           <th className="text-left">Article</th><th className="text-right">Ordered</th>
-          <th className="text-right">Dispatched</th><th className="text-right">Pending</th>
+          <th className="text-right">Dispatched</th><th className="text-right">Packed</th>
+          <th className="text-right">Pending</th>
           <th className="text-left pl-3">Status</th><th></th></tr></thead>
         <tbody>
           {list.map(rec=>(
@@ -175,7 +208,15 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                 <td className="text-slate-600">{rec.order.party}</td>
                 <td className="text-slate-600">{rec.order.article}</td>
                 <td className="text-right mono">{fmt(rec.total_ordered)}</td>
-                <td className="text-right mono text-emerald-700">{fmt(rec.total_dispatched)}</td>
+                <td className="text-right mono text-emerald-700">{fmt(rec.total_dispatched)}
+                  {rec.dispatch_count>1 && <span className="text-slate-400"> ·{rec.dispatch_count}</span>}</td>
+                {/* Cartons COUNTED on the packing list. A dash means nobody
+                    counted — a dispatch recorded without a packing list did
+                    not ship in zero boxes. */}
+                <td className="text-right mono text-slate-600">
+                  {rec.total_cartons==null
+                    ? <span className="text-slate-300" title="No packing list on this order's dispatches">—</span>
+                    : <>{fmt(rec.total_cartons)}<span className="text-slate-400 text-xs"> ctn</span></>}</td>
                 <td className="text-right mono font-semibold" style={{color:rec.total_pending>0?"#b45309":"#16a34a"}}>
                   {fmt(rec.total_pending)}</td>
                 <td className="pl-3">
@@ -193,11 +234,13 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
               </tr>
 
               {open===rec.order.order_no && (
-                <tr><td colSpan={8} className="px-2 pb-3">
+                <tr><td colSpan={9} className="px-2 pb-3">
                   <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">
                     <div className="text-xs font-semibold text-indigo-900 mb-2">
                       Packing report — {rec.order.order_no}
                     </div>
+                    <div className="serif text-sm font-semibold text-slate-800 mb-1">
+                      1 · What is leaving</div>
                     <table className="w-full text-xs mb-2">
                       <thead><tr className="text-slate-500">
                         <th className="text-left">Size range</th><th className="text-right">Ordered</th>
@@ -212,7 +255,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                             <td className="text-right mono">{fmt(r.pending)}</td>
                             <td className="text-right">
                               <input type="number" min={0} max={r.pending} value={draft[r.combo]??0}
-                                onChange={e=>setDraft(d=>({...d,[r.combo]:e.target.value}))}
+                                onChange={e=>editDraft(r.combo,e.target.value)}
                                 className="w-20 text-sm border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>
                           </tr>;})}
                       </tbody>
@@ -222,17 +265,39 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                         leaves the order book; this is what the customer's gate
                         checks against, so it is entered per SIZE with cartons
                         COUNTED — never divided out of a packing rate. */}
-                    <div className="mt-3">
+                    <div className="serif text-sm font-semibold text-slate-800 mt-4 mb-1">
+                      2 · Check the packing list</div>
+                    <div className="mt-1">
                       {!sheet
                         ? <button type="button"
-                            onClick={()=>setSheet(draftFromOrder(rec.order, comboSizes,
+                            onClick={()=>editSheet(draftFromOrder(rec.order, comboSizes,
                               Object.fromEntries(Object.entries(draft).map(([c,v])=>[c,Number(v)||0]))))}
                             className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
                             Fill in the packing list
                           </button>
-                        : <PackingListEditor sheet={sheet} setSheet={setSheet}
-                            expectedPairs={Object.values(draft).reduce((a,v)=>a+(Number(v)||0),0)} />}
+                        : <PackingListEditor sheet={sheet} setSheet={editSheet}
+                            expectedPairs={enteredPairs()} />}
                     </div>
+
+                    {/* The gate pass and the order book must agree, and the
+                        server REFUSES a sheet whose pairs disagree with the
+                        dispatch. Saying so here — where the numbers are — beats
+                        a rejection after the clerk has pressed Record. */}
+                    {sheet && (()=>{
+                      const built=buildPackingList({...sheet,dispatch_pairs:enteredPairs()});
+                      return built.problems.length
+                        ? <div className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5 mt-2">
+                            <b>The packing list and the dispatch do not agree yet:</b>
+                            <ul className="list-disc pl-4 mt-0.5">{built.problems.map(p=><li key={p}>{p}</li>)}</ul>
+                          </div>
+                        : <div className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5 mt-2">
+                            Reconciled — <b className="mono">{fmt(built.total_pairs)}</b> pairs in
+                            {" "}<b className="mono">{fmt(built.total_cartons)}</b> carton{built.total_cartons===1?"":"s"},
+                            matching the quantities above.
+                          </div>;
+                    })()}
+                    <div className="serif text-sm font-semibold text-slate-800 mt-4 mb-1">
+                      3 · Confirm and record</div>
                     <div className="flex gap-2 items-end flex-wrap">
                       <label className="text-xs text-slate-600">Type
                         <select value={kind} onChange={e=>{
@@ -255,14 +320,30 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                         <input value={note} onChange={e=>setNote(e.target.value)}
                           placeholder={kind==="shortage"?"Reason for the shortage":"Vehicle, LR number, etc."}
                           className="block mt-0.5 w-full text-sm border border-slate-300 rounded-lg px-2 py-1" /></label>
-                      <button disabled={busy} onClick={()=>submit(rec,false)}
+                      <button type="button" onClick={()=>generate(rec)}
+                        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-700 bg-white">
+                        {preview?(stale?"Update the preview":"Preview again"):"Generate packing list"}</button>
+                      <button disabled={busy||!preview||stale||sheetProblems(rec).length>0} onClick={()=>submit(rec,false)}
+                        title={!preview?"Generate the packing list first"
+                          :stale?"Something changed — update the preview"
+                          :sheetProblems(rec).length?"The packing list and the dispatch do not agree":""}
                         className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
                         {busy?"Recording…":"Record dispatch"}</button>
-                      <button disabled={busy} onClick={()=>submit(rec,true)}
+                      <button disabled={busy||stale} onClick={()=>submit(rec,true)}
                         title="Dispatch what is entered above and close the order, accepting the rest as never coming"
                         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-300 text-rose-700 bg-white disabled:opacity-50">
                         Complete order despite shortage</button>
                     </div>
+                    {stale && <div className="text-[11px] font-semibold text-amber-800 mt-1">
+                      Something changed — update the preview before recording.</div>}
+                    {preview && !stale && <div className="mt-3 rounded-xl border border-slate-300 bg-white p-3">
+                      <div className="text-xs font-semibold text-slate-800 mb-2">
+                        Preview — this is the sheet that will be filed and printed</div>
+                      {preview.sheet
+                        ? <PackingList data={preview.sheet}/>
+                        : <div className="text-xs text-slate-500">
+                            No packing list filled in — the dispatch will be recorded without one.</div>}
+                    </div>}
                     {(() => {
                       const entered=Object.values(draft).reduce((a,b)=>a+(Number(b)||0),0);
                       const short=rec.total_pending-entered;
@@ -317,7 +398,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
             <th className="text-left">Type</th><th className="text-left">Sent</th>
             <th className="text-left">Note</th><th></th></tr></thead>
           <tbody>
-            {dispatches.map(d=>(
+            {dispatches.filter(d=>!d.hidden).map(d=>(
               <tr key={d.id} className="border-t border-slate-100">
                 <td className="py-1 mono">{d.dispatched_on}</td>
                 <td className="mono">{d.order_no}</td>

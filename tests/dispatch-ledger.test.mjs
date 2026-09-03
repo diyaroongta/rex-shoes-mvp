@@ -51,3 +51,59 @@ assert.equal(exact.JO2.status, "closed complete");
 console.log("  pass  closing an order short clears its pending balance");
 console.log("  pass  the shortfall is recorded rather than erased");
 console.log("  pass  a plain partial dispatch is unaffected\n");
+
+console.log("\nZ — packed cartons and dispatch events, per order");
+
+/* Pairs and cartons answer different questions — what left the order book,
+   and how many boxes went on the lorry — so they are tracked apart. */
+const packOrders = [{ order_no:"P1", article_code:"SPIKE", lines:[{combo:"6X8", qty:100}] }];
+const packed = buildLedger(packOrders, [
+  { id:1, order_no:"P1", dispatched:{"6X8":40}, cartons:{"6X8":2}, dispatched_on:"2026-01-05", packing_list:{} },
+  { id:2, order_no:"P1", dispatched:{"6X8":30}, cartons:{"6X8":1}, dispatched_on:"2026-02-09", packing_list:{} },
+], () => 20).P1;
+assert.equal(packed.total_dispatched, 70);
+assert.equal(packed.total_cartons, 3, "2 + 1 cartons");
+assert.equal(packed.dispatch_count, 2);
+assert.equal(packed.last_dispatched_on, "2026-02-09");
+assert.deepEqual(packed.events.map(e => e.pairs), [30, 40], "most recent event first");
+assert.equal(packed.rows[0].cartons, 3, "and per size range too");
+console.log("  pass  cartons accumulate across dispatches, alongside pairs");
+
+/* A dispatch recorded without a packing list has pairs but no carton count.
+   Reporting that as "0 cartons" would say the goods shipped in no boxes. */
+const uncounted = buildLedger(
+  [{ order_no:"P2", article_code:"SPIKE", lines:[{combo:"6X8", qty:50}] }],
+  [{ id:1, order_no:"P2", dispatched:{"6X8":50}, dispatched_on:"2026-03-01" }], () => 20).P2;
+assert.equal(uncounted.total_dispatched, 50);
+assert.equal(uncounted.total_cartons, null, "not 0 — nobody counted them");
+assert.equal(uncounted.events[0].cartons, null);
+assert.equal(uncounted.events[0].has_packing_list, false);
+console.log("  pass  never counted reads as null, never as zero");
+
+const untouched = buildLedger(
+  [{ order_no:"P3", article_code:"SPIKE", lines:[{combo:"6X8", qty:10}] }], [], () => 20).P3;
+assert.equal(untouched.dispatch_count, 0);
+assert.equal(untouched.total_cartons, null);
+assert.equal(untouched.last_dispatched_on, null);
+console.log("  pass  an order with no dispatches has no events and no carton count\n");
+
+/* A HIDDEN report is off the history list; the pairs still shipped. The server
+   has always counted hidden rows when checking what is outstanding, but the
+   browser was fed only the visible ones — so the screen offered 40 pairs to
+   dispatch when 10 remained, and the save was then refused with "only 10 pairs
+   remain outstanding". The ledger must be built from EVERY row. */
+const hiddenOrders = [{ order_no:"H1", article_code:"SPIKE", lines:[{combo:"6X8", qty:100}] }];
+const hiddenRows = [
+  { id:1, order_no:"H1", dispatched:{"6X8":60}, cartons:{"6X8":3}, dispatched_on:"2026-01-05", packing_list:{} },
+  { id:2, order_no:"H1", dispatched:{"6X8":30}, cartons:{"6X8":2}, dispatched_on:"2026-02-01", hidden:true, packing_list:{} },
+];
+const seesAll = buildLedger(hiddenOrders, hiddenRows, () => 20).H1;
+assert.equal(seesAll.total_dispatched, 90, "a hidden report did not un-ship its pairs");
+assert.equal(seesAll.total_pending, 10);
+assert.equal(seesAll.total_cartons, 5, "and its cartons are still packed");
+assert.equal(seesAll.dispatch_count, 2);
+
+const seesVisibleOnly = buildLedger(hiddenOrders, hiddenRows.filter(d => !d.hidden), () => 20).H1;
+assert.equal(seesVisibleOnly.total_pending, 40,
+  "this is the OLD behaviour, kept here to show what the screen must never do again");
+console.log("  pass  hidden reports still count as dispatched, packed and outstanding\n");

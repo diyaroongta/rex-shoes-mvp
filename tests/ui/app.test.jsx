@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks=vi.hoisted(()=>({
-  listOrders:vi.fn(),getSettings:vi.fn(),putSettings:vi.fn(),listPis:vi.fn(),listDispatches:vi.fn(),
+  listOrders:vi.fn(),getSettings:vi.fn(),putSettings:vi.fn(),listPis:vi.fn(),listDispatches:vi.fn(),listDispatchesWithHidden:vi.fn(),
   getReference:vi.fn(),getCatalogue:vi.fn(),listParties:vi.fn(),
   createOrders:vi.fn(),patchReference:vi.fn(),saveParty:vi.fn(),
   previewBomRemoval:vi.fn(),removeBom:vi.fn(),
@@ -18,7 +18,11 @@ const mocks=vi.hoisted(()=>({
 vi.mock("../../src/lib/client.js",()=>({
   ...mocks,
   setPriority:vi.fn(),setPlanOverride:mocks.setPlanOverride,deleteOrder:vi.fn(),deleteAllOrders:mocks.deleteAllOrders,patchOrder:mocks.patchOrder,
-  schedulePi:mocks.schedulePi,releasePiParts:mocks.releasePiParts,listDispatches:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
+  schedulePi:mocks.schedulePi,releasePiParts:mocks.releasePiParts,listDispatches:mocks.listDispatches,
+  /* The app fetches WITH hidden rows: hiding a report takes it off the
+     history list but must never un-ship its pairs, so the ledger is built
+     from every row. Both names resolve to one spy here. */
+  listDispatchesWithHidden:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
   readOrderPhoto:vi.fn(),readPi:mocks.readPi,askCopilot:vi.fn(),
 }));

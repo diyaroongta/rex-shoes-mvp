@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { labelFor } from "../shared/product-codes.js";
+import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
 import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
@@ -89,7 +90,7 @@ export default function App({ user=null, onSignOut=null }={}){
   })(); },[]);
 
   useEffect(()=>{ (async()=>{
-    try{ setDispatches(await api.listDispatches()); setDispatchErr(""); }
+    try{ setDispatches(await api.listDispatchesWithHidden()); setDispatchErr(""); }
     catch(e){ setDispatchErr(e.message||String(e)); }
     finally{ setDispatchLoading(false); }
   })(); },[]);
@@ -99,7 +100,7 @@ export default function App({ user=null, onSignOut=null }={}){
   // appears without requiring a full browser reload.
   useEffect(()=>{
     const timer=setInterval(()=>{
-      Promise.all([api.listOrders(), api.listDispatches()])
+      Promise.all([api.listOrders(), api.listDispatchesWithHidden()])
         .then(([o,d])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
                          setSyncedAt(new Date()); setSyncFailed(false); })
         .catch(()=>setSyncFailed(true));   // shown in the header, not as a banner every minute
@@ -110,7 +111,7 @@ export default function App({ user=null, onSignOut=null }={}){
   // The server is the source of truth. Mutate, then re-read the list.
   const refresh = async ()=>{ try{ setOrders(await api.listOrders()); }catch(e){ setLoadErr(e.message||String(e)); } };
   const refreshDispatches = async ()=>{
-    try{ setDispatchLoading(true); setDispatches(await api.listDispatches()); setDispatchErr(""); }
+    try{ setDispatchLoading(true); setDispatches(await api.listDispatchesWithHidden()); setDispatchErr(""); }
     catch(e){ setDispatchErr(e.message||String(e)); }
     finally{ setDispatchLoading(false); }
   };
@@ -2165,23 +2166,50 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
   const [confirmDel,setConfirmDel]=useState(null);
   const [editing,setEditing]=useState(null);
   const [showDone,setShowDone]=useState(false);
+  const [customer,setCustomer]=useState("");     // a partyKey, or "" for all
+  const [showHistory,setShowHistory]=useState(false);
+
+  /* The customer list is built from EVERY order, completed ones included, so
+     picking a customer does not depend on which view happens to be showing.
+     History likewise: "what have we given them before" is a question about
+     finished work as much as live work. */
+  const customers=useMemo(()=>customerSummaries(state.orders),[state.orders]);
+  const history=useMemo(()=>customer
+    ? historyFor(state.orders,(customers.find(c=>c.key===customer)||{}).party||"")
+    : null,[state.orders,customer,customers]);
+  const mine=o=>!customer||customerKey(o.party)===customer;
   /* Fully shipped, or closed short: finished work. This screen is "every LIVE
      order", and leaving completed ones in it buries the orders that still need
      attention. They are not deleted — the toggle brings them back. */
   const isDone=o=>{ const rec=ledger[o.order_no];
     return !!rec && rec.total_dispatched>0 && rec.total_pending<=0; };
-  const done=state.orders.filter(isDone);
-  const visible=showDone?done:state.orders.filter(o=>!isDone(o));
+  const done=state.orders.filter(o=>isDone(o)&&mine(o));
+  const visible=showDone?done:state.orders.filter(o=>!isDone(o)&&mine(o));
   if(!state.orders.length) return <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm text-center text-slate-500 text-sm">No orders yet — add one from the <b>➕ New order</b> tab. Each photo you read lands here and drives the whole plan.</div>;
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
     <div className="flex items-center gap-2 mb-2 flex-wrap">
       <div className="text-sm font-semibold text-slate-700">
         {showDone?`Completed · ${done.length}`:`Live orders · ${visible.length}`}</div>
+      <label className="text-xs text-slate-600 flex items-center gap-1.5">
+        Customer
+        <select value={customer} aria-label="Filter by customer"
+          onChange={e=>{setCustomer(e.target.value);onSelect(null);setEditing(null);setConfirmDel(null);}}
+          className="border border-slate-300 rounded-lg px-2 py-1 bg-white text-xs max-w-64">
+          <option value="">All customers ({customers.length})</option>
+          {customers.map(c=><option key={c.key} value={c.key}>{c.party} · {fmt(c.pairs)} pairs</option>)}
+        </select>
+      </label>
+      {!!customer && <button onClick={()=>setShowHistory(h=>!h)}
+        className="text-xs font-semibold text-indigo-700 hover:underline">
+        {showHistory?"Hide product history":"Product history"}</button>}
+      {!!customer && <button onClick={()=>{setCustomer("");setShowHistory(false);}}
+        className="text-xs font-semibold text-slate-500 hover:underline">Clear filter</button>}
       {!!done.length && <label className="ml-auto text-xs text-slate-600 flex items-center gap-1.5">
         <input type="checkbox" checked={showDone} onChange={e=>{setShowDone(e.target.checked);onSelect(null);}} />
         Show completed ({done.length})
       </label>}
     </div>
+    {showHistory && history && <CustomerHistory history={history}/>}
     {!visible.length && <div className="text-sm text-slate-500 py-6 text-center">
       {showDone?"Nothing completed yet.":"Every order has been dispatched — tick Show completed to see them."}</div>}
     <table className="w-full text-sm" style={{borderCollapse:"collapse",minWidth:760}}>
@@ -2310,6 +2338,46 @@ async function pdfPagesToJpeg(file, maxDim=2000, quality=0.82){
   }
   if(!pages.length) throw new Error("That PDF has no pages.");
   return pages;
+}
+
+/* What this customer has already been given.
+   Grouped SHOE first and variants under it, because the question is asked one
+   level up ("have they had Jack?") before it is asked one level down ("which
+   Jack?"). Completed orders are included — a history of only live work would
+   answer the opposite of what was asked. */
+function CustomerHistory({history}){
+  if(!history.families.length) return <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
+    Nothing on the book for <b>{history.party}</b> yet.</div>;
+  return <div className="mb-3 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
+    <div className="text-sm font-semibold text-slate-800">{history.party} — product history</div>
+    <div className="text-[11px] text-slate-600 mb-2">
+      {fmt(history.pairs)} pairs across {history.orders} order{history.orders===1?"":"s"}, live and completed.
+    </div>
+    <div className="grid gap-2 sm:grid-cols-2">
+      {history.families.map(f=>(
+        <div key={f.family} className="rounded-lg border border-slate-200 bg-white p-2.5">
+          <div className="text-xs font-semibold text-slate-800">{f.family}
+            <span className="font-normal text-slate-500"> · {fmt(f.pairs)} pairs · {f.orders} order{f.orders===1?"":"s"}</span></div>
+          <table className="w-full text-[11px] mt-1">
+            <tbody>{f.variants.map(v=>(
+              <tr key={v.article+v.note} className="border-t border-slate-100 align-top">
+                <td className="py-1 pr-2">
+                  <div className="text-slate-700">{v.article}</div>
+                  {v.note
+                    ? <div className="text-slate-500">{v.note}</div>
+                    : <div className="text-slate-300">no closure or colour recorded</div>}
+                  <div className="text-slate-400 mono">{v.orders.map(o=>o.order_no).join(", ")}</div>
+                </td>
+                <td className="py-1 text-right mono font-semibold whitespace-nowrap">{fmt(v.pairs)}
+                  <div className="font-normal text-slate-400">
+                    {v.first_date===v.last_date?niceDate(v.last_date):`${niceDate(v.first_date)} → ${niceDate(v.last_date)}`}</div>
+                </td>
+              </tr>))}
+            </tbody>
+          </table>
+        </div>))}
+    </div>
+  </div>;
 }
 
 /* Resize before upload. A phone photo is several MB as base64 — past the
