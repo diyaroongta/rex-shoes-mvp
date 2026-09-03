@@ -146,21 +146,21 @@ test("no file under api/ is missing from the policy", () => {
 console.log("\nG — screens follow the same rules");
 
 test("a viewer is not offered screens whose every button would be refused", () => {
-  for(const tab of ["data","rules","catalogue","parties","intake","jobs","jobcards","copilot"])
+  for(const tab of ["data","rules","catalogue","parties","intake","jobs","copilot"])
     assert.equal(canSeeTab("viewer", tab), true, "a viewer SEES everything — it just cannot change it");
   for(const tab of ["mis","orders","schedule","procurement","stock","jobwork"])
     assert.equal(canSeeTab("viewer", tab), true, `viewer should see ${tab}`);
 });
 
 test("a planner gets the production screens but not the setup ones", () => {
-  for(const tab of ["intake","jobs","jobcards","jobwork","orders","schedule","plan","machines","stock","copilot"])
+  for(const tab of ["intake","jobs","jobwork","orders","schedule","plan","machines","stock","copilot"])
     assert.equal(canSeeTab("planner", tab), true, `planner should see ${tab}`);
   for(const tab of ["data","rules","catalogue","parties","fabricators"])
     assert.equal(canSeeTab("planner", tab), false, `planner should not see ${tab}`);
 });
 
 test("an admin sees everything", () => {
-  for(const tab of ["mis","intake","jobs","jobcards","orders","dispatch","schedule","plan","machines",
+  for(const tab of ["mis","intake","jobs","orders","dispatch","schedule","plan","machines",
                     "procurement","stock","jobwork","parties","fabricators","catalogue","rules","data","copilot"])
     assert.equal(canSeeTab("admin", tab), true);
 });
@@ -209,6 +209,18 @@ test("a store keeper updates stock but cannot touch the BOM", () => {
   assert.equal(allow("store","PATCH","/api/reference",{stock:{"X":1}}), true);
   assert.equal(allow("store","PATCH","/api/reference",{bom_removal:{articles:["X"]}}), false);
   assert.equal(allow("store","POST","/api/orders"), false);
+});
+
+/* Product codes are master data: they go on job cards and PIs, so assigning
+   them belongs with the BOM, not with the daily stock count. Nothing was added
+   to the policy for this — the allowlist refuses an unrecognised key on its
+   own — and that is exactly what is being asserted. */
+test("assigning product codes is master data, not a stock update", () => {
+  assert.equal(allow("admin","PATCH","/api/reference",{assign_product_codes:true}), true);
+  assert.equal(allow("data","PATCH","/api/reference",{assign_product_codes:true}), true);
+  for(const role of ["planner","store","procurement","dispatch","viewer","owner"])
+    assert.equal(allow(role,"PATCH","/api/reference",{assign_product_codes:true}), false,
+      `${role} must not renumber the article master`);
 });
 
 test("a data manager owns the BOM but raises no orders", () => {

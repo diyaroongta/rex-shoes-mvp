@@ -5,6 +5,7 @@ import { packingArticleSourceFor, pairsPerCarton } from "../shared/bridge.js";
 import { parseReferenceWorkbook, COLUMN_LABELS, COLUMN_HELP, SHEET_COLUMNS,
   IGNORE_COLUMN, NOTE_COLUMN } from "../shared/reference-import.js";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
+import { families } from "../shared/product-codes.js";
 import * as api from "./lib/client.js";
 
 const MAX_WORKBOOK_BYTES=10*1024*1024,MAX_SHEETS=20,MAX_ROWS=25000;
@@ -445,7 +446,78 @@ export default function DataTab({ onChanged }){
       </div>
     </div>}
 
+    <ProductCodes onChanged={onChanged} />
     <ReferenceHistory onChanged={onChanged} />
+  </div>;
+}
+
+/* Product codes. Eighteen Jack articles are eighteen variants of one product,
+   and the factory wants to say "JACK07" rather than read out a colour and a
+   closure. The codes are ASSIGNED, not derived on the fly: once JACK07 is on a
+   job card it has to keep meaning the same article, so running this again only
+   fills in the articles that have none. */
+function ProductCodes({ onChanged }){
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [err,setErr]=useState("");
+  const [open,setOpen]=useState(false);
+
+  const articles=Object.keys(INPUTS.articles||{});
+  const codes={};
+  for(const a of articles) if(INPUTS.articles[a].product_code) codes[a]=INPUTS.articles[a].product_code;
+  const uncoded=articles.filter(a=>!codes[a]);
+  const grouped=families(articles,codes);
+  const familyNames=Object.keys(grouped).sort();
+
+  async function assign(){
+    setBusy(true); setErr(""); setMsg("");
+    try{
+      const r=await api.assignProductCodes();
+      await reloadReference();
+      setMsg(r.newly_coded
+        ? `${r.newly_coded} article${r.newly_coded===1?"":"s"} coded. Articles already carrying a code kept it.`
+        : "Every article already has a code — nothing was changed.");
+      if(r.conflicts&&r.conflicts.length) setErr(r.conflicts.join("\n"));
+      setOpen(true);
+      onChanged&&onChanged();
+    }catch(e){ setErr(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  if(!articles.length) return null;
+
+  return <div className="border-t border-slate-200 pt-4 mt-5">
+    <div className="text-sm font-semibold text-slate-700 mb-1">Product codes</div>
+    <p className="text-xs text-slate-500 mb-3">
+      One code family per product, numbered per variant — the eighteen Jacks read
+      JACK01 to JACK18. A code is given once and then kept, so a code already printed
+      on a job card or a PI never moves to a different article.
+    </p>
+    {err && <div className="text-xs whitespace-pre-line rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-2">{err}</div>}
+    {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-2">{msg}</div>}
+    <div className="flex items-center gap-3 flex-wrap mb-3">
+      <button disabled={busy||!uncoded.length} onClick={assign}
+        className="text-xs font-semibold px-3 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
+        {busy?"Assigning…":uncoded.length?`Assign codes to ${uncoded.length} article${uncoded.length===1?"":"s"}`:"All articles are coded"}</button>
+      <button onClick={()=>setOpen(o=>!o)} className="text-xs font-semibold text-indigo-700 hover:underline">
+        {open?"Hide":`Show ${familyNames.length} famil${familyNames.length===1?"y":"ies"}`}</button>
+    </div>
+    {open && <div className="grid gap-2 sm:grid-cols-2">
+      {familyNames.map(f=>(
+        <div key={f} className="rounded-lg border border-slate-200 bg-white p-2.5">
+          <div className="text-xs font-semibold text-slate-800">{f}
+            <span className="text-slate-400 font-normal"> · {grouped[f].length}</span></div>
+          <table className="w-full text-[11px] mt-1">
+            <tbody>{grouped[f].map(({article,code})=>(
+              <tr key={article} className="border-t border-slate-100">
+                <td className="py-0.5 pr-2 font-mono font-semibold text-indigo-700 whitespace-nowrap">
+                  {code||<span className="text-slate-300 font-sans font-normal">not coded</span>}</td>
+                <td className="py-0.5 text-slate-600">{article}</td>
+              </tr>))}
+            </tbody>
+          </table>
+        </div>))}
+    </div>}
   </div>;
 }
 

@@ -149,6 +149,10 @@ export const previewBomRemoval = selection =>
 export const removeBom = (selection, confirmInUse=false) =>
   patchReference({ bom_removal:{ ...selection, confirm_in_use:confirmInUse } });
 
+/* Give every article a family code (JACK01, JACK02 …). Only fills gaps — a
+   code already printed on a job card or PI never moves. */
+export const assignProductCodes = () => patchReference({ assign_product_codes:true });
+
 /* ---- product catalogue ---- */
 export const getCatalogue   = ()        => j("/api/catalogue");
 export const putCatalogue   = entry     => j("/api/catalogue", {

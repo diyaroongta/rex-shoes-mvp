@@ -170,7 +170,7 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("button",{name:"Dispatch & packing"})).toBeNull();
   });
 
-  it("places Job Orders immediately after the Order Book", async ()=>{
+  it("places the two job-order screens immediately after the Order Book", async ()=>{
     const user = userEvent.setup();
     mocks.listPis.mockResolvedValue([{ pi_no:"PI77", pi_date:"2026-08-01", party:"Buyer",
       status:"produced", revision:0, snapshot:{ orders:[{ order_no:"S1", article_code:"SPIKE",
@@ -179,7 +179,10 @@ describe("critical UI contracts",()=>{
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
 
     const navLabels=screen.getAllByRole("button").map(button=>button.textContent.trim());
-    expect(navLabels.indexOf("Job Orders")).toBe(navLabels.indexOf("Order Book")+1);
+    expect(navLabels.indexOf("Create Job Order")).toBe(navLabels.indexOf("Order Book")+1);
+    expect(navLabels.indexOf("Job Orders Database")).toBe(navLabels.indexOf("Create Job Order")+1);
+    expect(screen.queryByRole("button",{name:"Job Cards"})).toBeNull();
+    expect(screen.queryByRole("button",{name:"Job work"})).toBeNull();
 
     // The commercial record reports what is owed but no longer releases it.
     await user.click(screen.getByRole("button",{name:"PI database"}));
@@ -382,15 +385,41 @@ describe("critical UI contracts",()=>{
   const liveJobOrder=()=>({order_no:"JO77",order_date:"2026-08-22",article_code:"SPIKE",priority:2,party:"Buyer",
     lines:[{combo:"7X10S",qty:100,label:"7X10S",sizes:{"7s":40,"8s":60}}],pi:{pi_no:"PI77"},plan_override:{},version:1});
 
-  it("takes every live Order Book row into Job Orders and opens its Job Card",async()=>{
+  /* The client's Job Work Module note sets the order: "Select fabricator (Line
+     or External) from the dropdown. Select article/style and enter quantity to
+     issue." The screen asked for the order first, which is the app's own way
+     round rather than the factory's — you decide who is free before you decide
+     what to give them. */
+  it("asks who is doing the work before what the work is",async()=>{
+    const user=userEvent.setup();
+    render(<App user={{username:"a",role:"admin"}} />);
+    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+
+    const article=await screen.findByLabelText("Current Order");
+    expect(article).toBeDisabled();
+    expect(article).toHaveTextContent(/choose a fabricator first/);
+
+    await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
+    expect(screen.getByLabelText("Current Order")).toBeEnabled();
+  });
+
+  it("offers exactly the two starting options, each labelled with its type",async()=>{
+    const user=userEvent.setup();
+    render(<App user={{username:"a",role:"admin"}} />);
+    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    const options=[...(await screen.findByLabelText("Send to")).options].map(o=>o.text);
+    expect(options).toContain("Rex Internal (Internal)");
+    expect(options).toContain("New Durga Line (External)");
+  });
+
+  it("takes every live Order Book row into Create Job Order",async()=>{
     mocks.listOrders.mockResolvedValue([liveJobOrder()]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job Orders"}));
-    expect(await screen.findByLabelText("100 unassigned of 100")).toBeInTheDocument();
-    await user.click(screen.getByRole("button",{name:"Create job card for JO77"}));
-    expect(await screen.findByRole("heading",{name:"Job Cards"})).toBeInTheDocument();
-    expect(screen.getByLabelText("Job Order")).toHaveValue("JO77");
+    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
+    await user.selectOptions(await screen.findByLabelText("Current Order"),"JO77");
+    expect(screen.getByLabelText("Current Order")).toHaveValue("JO77");
     expect(screen.getByLabelText("Job card date").value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(screen.getByLabelText("7X10S size 7s pairs")).toHaveValue(40);
   });
@@ -402,9 +431,9 @@ describe("critical UI contracts",()=>{
     ]}}]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job Orders"}));
-    expect(await screen.findByLabelText("60 unassigned of 100")).toBeInTheDocument();
-    await user.click(screen.getByRole("button",{name:"Create job card for JO77"}));
+    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
+    await user.selectOptions(await screen.findByLabelText("Current Order"),"JO77");
     expect(await screen.findByLabelText("7X10S size 7s pairs")).toHaveValue(20);
     expect(screen.getByLabelText("7X10S size 8s pairs")).toHaveValue(40);
   });
@@ -413,19 +442,28 @@ describe("critical UI contracts",()=>{
     mocks.listOrders.mockResolvedValue([liveJobOrder()]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job Cards"}));
-    await user.selectOptions(await screen.findByLabelText("Job Order"),"JO77");
+    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
+    await user.selectOptions(await screen.findByLabelText("Current Order"),"JO77");
     await user.selectOptions(screen.getByLabelText("Send to"),"Rex Internal");
     const size7=screen.getByLabelText("7X10S size 7s pairs");
     await user.clear(size7); await user.type(size7,"20");
-    await user.click(screen.getByRole("button",{name:"Generate the job card"}));
+    await user.click(screen.getByRole("button",{name:"Preview Job Order"}));
     expect(screen.getAllByText("RECEIVED UPPER").length).toBeGreaterThan(0);
-    await user.click(screen.getByRole("button",{name:"Issue this job card"}));
+    await user.click(screen.getByRole("button",{name:"Confirm & Create Job Order"}));
     await waitFor(()=>expect(mocks.issueJobWork).toHaveBeenCalled());
     expect(mocks.issueJobWork.mock.calls[0][0]).toEqual(expect.objectContaining({
       order_no:"JO77",fabricator:"Rex Internal",qty:80,
       card:expect.objectContaining({article:"SPIKE",lines:[expect.objectContaining({combo:"7X10S",qty:80})]}),
     }));
+  });
+
+  it("uses Job Orders Database as the single issued-order register",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"Job Orders Database"}));
+    expect(await screen.findByRole("heading",{name:"Job Orders Database"})).toBeInTheDocument();
+    expect(screen.getByText("Issued Job Orders")).toBeInTheDocument();
   });
 
   /* The schedule is computed from the capacities saved in settings. The

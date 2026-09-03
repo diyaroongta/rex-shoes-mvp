@@ -5,7 +5,7 @@ import { selectableFor, optionLabel } from "../shared/fabricators.js";
 import { validateIssue, summarise, withFabricators, slipFor,
          SAMPLE_STATUS, SAMPLE_LABEL } from "../shared/job-work.js";
 
-/* Job work — assigning stitching to a line or an outside fabricator.
+/* Issued-job-order database — work assigned to an internal line or outside fabricator.
  *
  * ONE dropdown for "who is doing this", whether the answer is Line 2 or a
  * fabricator in the next town. That is the whole point of the client's design:
@@ -36,7 +36,11 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
       setFabricators(f); setJobs(j); setErr("");
     }catch(e){ setErr(e.message||String(e)); setFabricators([]); }
   }
-  useEffect(()=>{ reload(); },[refreshKey]);
+  useEffect(()=>{
+    reload();
+    const timer=setInterval(reload,60000);
+    return()=>clearInterval(timer);
+  },[refreshKey]);
 
   const articles = Object.keys(INPUTS.articles||{});
   const chosen = (fabricators||[]).find(f => f.name === form.fabricator) || null;
@@ -98,7 +102,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     w.document.close();
   }
 
-  if(fabricators === null) return <div className="p-5 text-sm text-slate-500">Loading job work…</div>;
+  if(fabricators === null) return <div className="p-5 text-sm text-slate-500">Loading issued job orders…</div>;
 
   if(!everyone.length) return <div className="p-5">
     <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
@@ -109,6 +113,11 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   return <div className={embedded ? "px-4 md:px-5 pb-4" : "p-4 md:p-5"}>
     {msg && <div role="status" className="mb-3 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
     {err && <div role="alert" className="mb-3 text-xs rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2">{err}</div>}
+
+    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm mb-3">
+      <div className="text-sm font-semibold text-slate-800">Issued Job Orders</div>
+      <div className="text-xs text-slate-600 mt-1">Live database of created job orders. Receive work here and record any final shortage or external payment.</div>
+    </div>
 
     {/* What is physically out, per the note's "with fabricator/line" bucket. */}
     {!!bucket.length && <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm mb-3">

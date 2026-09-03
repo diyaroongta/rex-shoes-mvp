@@ -10,9 +10,9 @@ import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const today = () => new Date().toISOString().slice(0,10);
 
-/* Editable source-format Job Card. The Order Book supplies the article and
-   ceiling; the operator supplies who receives it, the date and the exact
-   size-wise cutting quantities. */
+/* Job Order creation. The Order Book supplies the article and ceiling; the
+   operator supplies who receives it, the date and the exact size-wise cutting
+   quantities. The Job Card is its printable document, not another workflow. */
 export default function JobCardTab({ orders=[], initialOrderNo="", embedded=false, onIssued=null }){
   const [fabricators,setFabricators]=useState(null);
   const [jobs,setJobs]=useState(null);
@@ -27,12 +27,17 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
 
-  useEffect(()=>{ (async()=>{
+  async function reload(){
     try{
       const [f,j]=await Promise.all([api.listFabricators(),api.listJobWork()]);
       setFabricators(f); setJobs(j);
     }catch(e){ setErr(e.message||String(e)); setFabricators([]); setJobs([]); }
-  })(); },[]);
+  }
+  useEffect(()=>{
+    reload();
+    const timer=setInterval(reload,60000);
+    return()=>clearInterval(timer);
+  },[]);
 
   const queue=useMemo(()=>jobOrderQueue(orders,jobs||[]),[orders,jobs]);
   const openOrders=queue.filter(row=>row.remaining>0);
@@ -93,7 +98,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         note:`Job card for ${order.order_no}`,card:snapshot});
       setCard(c=>({...c,card_no:String(made.id)}));
       setJobs(current=>[made,...(current||[])]);
-      setMsg(`Job card ${made.id} issued to ${made.fabricator} for ${fmt(made.qty)} pairs.`);
+      setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs.`);
       if(onIssued)await onIssued(made);
     }catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
@@ -109,21 +114,22 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     w.document.close();
   }
 
-  if(fabricators===null||jobs===null)return <div className="p-5 text-sm text-slate-500">Loading Job Cards…</div>;
+  if(fabricators===null||jobs===null)return <div className="p-5 text-sm text-slate-500">Loading current Order Book balances…</div>;
 
   return <div className={embedded?"p-4 md:p-5 pb-3":"p-4 md:p-5"}>
     {msg&&<div role="status" className="mb-3 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
     {err&&<div role="alert" className="mb-3 text-xs rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2">{err}</div>}
 
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
-      <div className="serif text-base font-semibold mb-2">1 · Job details</div>
+      {/* THE ORDER THE CLIENT'S NOTE DESCRIBES, and in their words:
+            1. Select fabricator (Line or External) from the dropdown.
+            2. Select article/style and enter quantity to issue.
+            3. System generates an issue slip.
+          The screen asked for the order first, which is the app's own way round
+          rather than the factory's — you decide who is free before you decide
+          what to give them. */}
+      <div className="serif text-base font-semibold mb-2">1 · Select fabricator</div>
       <div className="flex gap-3 flex-wrap items-end">
-        <label className="text-xs text-slate-600">Job Order
-          <select value={orderNo} aria-label="Job Order" onChange={e=>chooseOrder(e.target.value)} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-60">
-            <option value="">— choose from Order Book —</option>
-            {openOrders.map(row=><option key={row.order.order_no} value={row.order.order_no}>{row.order.order_no} · {row.order.article_code} · {fmt(row.remaining)} left</option>)}
-          </select>
-        </label>
         <label className="text-xs text-slate-600">Internal or external
           <select value={fabricator} aria-label="Send to" onChange={e=>{setFabricator(e.target.value);touched();}} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56">
             <option value="">— choose —</option>
@@ -134,13 +140,25 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
           <input type="date" value={date} aria-label="Job card date" onChange={e=>{setDate(e.target.value);touched();}} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/>
         </label>
       </div>
-      {order&&<div className="mt-2 text-xs text-slate-600">Article <b>{order.article_code}</b> · Party <b>{order.party||"—"}</b> · <b>{fmt(balance.remaining)}</b> pairs still available for cards.</div>}
-      {who&&<div className="text-[11px] text-slate-600 mt-1">This raises a <b>{slipFor(who)}</b>. {who.payable?(who.rate>0?<>Payable at ₹{who.rate} per piece.</>:<>External rate/contact are still marked incomplete in Setup.</>):<>Internal work — nothing payable.</>}</div>}
+      {who&&<div className="text-[11px] text-slate-600 mt-2">This raises a <b>{slipFor(who)}</b>. {who.payable?(who.rate>0?<>Payable at ₹{who.rate} per piece.</>:<>External rate/contact are still marked incomplete in Setup.</>):<>Internal work — nothing payable.</>}</div>}
+    </div>
+
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
+      <div className="serif text-base font-semibold mb-2">2 · Select article and quantity to issue</div>
+      <div className="flex gap-3 flex-wrap items-end">
+        <label className="text-xs text-slate-600">Article / style
+          <select value={orderNo} aria-label="Current Order" onChange={e=>chooseOrder(e.target.value)} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-60" disabled={!who}>
+            <option value="">{who?"— choose from Order Book —":"choose a fabricator first"}</option>
+            {openOrders.map(row=><option key={row.order.order_no} value={row.order.order_no}>{row.order.order_no} · {row.order.article_code} · {fmt(row.remaining)} left</option>)}
+          </select>
+        </label>
+      </div>
+      {order&&<div className="mt-2 text-xs text-slate-600">Article <b>{order.article_code}</b> · Party <b>{order.party||"—"}</b> · <b>{fmt(balance.remaining)}</b> pairs still available for job orders.</div>}
     </div>
 
     {order&&<div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
-      <div className="serif text-base font-semibold mb-1">2 · Enter cutting quantities by size</div>
-      <p className="text-xs text-slate-500 mb-3">These are the fields printed in the ARMOUR job-card size grid. The card total is calculated from your size entries.</p>
+      <div className="serif text-base font-semibold mb-1">3 · Enter the quantity size by size</div>
+      <p className="text-xs text-slate-500 mb-3">Enter this job order size by size. Its printable document uses the supplied ARMOUR Job Card format.</p>
       <div className="overflow-x-auto"><table className="w-full text-xs"><thead className="text-slate-500"><tr><th className="text-left py-1">Range</th><th className="text-right">Available</th><th className="text-left pl-4">This job card — pairs by size</th><th className="text-right">Total</th></tr></thead>
         <tbody>{balance.lines.map(line=>{
           const names=comboSizesForArticle(order.article_code,line.combo)||[];
@@ -153,9 +171,9 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       </table></div>
       {!!over.length&&<div className="mt-2 text-xs font-semibold text-rose-700">More than the unassigned balance was entered for {over.map(line=>line.combo).join(", ")}.</div>}
       {!article&&<div className="mt-2 text-[11px] rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5"><b>{order.article_code} has no BOM loaded</b>, so material rows will be blank until its BOM is loaded.</div>}
-      <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Regenerate with these edits":"Generate again"):"Generate the job card"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — regenerate before issuing.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
+      <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 
-    {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">3 · Confirm and issue</div><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Issued as ${card.card_no}`:busy?"Issuing…":"Issue this job card"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><JobCard card={card} article={article}/></div>}
+    {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><JobCard card={card} article={article}/></div>}
   </div>;
 }

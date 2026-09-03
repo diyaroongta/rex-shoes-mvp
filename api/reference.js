@@ -5,6 +5,7 @@ import { articleCode, existingArticleCode, mergeBom } from "../shared/bom-import
 import { SOLE_TYPES, routingForSole } from "../shared/reference-edit.js";
 import { resolveArticleSizeIn, splitScopedSizeKey, scopedSizeKey } from "../shared/bridge.js";
 import { planRemoval, applyRemoval, ordersAtRisk } from "../shared/bom-removal.js";
+import { assignCodes } from "../shared/product-codes.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -370,6 +371,25 @@ export default wrap(async (req, res) => {
        The preview and the deletion are computed by the SAME pure function, so
        what the clerk confirms is what happens — a preview produced by
        different code from the delete is a preview that can be wrong. */
+    /* Product codes: one prefix per family, a number per variant, assigned
+       ONCE and then kept. Only gaps are filled — a code already on a job card
+       or a PI must never move, so this can be run again safely as articles are
+       added. */
+    if(body.assign_product_codes){
+      let result=null;
+      await mutateReference("product-codes",null,async ref=>{
+        const names=Object.keys(ref.articles||{});
+        const existing={};
+        for(const n of names) if(ref.articles[n].product_code) existing[n]=ref.articles[n].product_code;
+        result=assignCodes(names, existing);
+        for(const [name,code] of Object.entries(result.codes)) ref.articles[name].product_code=code;
+        return result;
+      });
+      return res.status(200).json({ ok:true, codes:result.codes,
+        assigned:result.assigned, conflicts:result.conflicts,
+        newly_coded:Object.keys(result.assigned).length });
+    }
+
     if(body.bom_removal && typeof body.bom_removal === "object"){
       const sel=body.bom_removal;
       const dryRun=!!sel.dry_run;

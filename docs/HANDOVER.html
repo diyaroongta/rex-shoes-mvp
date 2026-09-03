@@ -1,0 +1,154 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Factory OS — Handover</title><style>
+body{font-family:Georgia,"Times New Roman",serif;max-width:760px;margin:0 auto;padding:36px 28px;color:#16202B;line-height:1.6;font-size:15px}
+h1{font-family:Helvetica,Arial,sans-serif;font-size:27px;border-bottom:2px solid #16202B;padding-bottom:10px;margin-bottom:6px}
+h2{font-family:Helvetica,Arial,sans-serif;font-size:19px;margin-top:34px;border-bottom:1px solid #C9D0D7;padding-bottom:6px}
+h3{font-family:Helvetica,Arial,sans-serif;font-size:15px;margin-top:22px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;page-break-inside:avoid}
+th,td{border:1px solid #C9D0D7;padding:7px 10px;text-align:left;vertical-align:top}
+th{background:#EEF1F4;font-family:Helvetica,Arial,sans-serif;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+pre{background:#16202B;color:#EEF1F4;padding:11px 14px;font-family:Menlo,monospace;font-size:12.5px;overflow-x:auto;border-radius:3px}
+code{background:#EEF1F4;padding:1px 4px;font-family:Menlo,monospace;font-size:.88em;border-radius:2px}
+pre code{background:none;padding:0;color:inherit}
+hr{border:none;border-top:1px solid #C9D0D7;margin:26px 0}
+ul{margin:8px 0;padding-left:22px} li{margin:4px 0}
+em{color:#4A5561}
+@page{size:A4;margin:16mm}
+</style></head><body><h1>Factory OS — Build Log &amp; Handover</h1>
+<p><strong>2 September 2026</strong> · 45 files · ~4,555 lines · 180 tests passing · core coverage 93.7%</p>
+<hr>
+<h2>1. Do these first — nothing works in production until they are done</h2>
+<p>Run all four from the project folder.</p>
+<p><strong>1. Push.</strong> The 12-function fix is committed but not pushed; Vercel keeps rebuilding</p>
+<p>the version with 13 serverless functions and failing.</p>
+<pre>git push</pre>
+<p><strong>2. Set <code>AUTH_SECRET</code></strong> in Vercel → Settings → Environment Variables, then <strong>redeploy</strong>.</p>
+<p>Without it every endpoint answers 503 — it fails closed by design.</p>
+<pre>npm run auth:secret</pre>
+<p><strong>3. Apply the schema to Neon.</strong> Adds the <code>users</code>, <code>fabricators</code> and <code>job_work</code> tables,</p>
+<p>the <code>packing_list</code> and <code>hidden</code> columns, and drops the old role constraint.</p>
+<p>Safe to re-run.</p>
+<pre>npm run db:setup</pre>
+<p><strong>4. Create the accounts.</strong> The password is typed at a hidden prompt and verified by</p>
+<p>reading it back, so "created" means "can sign in".</p>
+<pre>npm run user:create -- abhay --role admin</pre>
+<hr>
+<h2>2. Job orders and job work — how they fit together</h2>
+<p>They are <strong>two halves of one flow</strong>, exactly as the Job Work Module note describes,</p>
+<p>which is why they are two screens and not two systems.</p>
+<table><thead><tr><th>Note's step</th><th>Where it happens</th></tr></thead><tbody><tr><td>1. Select fabricator (Line or External)</td><td><strong>Create Job Order</strong></td></tr><tr><td>2. Select article/style and quantity to issue</td><td><strong>Create Job Order</strong></td></tr><tr><td>3. System generates the issue slip</td><td><strong>Create Job Order</strong> — prints the Job Card</td></tr><tr><td>4. When work comes back, enter received quantity</td><td><strong>Job Orders Database</strong></td></tr><tr><td>5. If payable, amount = rate × quantity</td><td><strong>Job Orders Database</strong></td></tr></tbody></table>
+<p>Creating a job order <strong>is</strong> issuing job work — it writes one <code>job_work</code> record.</p>
+<p>The Job Card is that record's printable document, not a separate workflow.</p>
+<p><strong>Order corrected:</strong> the screen used to ask for the production order first and the</p>
+<p>fabricator second. The note puts the fabricator first, so it now does too — the</p>
+<p>article picker stays inert until somebody has been chosen. You decide who is free</p>
+<p>before you decide what to give them.</p>
+<hr>
+<h2>3. Fabricator options</h2>
+<p>Two starting options, each labelled with its type in brackets:</p>
+<ul><li><strong>Rex Internal (Internal)</strong> — no rate, nothing payable</li></ul>
+<ul><li><strong>New Durga Line (External)</strong> — payable; rate, contact and turnaround still to be entered</li></ul>
+<p>They appear in the "Internal or external" dropdown on Create Job Order, and are</p>
+<p>managed under <strong>Setup → Fabricators &amp; lines</strong>, where you can add more.</p>
+<hr>
+<h2>4. Access &amp; accounts</h2>
+<p>The portal previously had none — anyone with the URL could read and edit every order.</p>
+<p><strong>Sign-in:</strong> scrypt password hashing and HMAC-signed session cookies, both from</p>
+<p><code>node:crypto</code>, so no new dependency. A 12-hour HttpOnly cookie, so the browser holds</p>
+<p>no token any script can read.</p>
+<p><strong>Why it cannot be forgotten:</strong> the guard lives in <code>wrap()</code>, not in each handler, so an</p>
+<p>endpoint cannot ship unprotected. A shape test asserts this across the whole <code>api/</code> tree.</p>
+<p><strong>Ten roles</strong>, built from your access list. A role is two things and no more: which</p>
+<p>screens it may open, and which endpoints it may change.</p>
+<table><thead><tr><th>Role</th><th>Can change</th><th>Cannot even open</th></tr></thead><tbody><tr><td>admin</td><td>everything</td><td>—</td></tr><tr><td>owner</td><td>nothing</td><td>— (sees all)</td></tr><tr><td>dispatch</td><td>dispatch records only</td><td>PI generation, Data &amp; BOM, Catalogue, Parties, Stock, Plan</td></tr><tr><td>sales</td><td>orders, PIs, parties</td><td>Data &amp; BOM, Catalogue, Plan, Machine load</td></tr><tr><td>planner</td><td>orders, PIs, dispatch, stock</td><td>Catalogue, Data &amp; BOM, Parties</td></tr><tr><td>store</td><td>stock figures only</td><td>everything except Stock and Procurement</td></tr><tr><td>data</td><td>BOM, packing, MRP, catalogue</td><td>orders, PIs, dispatch</td></tr><tr><td>procurement</td><td>stock figures</td><td>BOM, orders, PIs</td></tr><tr><td>auditor / viewer</td><td>nothing</td><td>—</td></tr></tbody></table>
+<p>Three coarse roles could not express a dispatch clerk who records a shipment but must</p>
+<p>not raise an invoice. Run <code>node scripts/create-user.mjs --roles</code> to see all ten.</p>
+<hr>
+<h2>5. Documents, rebuilt from your own sheets</h2>
+<p><strong>Packing List</strong> — a faithful copy of your 15-04-2026 sheet: 971 pairs, 49 cartons,</p>
+<p>17 lines. Reachable from the Dispatch Book and reprintable as PDF.</p>
+<p>The structure has two levels, and conflating them gets S.NO wrong. An S.NO is one</p>
+<p>article/closure/colour and spans however many size rows it needs; a <em>carton group</em> is</p>
+<p>the set of sizes sharing a box, and that is what the C/N numbers follow. Your S.NO 1</p>
+<p>holds three groups of one carton (1/49, 2/49, 3/49) while S.NO 3 holds one group of</p>
+<p>two sizes in a single box (5/49). Your whole sheet is a test fixture.</p>
+<p><strong>Job Card</strong> — the two-page ARMOUR 17004 form: header, size-wise cutting with total,</p>
+<p>MATERIAL ISSUED, ISSUED MATERIALS, the signature blocks, then the received/shortage/</p>
+<p>repair/rejection grids and REMARKS on page two.</p>
+<p>Nothing is typed in from the sample. Article, fabricator, card number, date, sizes and</p>
+<p>quantities all resolve at render time, so a card for an article with no BOM prints</p>
+<p>empty rather than showing another shoe's numbers.</p>
+<p><strong>Job Work Challan / Internal Issue Slip</strong> — same movement, different document, chosen</p>
+<p>by the fabricator's type.</p>
+<hr>
+<h2>6. Bugs found and fixed — several were losing real numbers</h2>
+<p><strong>Pairs read as cartons — 6× over-read.</strong> Your slip writes <code>12/18, 13/18, 1/36</code> — those</p>
+<p>are <em>pairs</em>. Every one was read as a carton count and multiplied by the packing rate.</p>
+<p>One line alone came out as 1,728 against a 288-pair order. The rule now: a carton count</p>
+<p>for one size is small, so anything above ten is pairs. Each line shows which way it was</p>
+<p>read, so a wrong call is correctable rather than invisible.</p>
+<p><strong>One material on several component rows — 75% understated.</strong> Your revised BOM writes a</p>
+<p>row per cut piece, so <code>MESH 58" WHITE</code> appears twice. The importer called that a</p>
+<p>duplicate and rejected the file; simply removing the check is worse, because the first</p>
+<p>row wins and the rest are discarded.</p>
+<table><thead><tr><th>Material</th><th>Your file</th><th>Would have stored</th></tr></thead><tbody><tr><td>MESH 58" WHITE</td><td>0.08</td><td>0.06</td></tr><tr><td>REXINE 54" WHITE</td><td>0.04</td><td>0.01</td></tr></tbody></table>
+<p>Rates now accumulate. Your header reads "Cutting componenet" — typo included — which</p>
+<p>was falling into the unrecognised-column flow, so components were silently not stored.</p>
+<p><strong>An order that outlived its article — blanked the whole app.</strong> One <code>compute()</code> call</p>
+<p>builds every screen, so a single orphaned order blanked the dashboard, schedule,</p>
+<p>procurement and PI list together. Orphans are now set aside and reported.</p>
+<p><strong>A session that invented a role.</strong> <code>signSession</code> defaulted a missing role to <code>"admin"</code>.</p>
+<p>Any path producing a user without a role would have minted an administrator session.</p>
+<p><strong>A wrong password returned 500 and the lockout was dead.</strong> The failed-attempt counter</p>
+<p>used one parameter in two incompatible type positions; real Postgres rejected the</p>
+<p>statement outright. Mocked tests all passed — only a run against a real database caught it.</p>
+<p><strong>Arrow keys inside a hidden password.</strong> An arrow key sends three bytes; the prompt</p>
+<p>skipped the escape and welded <code>[A</code> into the password, invisibly.</p>
+<p><strong>A guess wearing the reading's clothes.</strong> Match &amp; Check was titled by the article the</p>
+<p>matcher <em>chose</em>, in bold, while the words on your slip sat beside it in grey five-point</p>
+<p>text. The ambiguity warning could also never be cleared — it survived the correction.</p>
+<p><strong>Cartons derived instead of counted.</strong> The dispatch screen showed <code>pairs ÷ rate</code> to two</p>
+<p>decimals — "2.67 cartons", which cannot go on a lorry.</p>
+<p><strong>A line totalled from the wrong rate.</strong> The PAIRS column computed <code>cartons × line rate</code>,</p>
+<p>ignoring that SPIKE's 11X1 packs 12s/13s at 24 and size 1 at 18 — printing 1,728 where</p>
+<p>the sizes total 1,512.</p>
+<p><strong>One button for two intentions.</strong> Dispatch history had a single "Remove" that put pairs</p>
+<p>back. Now: <strong>Undo dispatch</strong> (mis-keyed — pairs return) and <strong>Just remove from history</strong></p>
+<p>(goods shipped — pairs keep counting).</p>
+<p><strong>Four copies of the stage order, one wrong.</strong> The stage-targets editor omitted</p>
+<p>PREPARATION and UPPER_QC and carried a PRINTING stage that isn't a stage. The production</p>
+<p>plan read work centres in database storage order, putting PACKING second and DISPATCH third.</p>
+<hr>
+<h2>7. Routing &amp; scheduling</h2>
+<p>One definition, and everything that lists stages sorts by it:</p>
+<pre>CUTTING → PREPARATION (printing) → STITCHING → UPPER_QC (qc &amp; prep) → MOLDING → PACKING → DISPATCH</pre>
+<p><strong>Outside stitching adds a transit leg, not a release delay.</strong> The two transport days</p>
+<p>were being added to the <em>release</em> date, delaying cutting for a lorry that had nothing to</p>
+<p>carry yet. They now sit between STITCHING and UPPER_QC.</p>
+<table><thead><tr><th>Order</th><th>Cutting</th><th>Stitching</th><th>Transit</th><th>Dispatch</th></tr></thead><tbody><tr><td>in-house</td><td>6 Jul</td><td>8 Jul</td><td>—</td><td>12 Jul</td></tr><tr><td>outside</td><td>6 Jul</td><td>8 Jul</td><td>9–10 Jul</td><td>14 Jul</td></tr></tbody></table>
+<p>It books no capacity and never appears on the machine board — nothing is being made —</p>
+<p>but it is real elapsed time and every dispatch date depends on it.</p>
+<hr>
+<h2>8. Menu &amp; naming</h2>
+<table><thead><tr><th>Was</th><th>Now</th><th>Why</th></tr></thead><tbody><tr><td>Orders &amp; dispatch</td><td><strong>Order Book</strong></td><td>the factory's own name</td></tr><tr><td>Dispatch &amp; packing</td><td><strong>Dispatch Book</strong></td><td>the factory's own name</td></tr><tr><td>Bulk upload (top level)</td><td>a mode inside <strong>PI generation</strong></td><td>same job — getting orders in</td></tr><tr><td>Release, buried in a PI row</td><td><strong>Create Job Order</strong></td><td>a shop-floor decision, not a commercial record</td></tr><tr><td>—</td><td><strong>Job Orders Database</strong></td><td>receiving, shortage and payment</td></tr></tbody></table>
+<p>The slip/PI reader stays <strong>mounted</strong> when you switch to the spreadsheet mode — it holds</p>
+<p>an unsaved draft, and discarding a slip a clerk had already checked would be a nasty way</p>
+<p>to lose work.</p>
+<hr>
+<h2>9. Still needs you</h2>
+<table><thead><tr><th>What</th><th>Why it matters</th><th>Who</th></tr></thead><tbody><tr><td>15 zero-rate BOM rows (D-RING 25MM, VELCRO 20/25MM hook &amp; loop)</td><td>The workbook loads with these flagged, but a rate of 0 orders none of a material the shoe genuinely uses.</td><td>factory</td></tr><tr><td>Pieces per pair, per component</td><td>Your BOM gives component <em>consumption</em> (VAMP MESH 0.06 MTR). The paper card also shows a piece count (VAMP 1824 PCS) — a different figure. The card prints consumption until you have it.</td><td>factory</td></tr><tr><td>New Durga Line's rate &amp; contact</td><td>An external fabricator needs a rate per piece and a contact. Neither has been invented.</td><td>you</td></tr><tr><td>Real turnaround for Rex Internal</td><td>Seeded at 0 and explicitly labelled incomplete.</td><td>factory</td></tr><tr><td>The "Spike Blue" ambiguity</td><td>Two or more configured articles match that text. Send the article list and the tie-break can be checked.</td><td>you</td></tr><tr><td>Rotate the Neon password</td><td>It appeared in chat and shell history.</td><td>you</td></tr><tr><td>Step 6 "preparation"</td><td>Your routing listed preparation twice — after molding, before packing. Ignored for now, as agreed. If it is a real operation, name it and it can be added.</td><td>you</td></tr></tbody></table>
+<p><strong>Two things deliberately not done.</strong> The static app shell is still served publicly — it</p>
+<p>holds no factory data, every read is an API call that returns 401, but the login page is</p>
+<p>reachable by anyone with the URL. And viewers still see write buttons on screens they can</p>
+<p>open; those return 403 with a clear reason rather than being greyed out.</p>
+<hr>
+<h2>10. Commands worth keeping</h2>
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>npm run db:setup</code></td><td>Apply the schema. Safe to re-run; prints which database it touched.</td></tr><tr><td><code>npm run user:create -- &lt;name&gt; --role &lt;role&gt;</code></td><td>Create or reset an account. Verifies by reading the hash back.</td></tr><tr><td><code>node scripts/create-user.mjs --roles</code></td><td>List all ten roles with what each can do.</td></tr><tr><td><code>node scripts/create-user.mjs --list</code></td><td>Who has an account, and who is locked out.</td></tr><tr><td><code>node scripts/create-user.mjs --verify &lt;name&gt;</code></td><td>Test a password against the stored hash — no browser involved.</td></tr><tr><td><code>node scripts/create-user.mjs &lt;name&gt; --set-role &lt;role&gt;</code></td><td>Change a role without resetting the password.</td></tr><tr><td><code>npm run check</code></td><td>Full test suite, coverage thresholds and production build.</td></tr></tbody></table>
+<p><strong>One trap worth remembering:</strong> Vercel's Hobby plan builds one serverless function per</p>
+<p>file under <code>api/</code> and allows 12. The project sits at exactly 12 — a 13th fails the</p>
+<p><em>deployment</em> even though the build succeeds. A shape test now asserts the count. Add new</p>
+<p>endpoints as an action on an existing file, or put helpers under <code>api/_lib/</code>, which</p>
+<p>Vercel ignores.</p>
+<hr>
+<p>*Every claim here was verified by running the code: the packing list against the 971-pair</p>
+<p>sheet, the BOM against the BOLT workbook, the login and lockout against a real Postgres,</p>
+<p>and the job card rendered from live reference data.*</p></body></html>

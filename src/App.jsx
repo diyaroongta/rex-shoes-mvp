@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
+import { labelFor } from "../shared/product-codes.js";
 import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
@@ -17,7 +18,6 @@ import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
 import FabricatorsTab from "./FabricatorsTab.jsx";
-import JobOrdersTab from "./JobOrdersTab.jsx";
 import JobCardTab from "./JobCardTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
@@ -63,7 +63,6 @@ export default function App({ user=null, onSignOut=null }={}){
   const tab = canSeeTab(role, rawTab) ? rawTab : defaultTab(role);
   const [intakeMode, setIntakeMode] = useState("slip");   // "slip" | "sheet", inside PI generation
   const [selected, setSelected] = useState(null);
-  const [jobCardOrder, setJobCardOrder] = useState("");
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
 
   const [loadErr, setLoadErr] = useState("");
@@ -276,12 +275,11 @@ export default function App({ user=null, onSignOut=null }={}){
       ["intake","PI generation"],
       ["pis","PI database"],
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
-      ["jobs","Job Orders"],
-      ["jobcards","Job Cards"],
+      ["jobs","Create Job Order"],
+      ["jobwork","Job Orders Database"],
       ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
-      ["jobwork","Job work"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
       ["machines","Machine load"],
@@ -372,7 +370,7 @@ export default function App({ user=null, onSignOut=null }={}){
               <div key={group} style={{marginBottom:14}}>
                 <div className="sign" style={{color:"#5C7A99",fontSize:10,padding:"0 8px 5px",fontWeight:600}}>{group}</div>
                 {items.map(([k,label,badge])=>(
-                  <button key={k} onClick={()=>{if(k==="jobcards")setJobCardOrder("");setTab(k);}} data-on={tab===k?"1":"0"} className="navitem">
+                  <button key={k} onClick={()=>setTab(k)} data-on={tab===k?"1":"0"} className="navitem">
                     <span>{label}</span>
                     {badge && badge.n>0 && <span className="navbadge" style={{background:badge.tone}}>{badge.n}</span>}
                   </button>
@@ -390,7 +388,7 @@ export default function App({ user=null, onSignOut=null }={}){
 
         <div data-noprint className="md:hidden" style={{position:"sticky",top:0,zIndex:20,background:"#0F2233",padding:"10px 12px"}}>
           <div className="sign" style={{color:"#fff",fontSize:16,fontWeight:700,marginBottom:8}}>Factory OS</div>
-          <select value={tab} onChange={e=>{if(e.target.value==="jobcards")setJobCardOrder("");setTab(e.target.value);}}
+          <select value={tab} onChange={e=>setTab(e.target.value)}
             style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #24425E",
                     background:"#183149",color:"#fff",fontSize:14}}>
             {nav.map(([group,items])=>(
@@ -515,10 +513,7 @@ export default function App({ user=null, onSignOut=null }={}){
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
-        {tab==="jobs" && <JobOrdersTab orders={orders||[]} shortfall={state?state.procurement_by_pi:null}
-                              onCreateCard={no=>{setJobCardOrder(no);setTab("jobcards");}} />}
-        {tab==="jobcards" && <JobCardTab orders={orders||[]} initialOrderNo={jobCardOrder}
-                              onIssued={syncAll} />}
+        {tab==="jobs" && <JobCardTab orders={orders||[]} onIssued={syncAll} />}
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
@@ -600,6 +595,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [saving,setSaving]=useState(false);
   const [generatingPi,setGeneratingPi]=useState(false);
   const [readingPi,setReadingPi]=useState(false);
+  const [piStage,setPiStage]=useState("");
   const [piCards,setPiCards]=useState(null);
   const [piPreviewCards,setPiPreviewCards]=useState(null);
   /* Everything incomplete about the PI, gathered so it can be shown ONCE with
@@ -657,6 +653,13 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   useEffect(()=>{allocatePiNo();},[]);
   const ARTS=Object.keys(INPUTS.articles).filter(article=>
     ((INPUTS.articles[article]||{}).combo_order||Object.keys((INPUTS.articles[article]||{}).combos||{})).length>0);
+  /* "JACK07 · JACK VELCRO WHITE" where a code has been assigned, and the plain
+     name where it has not — the code leads because that is what the factory
+     says out loud. The option VALUE stays the article name, so nothing that
+     reads a selection changes. */
+  const PRODUCT_CODES=Object.fromEntries(Object.entries(INPUTS.articles||{})
+    .filter(([,a])=>a&&a.product_code).map(([name,a])=>[name,a.product_code]));
+  const artLabel=a=>labelFor(a,PRODUCT_CODES);
   /* The article master can carry the article's standard sole and upper colour
      (optional columns on the BOM upload). They are a starting point only —
      both fields stay editable, and anything already known about THIS order,
@@ -793,16 +796,45 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
      sheet. Per-size quantities are kept exactly as printed — they are not
      re-derived from a carton count, so the regenerated PI matches the original
      line for line. */
+  /* Vercel refuses a request body over 4.5 MB, and base64 inflates a file by a
+     third. Caught HERE so the person sees which file was too big and what to do
+     about it, instead of a request that dies at the platform with no message. */
   async function ingestPi(file){
-    setReadingPi(true); setErr(""); setSavedMsg("");
+    setReadingPi(true); setPiStage(""); setErr(""); setSavedMsg("");
     try{
-      const b64 = await new Promise((res,rej)=>{
-        const r=new FileReader();
-        r.onload=()=>res(String(r.result).split(",")[1]);
-        r.onerror=()=>rej(new Error("Could not read that file."));
-        r.readAsDataURL(file);
-      });
-      let text = await api.readPi(b64, file.type || "application/pdf");
+      const isPdf = /pdf/i.test(file.type||"") || /\.pdf$/i.test(file.name||"");
+      let payload, mediaType;
+
+      if(file.size <= PI_RAW_BUDGET){
+        /* It fits — send the original. A PDF read as a PDF beats a picture of
+           one, so nothing is re-rendered unless it has to be. */
+        payload = await new Promise((res,rej)=>{
+          const r=new FileReader();
+          r.onload=()=>res(String(r.result).split(",")[1]);
+          r.onerror=()=>rej(new Error("Could not read that file."));
+          r.readAsDataURL(file);
+        });
+        mediaType = file.type || (isPdf ? "application/pdf" : "image/jpeg");
+      } else if(isPdf){
+        setPiStage("Shrinking the PI…");
+        mediaType = "image/jpeg";
+        payload = await pdfPagesToJpeg(file);
+        /* A long PI can still be over after one pass, so step the resolution
+           down until it fits rather than failing at the edge of the limit. */
+        for(let dim=1600, quality=0.7; b64Len(payload) > PI_B64_CAP && dim >= 900; dim-=350, quality-=0.1)
+          payload = await pdfPagesToJpeg(file, dim, Math.max(quality, 0.45));
+      } else {
+        setPiStage("Shrinking the PI…");
+        mediaType = "image/jpeg";
+        payload = [ (await shrinkImage(file, 2000, 0.8)).split(",")[1] ];
+      }
+
+      if(b64Len(payload) > PI_B64_CAP)
+        throw new Error(`${file.name} is ${(file.size/1e6).toFixed(1)} MB and is still too large `
+          + `after shrinking. Split it and upload one part at a time.`);
+
+      setPiStage("Reading PI…");
+      let text = await api.readPi(payload, mediaType);
       const a=text.indexOf("{"), z=text.lastIndexOf("}");
       if(a>-1&&z>-1) text=text.slice(a,z+1);
       const d=JSON.parse(text);
@@ -859,7 +891,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       setSavedMsg(`Read ${built.length} article(s), ${built.reduce((a,c)=>a+c.lines.length,0)} size ranges from the PI.`
         + (notes.length ? "  Check: "+notes.join("; ") : ""));
     }catch(e){ setErr("Could not read that PI: "+(e.message||e)); }
-    finally{ setReadingPi(false); }
+    finally{ setReadingPi(false); setPiStage(""); }
   }
 
   function shrink(dataUrl,maxDim,quality){
@@ -1319,7 +1351,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
         <button disabled={!img||busy} onClick={readOrder}
           className="font-semibold text-white rounded-xl px-4 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300">{busy?"Reading…":"Read the order"}</button>
         <label className={"font-semibold rounded-xl px-4 py-2.5 text-sm text-indigo-800 bg-indigo-50 border border-indigo-200 cursor-pointer "+(readingPi?"opacity-60":"")}>
-          {readingPi ? "Reading PI…" : "Upload a PI"}
+          {readingPi ? (piStage || "Reading PI…") : "Upload a PI"}
           <input type="file" accept="application/pdf,image/*" className="hidden" disabled={readingPi}
             onChange={e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=""; if(f) ingestPi(f); }} />
         </label>
@@ -1403,7 +1435,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   onChange={e=>onArticleChange(i,e.target.value)}
                   className="border rounded-lg px-2 py-1.5 text-sm font-semibold bg-white"
                   style={{borderColor:unconfirmed?"#f59e0b":"#e2e8f0"}}>
-                  {ARTS.map(a=><option key={a} value={a}>{a}</option>)}</select>
+                  {ARTS.map(a=><option key={a} value={a}>{artLabel(a)}</option>)}</select>
                 {unconfirmed && <span className="text-[11px] font-semibold rounded-full px-2 py-0.5"
                   style={{background:"#fef3c7",color:"#92400e"}}>not confirmed</span>}
               </div>
@@ -1760,7 +1792,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
             <div key={ci} className="mb-3 last:mb-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
               <div className="px-3 py-2 bg-slate-50">
                 <select value={c.article} onChange={e=>onPiArticleChange(ci,e.target.value)} className="text-xs font-semibold border border-slate-200 rounded px-2 py-1 bg-white">
-                  {ARTS.map(a=><option key={a}>{a}</option>)}
+                  {ARTS.map(a=><option key={a} value={a}>{artLabel(a)}</option>)}
                 </select>
               </div>
               {articleDetails(c, patch=>setPiCard(ci,patch), type=>onTypeChange(ci,type,true))}
@@ -1878,9 +1910,8 @@ const VIEWS = {
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
-  jobs:        {title:"Job Orders",         sub:"Every Order Book quantity waiting to be assigned on a job card"},
-  jobcards:    {title:"Job Cards",          sub:"Enter the size-wise cutting quantities, issue the source-format card and send the work"},
-  jobwork:     {title:"Job work",           sub:"Receive issued work back, record shortage and calculate external payment"},
+  jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
+  jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
@@ -1957,9 +1988,9 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
   /* A PI order can have several production runs against it, so it is "on the
      schedule" when ANY run exists — not when a row carries its own number. */
   const runsFor=sourceNo=>(orders||[]).filter(o=>sourceOrderOf(o)===sourceNo);
-  /* Releasing into production moved to its own screen (JobOrdersTab): it is a
-     shop-floor decision, and burying it in the commercial record meant hunting
-     through issued invoices to find the work still owed. */
+  /* Creating job orders lives after the Order Book: it is a shop-floor
+     decision, and burying it in the commercial record meant hunting through
+     issued invoices to find the work still owed. */
   const chosen=pis.find(p=>p.pi_no===selectedPi);
   const saved=(chosen&&chosen.snapshot&&chosen.snapshot.orders)||[];
   const items=saved.map(o=>({
@@ -2228,6 +2259,49 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
     </table>
     <p className="text-xs text-slate-400 mt-2">Nudge priority ▲▼ — the expert decides, the system recomputes. Lower number = more important.</p>
   </div>;
+}
+
+/* The PI upload budget. Vercel caps a serverless request body at 4.5 MB and
+   base64 inflates a file by a third, so anything past ~3.2 MB of original file
+   cannot be sent as-is. Rather than refuse it, we render it down — see
+   pdfPagesToJpeg. */
+const PI_RAW_BUDGET = 3_200_000;   // original bytes that still fit as base64
+const PI_B64_CAP    = 4_400_000;   // what api/read-pi.js accepts, in total
+
+const b64Len = pages => (Array.isArray(pages) ? pages : [pages])
+  .reduce((n,p)=>n+p.length, 0);
+
+/* Render a PDF to one JPEG PER PAGE.
+ *
+ * The factory's PI export is a single page of text weighed down by several
+ * megabytes of embedded logo artwork — the CONTENT is tiny, the file is not.
+ * Re-rendering it to an image throws the artwork's resolution away and keeps
+ * every figure legible, which is the only part the reader needs.
+ *
+ * EVERY page is rendered, never just the first: a PI whose second page was
+ * silently dropped would come back looking complete and be short whole lines.
+ * pdf.js is imported lazily so it costs nothing until a PI is actually
+ * oversized. */
+async function pdfPagesToJpeg(file, maxDim=2000, quality=0.82){
+  const pdfjs = await import("pdfjs-dist");
+  const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+  pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+  const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = [];
+  for(let i=1; i<=doc.numPages; i++){
+    const page = await doc.getPage(i);
+    const base = page.getViewport({ scale:1 });
+    const scale = Math.min(3, maxDim/Math.max(base.width, base.height));
+    const vp = page.getViewport({ scale });
+    const c = document.createElement("canvas");
+    c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);   // JPEG has no alpha
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    pages.push(c.toDataURL("image/jpeg", quality).split(",")[1]);
+  }
+  if(!pages.length) throw new Error("That PDF has no pages.");
+  return pages;
 }
 
 /* Resize before upload. A phone photo is several MB as base64 — past the
