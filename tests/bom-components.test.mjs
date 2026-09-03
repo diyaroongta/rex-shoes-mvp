@@ -168,6 +168,45 @@ test("componentsOf and hasComponents read the stored shape", () => {
   assert.equal(hasComponents(plain), false);
 });
 
+
+console.log("\nZ — the card prints the BOM's order, not the alphabet");
+
+/* The factory's ARMOUR 17004 card reads VAMP, ADDI, PALTA, U TAPE, TOE PUFF,
+   SIDE PATTI … — the order the pieces are CUT in, which is the order the
+   workbook lists them. Sorting by name reshuffled that to ADDI, CALLER FOAM,
+   PALTA … and the cutter working down the sheet loses the sequence. */
+test("component rows keep the order the BOM listed them in", () => {
+  const M = 'REXINE 54" BROWN||MTR';
+  const order = ["VAMP","ADDI","PALTA","U TAPE","TOE PUFF","SIDE PATTI","VAMP ASTER",
+                 "SKINFIT","R TOUNGE","TOUNGE ASTER","CALLER FOAM","TOUNGE FOAM",
+                 "STIFFNER","VELCO PATTI"];
+  const article = { combos: { "6X8": {
+    rates: { CUTTING: { [M]: 0.5 } },
+    components: { CUTTING: { [M]: order.map(name => ({ name, uom:"PCS", per_pair: 2 })) } },
+  } } };
+  const { stages } = jobCardIssue([{ combo:"6X8", qty:912 }], article);
+  const cutting = stages.find(s => s.stage === "CUTTING");
+  assert.deepEqual(cutting.components.map(c => c.name), order,
+    "alphabetical order would put ADDI first and VAMP thirteenth");
+  assert.equal(cutting.components[0].qty, 1824, "912 pairs x 2 per pair, as on the sample card");
+});
+
+/* Two materials, so the second material's pieces follow the first's rather
+   than interleaving by name. */
+test("pieces from a second material follow, they do not interleave", () => {
+  const A = "MESH 58 WHITE||MTR", B = "REXINE 54||MTR";
+  const article = { combos: { "6X8": {
+    rates: { CUTTING: { [A]: 0.1, [B]: 0.2 } },
+    components: { CUTTING: {
+      [A]: [{ name:"VAMP MESH", uom:"PCS", per_pair:2 }],
+      [B]: [{ name:"ADDI", uom:"PCS", per_pair:2 }],
+    } },
+  } } };
+  const { stages } = jobCardIssue([{ combo:"6X8", qty:10 }], article);
+  assert.deepEqual(stages.find(s=>s.stage==="CUTTING").components.map(c=>c.name),
+    ["VAMP MESH","ADDI"]);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes
    its coverage file, so a suite that passed reported 0% and dragged the whole

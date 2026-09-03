@@ -513,7 +513,15 @@ export default function App({ user=null, onSignOut=null }={}){
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
             <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
           </div></>}
-        {tab==="jobs" && <JobCardTab orders={orders||[]} onIssued={syncAll} />}
+        {/* MOUNTED, not conditionally rendered. A half-built job order — the
+            fabricator, the article, the size-by-size quantities — is unsaved
+            work, and `tab==="jobs" && <JobCardTab/>` unmounts the component
+            and throws all of it away the moment the user looks at another
+            screen. Same reason NewOrderFlow stays mounted behind the
+            spreadsheet mode. */}
+        <div style={{display:tab==="jobs"?"block":"none"}}>
+          <JobCardTab orders={orders||[]} onIssued={syncAll} />
+        </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}

@@ -64,13 +64,15 @@ export function jobCardIssue(lines, article, opts = {}){
     const rates = (((article || {}).combos || {})[combo] || {}).rates || {};
 
     for(const [stage, materials] of Object.entries(rates)){
-      const bucket = stages[stage] || (stages[stage] = { stage, components: {}, materials: {}, from_components: false });
+      const bucket = stages[stage]
+        || (stages[stage] = { stage, components: {}, materials: {}, from_components: false, next: 0 });
 
       for(const [material, rate] of Object.entries(materials || {})){
         /* The material line is always accumulated: it is what procurement and
            the store work from, and the card's second half prints it directly. */
         const m = bucket.materials[material]
-          || (bucket.materials[material] = { material, name: nameOf(material), uom: uomOf(material), qty: 0 });
+          || (bucket.materials[material] = { material, name: nameOf(material), uom: uomOf(material),
+                                             qty: 0, seq: bucket.next++ });
         m.qty = round4(m.qty + num(rate) * qty);
 
         const list = componentsOf(article, combo, stage)[material];
@@ -83,7 +85,7 @@ export function jobCardIssue(lines, article, opts = {}){
           if(!name) continue;
           const key = `${name}||${clean(comp.uom) || "PCS"}`;
           const c = bucket.components[key] || (bucket.components[key] = {
-            name, uom: clean(comp.uom) || "PCS", per_pair: 0, qty: 0,
+            name, uom: clean(comp.uom) || "PCS", per_pair: 0, qty: 0, seq: bucket.next++,
             /* Which material it is cut from — the store issues the material,
                the card names the piece, and the two have to be traceable. */
             materials: [],
@@ -97,8 +99,14 @@ export function jobCardIssue(lines, article, opts = {}){
   }
 
   const out = Object.values(stages).map(b => {
-    const components = Object.values(b.components).sort((a, z) => a.name.localeCompare(z.name));
-    const materials = Object.values(b.materials).sort((a, z) => a.name.localeCompare(z.name));
+    /* THE BOM'S OWN ROW ORDER, not the alphabet.
+       The factory's card reads VAMP, ADDI, PALTA, U TAPE, TOE PUFF … — the
+       order the pieces are cut in, which is the order the workbook lists them.
+       Sorting by name reshuffled that to ADDI, CALLER FOAM, PALTA … and the
+       cutter working down the sheet loses the sequence the card is for. */
+    const bySeq = (a, z) => a.seq - z.seq;
+    const components = Object.values(b.components).sort(bySeq);
+    const materials = Object.values(b.materials).sort(bySeq);
     return {
       stage: b.stage,
       /* The card prints components where they exist, materials where they do

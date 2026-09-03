@@ -198,5 +198,76 @@ test("a specific size carries the article's own printed size list", () => {
   assert.equal(none[0].size_order,undefined,"callers without a list are unchanged");
 });
 
+console.log("\nZ — the product decides the match, the colour only narrows it");
+
+/* Every name below is off the live article master. The bug: "Spike Blue" came
+   back JACK LACE BLACK-BLUE. `blue` occurs TWICE in that name — once in
+   BLACK-BLUE and again in the (BLUE SKINFIT) note — so a colour mentioned in
+   passing scored 2 while SPIKE, the product actually written, scored 1. */
+const LIVE_NAMES = [
+  "SPIKE","THUNDER","JILL","ARMOUR","PERCY",
+  "THUNDER N.BLUE RED (N.BLUE COUNTERN.BLUE SKINFIT)",
+  "JACK LACE BLACK-BLUE (BLUE SKINFIT)",
+  "JACK LACE WHITE-BLUE (BLUE SKINFIT)",
+  "JACK LACE BLACK-RED (RED SKINFIT)",
+  "JILL VELCRO BLACK-BLUE (BLUE SKINFIT)",
+  "JILL VELCRO WHITE-BLUE (BLUE SKINFIT)",
+  "BOLT VELCRO N.BLUE (N.BLUE SKINFIT)",
+  "BOLT VELCRO WHITE N.BLUE (N.BLUE SKINFIT)",
+  "RAY VELCRO WHITE S.BLUE",
+  "SILKY BELLY BLACK","SILKY BELLY WHITE",
+  "REX GOLA (V)","REX GOLA (L)","REX GOLA PLUS",
+];
+/* Only the names matter here, so every article gets the same trivial range —
+   articleIndex() ignores anything with no size ranges at all. */
+const liveRef = { ...INPUTS, articles: Object.fromEntries(
+  LIVE_NAMES.map(n => [n, { combos:{ "6X8":{ rates:{} } }, combo_order:["6X8"] }])) };
+
+const withLive = fn => { setReference(liveRef); try { fn(); } finally { setReference(INPUTS); } };
+
+test("a colour never pulls the match into a different product", () => withLive(() => {
+  assert.equal(matchArticle("Spike Blue",""), "SPIKE");
+  assert.equal(matchArticle("spike blue",""), "SPIKE");
+  assert.equal(matchArticle("Percy Red",""), "PERCY");
+  assert.equal(matchArticle("Armour Green",""), "ARMOUR");
+}));
+
+/* The same fault the other way round: a repeated colour used to beat a product
+   whose name the slip wrote in full. */
+test("a product named in full outranks any colour", () => withLive(() => {
+  assert.equal(matchArticle("Thunder Red",""), "THUNDER N.BLUE RED (N.BLUE COUNTERN.BLUE SKINFIT)",
+    "the colour picks WITHIN Thunder");
+  assert.equal(matchArticle("Thunder",""), "THUNDER", "and a bare Thunder is the plain one");
+}));
+
+test("the colour still narrows inside the family it named", () => withLive(() => {
+  assert.equal(matchArticle("Silky Belly Black",""), "SILKY BELLY BLACK");
+  assert.equal(matchArticle("Silky Belly White",""), "SILKY BELLY WHITE");
+  assert.equal(matchArticle("Bolt White",""), "BOLT VELCRO WHITE N.BLUE (N.BLUE SKINFIT)");
+  assert.equal(matchArticle("Jack Black Blue",""), "JACK LACE BLACK-BLUE (BLUE SKINFIT)",
+    "two colours beat one");
+}));
+
+/* A bracketed note is about the variant, never the product. The factory's own
+   sheet writes COUNTERN.BLUE run together, and one such word inside the family
+   would make THUNDER N.BLUE RED look like a different product from THUNDER. */
+test("a bracketed note is not part of the product name", () => withLive(() => {
+  assert.equal(matchArticle("Ray",""), "RAY VELCRO WHITE S.BLUE");
+  assert.equal(matchArticle("Jill",""), "JILL", "the plain Jill, not a coloured one");
+}));
+
+/* Still true, and the reason the fewest-unmentioned-words rule runs on the
+   FAMILY before any colour narrowing. */
+test("Gola Plus is still a different product from Gola", () => withLive(() => {
+  assert.equal(matchArticle("Gala Plus","Blk"), "REX GOLA PLUS");
+  assert.notEqual(matchArticle("Gala","Blk"), "REX GOLA PLUS");
+  assert.equal(matchArticle("Gala (L)","Blk"), "REX GOLA (L)");
+}));
+
+test("a colour on its own still offers candidates rather than nothing", () => withLive(() => {
+  assert.ok(matchArticle("Blue",""), "a slip that wrote only a colour reaches the clerk with a guess");
+  assert.equal(matchArticle("Ghost Sample",""), null, "but an unknown product is still refused");
+}));
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

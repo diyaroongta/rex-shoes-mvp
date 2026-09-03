@@ -3,6 +3,7 @@
    READ_PROMPT lives here so the SERVER owns it — the browser never sends a prompt. */
 import { INPUTS } from "./inputs.js";
 import { comboSizes } from "./pi.js";
+import { isColourWord, isClosureWord } from "./product-codes.js";
 
 /* The bundled inputs.js is only the SEED. Once reference data is uploaded it
    lives in the database, and both the browser and the server call
@@ -48,16 +49,45 @@ const norm = t => {
 };
 const COLOURS=["black","white"], VARIANTS={v:"velcro",l:"lace",velcro:"velcro",lace:"lace"};
 
+/* An article's name is TWO things: the product (SPIKE, THUNDER, JILL) and the
+   words that say which one of it (a colour, a closure). Only the first is the
+   family, and only the first may decide a match — see rank(). */
+/* Everything in brackets is a note about the variant — "(BLUE SKINFIT)",
+   "(N.BLUE COUNTERN.BLUE SKINFIT)" — and never part of the product's name. It
+   is dropped BEFORE the family is read, because the factory's own notes carry
+   run-together words like COUNTERN.BLUE that no colour list will ever match,
+   and one such word would make THUNDER N.BLUE RED look like a different
+   product from THUNDER. The closure and the colours are still read from the
+   FULL name, so "REX GOLA (V)" keeps its velcro. */
+const stripNotes = t => String(t||"").replace(/\([^)]*\)/g," ").replace(/\[[^\]]*\]/g," ");
+
+function familyTokens(rawName){
+  const out=[];
+  for(const t of norm(stripNotes(rawName)).split(" ").filter(Boolean)){
+    if(isColourWord(t) || isClosureWord(t) || VARIANTS[t]) continue;
+    if(!out.includes(t)) out.push(t);          // deduped: see the score note
+  }
+  return out;
+}
+
+function colourTokens(n){
+  const out=[];
+  for(const t of n.split(" ")) if(isColourWord(t) && !out.includes(t)) out.push(t);
+  return out;
+}
+
 function articleIndex(){
   return Object.keys(REF.articles).filter(code=>{
     const def=REF.articles[code]||{};
     return (def.combo_order||Object.keys(def.combos||{})).length>0;
   }).map(code=>{
     const n=norm(code), toks=n.split(" ");
-    const colour=COLOURS.find(c=>toks.includes(c))||null;
+    const family=familyTokens(code), colours=colourTokens(n);
     let variant=null;
     for(const t of toks) if(VARIANTS[t]) variant=VARIANTS[t];
-    return {code, norm:n, base:toks.filter(t=>!COLOURS.includes(t)&&!VARIANTS[t]), colour, variant};
+    return {code, norm:n, family, colours,
+      colour:colours[0]||null,
+      base:[...new Set(toks.filter(t=>!COLOURS.includes(t)&&!VARIANTS[t]))], variant};
   });
 }
 
@@ -71,23 +101,58 @@ function rank(category,color){
   const baseHits=idx.filter(x=>x.base.join(" ")===text);
   if(baseHits.length===1) return {pool:baseHits,text,words,exact:true};   // unique family, e.g. "jill"
 
-  const scored=idx.map(x=>({x,
+  /* THE PRODUCT DECIDES, THE COLOUR ONLY NARROWS.
+     "Spike Blue" used to come back JACK LACE BLACK-BLUE: `blue` appears twice
+     in that name — once in BLACK-BLUE and again in the (BLUE SKINFIT) note —
+     so a colour the slip mentioned in passing scored 2 while SPIKE, the actual
+     product, scored 1. Two faults, both fixed here: tokens are DEDUPED, and
+     the match is made on the family alone. A colour or a closure can only
+     choose BETWEEN articles of the family the slip named, never pull the
+     answer into a different product. */
+  const wantFamily=familyTokens(text);
+  const wantColours=[...new Set(words.filter(isColourWord))];
+  let wantVariant=null; for(const w of words) if(VARIANTS[w]) wantVariant=VARIANTS[w];
+  const wantColour=wantColours[0]||null;
+
+  const familyScored=idx.map(x=>({x,
+    score:x.family.filter(t=>wantFamily.includes(t)).length,
+    extra:x.family.filter(t=>!wantFamily.includes(t)).length,
+  })).filter(y=>y.score>0);
+
+  /* Nothing in the text names a product — "blue" on its own, or a name this
+     factory does not stock. Fall back to the whole name so a slip that only
+     wrote a colour still reaches the clerk with candidates rather than
+     nothing. */
+  const scored=familyScored.length ? familyScored : idx.map(x=>({x,
     score:x.base.filter(t=>words.includes(t)).length,
-    extra:x.base.filter(t=>!words.includes(t)).length,   // tokens the text never mentioned
+    extra:x.base.filter(t=>!words.includes(t)).length,
   })).filter(y=>y.score>0);
   if(!scored.length) return {pool:[],text,words};
+
   const best=Math.max(...scored.map(y=>y.score));
-  let tied=scored.filter(y=>y.score===best);
-  // "Gola" must not match REX GOLA PLUS: both contain "gola", but PLUS carries
-  // an extra word the sheet never wrote. Fewest unmentioned words wins, so a
-  // plain name matches the plain article and only "Gola Plus" reaches PLUS.
+  const tied=scored.filter(y=>y.score===best);
+
+  /* WHICH PRODUCT — settled first, and only on the family.
+     "Gola" must not match REX GOLA PLUS: both contain "gola", but PLUS carries
+     an extra word the sheet never wrote. Fewest unmentioned words wins, so a
+     plain name matches the plain article and only "Gola Plus" reaches PLUS. */
   const fewestExtra=Math.min(...tied.map(y=>y.extra));
   let pool=tied.filter(y=>y.extra===fewestExtra).map(y=>y.x);
-  const wantColour=COLOURS.find(c=>words.includes(c))||null;
-  let wantVariant=null; for(const w of words) if(VARIANTS[w]) wantVariant=VARIANTS[w];
+
+  /* WHICH ONE OF IT — the colour, then the closure.
+     The colour goes first: a slip that wrote "Jill Blue" means one of the blue
+     Jills, and running the prefer-a-plain-name rule ahead of it would answer
+     plain JILL and quietly drop the only word that narrowed anything. */
+  if(wantColours.length){
+    const hits=pool.map(x=>({x,n:x.colours.filter(c=>wantColours.includes(c)).length}))
+                   .filter(y=>y.n>0);
+    if(hits.length){
+      const bestColour=Math.max(...hits.map(y=>y.n));
+      pool=hits.filter(y=>y.n===bestColour).map(y=>y.x);
+    }
+  }
   if(wantVariant){ const v=pool.filter(x=>x.variant===wantVariant); if(v.length) pool=v; }
   else { const nv=pool.filter(x=>!x.variant); if(nv.length) pool=nv; }
-  if(wantColour){ const c=pool.filter(x=>x.colour===wantColour); if(c.length) pool=c; }
   return {pool,text,words,wantColour,wantVariant};
 }
 

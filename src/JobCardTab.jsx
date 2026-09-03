@@ -4,11 +4,16 @@ import { REF as INPUTS } from "./lib/refdata.js";
 import JobCard from "./JobCard.jsx";
 import { slipFor } from "../shared/job-work.js";
 import { comboSizesForArticle } from "../shared/bridge.js";
-import { optionLabel } from "../shared/fabricators.js";
+import { optionLabel, TYPES, TYPE_LABEL, TYPE_HELP, RULES, validateFabricator } from "../shared/fabricators.js";
 import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const today = () => new Date().toISOString().slice(0,10);
+const shortDate = iso => {
+  const d=new Date(iso);
+  return isNaN(d) ? String(iso).slice(0,10)
+    : d.toLocaleDateString("en-IN",{day:"numeric",month:"short"});
+};
 
 /* Job Order creation. The Order Book supplies the article and ceiling; the
    operator supplies who receives it, the date and the exact size-wise cutting
@@ -26,6 +31,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
+  const [adding,setAdding]=useState(null);   // the inline "new fabricator" draft
 
   async function reload(){
     try{
@@ -136,10 +142,23 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
             {fabricators.filter(f=>f.active).map(f=><option key={f.name} value={f.name}>{optionLabel(f)}</option>)}
           </select>
         </label>
+        {/* A new line or job worker turns up mid-shift, and the job order that
+            prompted it is already half entered. Sending the user to Setup to
+            add one would discard it, so it is added from here. */}
+        <button type="button" onClick={()=>setAdding(adding?null:{name:"",type:"external",rate:"",contact:"",tat_days:""})}
+          className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
+          {adding?"Cancel":"+ Add a fabricator"}</button>
         <label className="text-xs text-slate-600">Date
           <input type="date" value={date} aria-label="Job card date" onChange={e=>{setDate(e.target.value);touched();}} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/>
         </label>
       </div>
+      {adding&&<NewFabricator draft={adding} setDraft={setAdding}
+        existing={fabricators}
+        onSaved={async created=>{
+          await reload();
+          setFabricator(created.name); setAdding(null);
+          setMsg(`${created.name} added. It is selected for this job order.`);
+        }} onError={setErr} />}
       {who&&<div className="text-[11px] text-slate-600 mt-2">This raises a <b>{slipFor(who)}</b>. {who.payable?(who.rate>0?<>Payable at ₹{who.rate} per piece.</>:<>External rate/contact are still marked incomplete in Setup.</>):<>Internal work — nothing payable.</>}</div>}
     </div>
 
@@ -149,7 +168,15 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         <label className="text-xs text-slate-600">Article / style
           <select value={orderNo} aria-label="Current Order" onChange={e=>chooseOrder(e.target.value)} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-60" disabled={!who}>
             <option value="">{who?"— choose from Order Book —":"choose a fabricator first"}</option>
-            {openOrders.map(row=><option key={row.order.order_no} value={row.order.order_no}>{row.order.order_no} · {row.order.article_code} · {fmt(row.remaining)} left</option>)}
+            {/* The PARTY and the DATE are on the row because two live orders
+                for the same article are otherwise indistinguishable — "REX
+                GOLA PLUS · 5,014 left" twice over reads as the same shoe
+                listed twice rather than as two real orders. The party alone
+                is not enough: Khandelwal School has TWO open Bolt orders, so
+                the date is what separates those. */}
+            {openOrders.map(row=><option key={row.order.order_no} value={row.order.order_no}>
+              {row.order.order_no} · {row.order.article_code}{row.order.party?` · ${row.order.party}`:""}{row.order.order_date?` · ${shortDate(row.order.order_date)}`:""} · {fmt(row.remaining)} left
+            </option>)}
           </select>
         </label>
       </div>
@@ -175,5 +202,62 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     </div>}
 
     {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><JobCard card={card} article={article}/></div>}
+  </div>;
+}
+
+/* Adding a fabricator without leaving the job order.
+   The SAME `RULES` object drives which fields appear and `validateFabricator`
+   decides whether they are acceptable, so a field can never be demanded by the
+   server and hidden by this form. */
+function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
+  const [saving,setSaving]=useState(false);
+  const rules=RULES[draft.type]||{};
+  const set=(k,v)=>setDraft(d=>({...d,[k]:v}));
+  const clash=existing.some(f=>f.name.trim().toLowerCase()===draft.name.trim().toLowerCase());
+  const check=validateFabricator({...draft,rate:draft.rate===""?null:Number(draft.rate),
+    tat_days:draft.tat_days===""?null:Number(draft.tat_days)});
+  const problems=clash?["That name is already on the fabricator list"]:check.problems;
+
+  async function save(){
+    setSaving(true);
+    try{
+      const created=await api.saveFabricator({name:draft.name.trim(),type:draft.type,
+        rate:draft.rate===""?null:Number(draft.rate), contact:draft.contact.trim()||null,
+        tat_days:draft.tat_days===""?null:Number(draft.tat_days)});
+      await onSaved(created&&created.name?created:{...draft,name:draft.name.trim()});
+    }catch(e){ onError(e.message||String(e)); }
+    finally{ setSaving(false); }
+  }
+
+  return <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+    <div className="text-xs font-semibold text-slate-800 mb-2">New fabricator</div>
+    <div className="flex gap-3 flex-wrap items-end">
+      <label className="text-xs text-slate-600">Name
+        <input value={draft.name} aria-label="Fabricator name" onChange={e=>set("name",e.target.value)}
+          placeholder="e.g. New Durga Line"
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56"/></label>
+      <label className="text-xs text-slate-600">Type
+        <select value={draft.type} aria-label="Fabricator type" onChange={e=>set("type",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm">
+          {TYPES.map(t=><option key={t} value={t}>{TYPE_LABEL[t]}</option>)}</select></label>
+      {rules.rate!=="none"&&<label className="text-xs text-slate-600">
+        {rules.rate==="flat"?"Flat sample charge (₹)":"Rate per piece (₹)"}
+        <input type="number" min="0" step="0.01" value={draft.rate} aria-label="Rate"
+          onChange={e=>set("rate",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-40"/></label>}
+      <label className="text-xs text-slate-600">Contact{rules.contact==="required"?"":" (optional)"}
+        <input value={draft.contact} aria-label="Contact" onChange={e=>set("contact",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-48"/></label>
+      <label className="text-xs text-slate-600">Turnaround (days)
+        <input type="number" min="0" value={draft.tat_days} aria-label="Turnaround days"
+          onChange={e=>set("tat_days",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-32"/></label>
+    </div>
+    <div className="text-[11px] text-slate-500 mt-2">{TYPE_HELP[draft.type]}</div>
+    {!!problems.length&&draft.name&&<ul className="text-[11px] text-rose-700 mt-2 list-disc pl-4">
+      {problems.map(p=><li key={p}>{p}</li>)}</ul>}
+    <button onClick={save} disabled={saving||!!problems.length||!draft.name.trim()}
+      className="mt-2 text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-indigo-600 disabled:opacity-50">
+      {saving?"Saving…":"Save fabricator"}</button>
   </div>;
 }

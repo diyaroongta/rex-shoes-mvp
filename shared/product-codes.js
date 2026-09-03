@@ -43,6 +43,14 @@ const wordsOf = s => stripBrackets(s)
 
 const isVariantWord = w => CLOSURE.has(w) || COLOUR.has(w) || COLOUR.has(w.replace(/\./g, ""));
 
+/* The same vocabulary, for anything that needs to tell a product's NAME from
+   the words that merely say which one. shared/bridge.js matches order slips
+   with these: a colour must never outrank the product name. */
+const up = w => String(w == null ? "" : w).toUpperCase().trim();
+export const isColourWord  = w => COLOUR.has(up(w)) || COLOUR.has(up(w).replace(/\./g, ""));
+export const isClosureWord = w => CLOSURE.has(up(w));
+export const isDescriptorWord = w => isColourWord(w) || isClosureWord(w);
+
 /* The family an article belongs to: its name with closures, colours and
    bracketed notes removed. "JACK LACE BLACK-BLUE (BLUE SKINFIT)" -> "JACK".
    A name that is nothing BUT variant words keeps its own name, because a

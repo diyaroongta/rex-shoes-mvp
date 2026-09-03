@@ -89,7 +89,7 @@ function IssueTable({title,rows,empty}){return <table style={{width:"100%",borde
 </table>}
 
 function RepairGrid({sizes}){const cells=sizes.length?sizes:[{size:""}];return <table style={{width:"100%",borderCollapse:"collapse",border:BB}}><tbody>
-  <tr><td style={{...LABEL,borderBottom:BB}} colSpan={cells.length+1}>REPAIR /</td></tr>
+  <tr><td style={{...LABEL,borderBottom:BB}} colSpan={cells.length+1}>REPAIR / SHORTAGE</td></tr>
   {["SIZE","REPAIR","SHORTAGE","REJECTION"].map(label=><tr key={label}><td style={{...LABEL,width:84}}>{label}</td>
     {cells.map((s,i)=><td key={i} style={{...CELL,textAlign:"center",height:19}}>{label==="SIZE"?s.size:""}</td>)}</tr>)}
   <tr><td style={{...LABEL,height:24}} colSpan={Math.max(1,Math.ceil((cells.length+1)/2))}>SIG. REC. SUPERVISOR</td>
