@@ -847,16 +847,21 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
       const a=text.indexOf("{"), z=text.lastIndexOf("}");
       if(a>-1&&z>-1) text=text.slice(a,z+1);
       const d=JSON.parse(text);
+      /* Clear the previous reading before applying this one, so a field this
+         PI does not mention cannot survive from the last. The number is NOT
+         re-allocated here: an uploaded PI keeps its own, set below. */
+      resetReadState({ freshPiNumber:false });
       setRawRead(JSON.stringify(d,null,1));
-      setDiscountOverrides({});
 
-      // Same rule as a photo read: this PI's customer, or none — never the
-      // customer left over from the last thing that was read.
+      // This PI's customer, or none — never the customer left over from the
+      // last thing that was read.
       setParty(String(d.customer||"").trim());
-      setMultiParty(false);
       if(d.customer_city) setCustomerCity(d.customer_city);
       if(d.pi_date && /^\d{4}-\d{2}-\d{2}$/.test(d.pi_date)) setOrderDate(d.pi_date);
-      if(d.order_no) setPiNo(d.order_no);
+      /* A PI that names its own number keeps it; one that does not still has
+         to be saveable, so it takes a newly issued number rather than the one
+         left over from whatever was read before. */
+      if(d.order_no) setPiNo(d.order_no); else await allocatePiNo();
       if(d.discount_pct!=null){
         setDiscountPct(Number(d.discount_pct));
         setDiscountOverrides({[partyKey(d.customer)]:String(Number(d.discount_pct))});
@@ -933,13 +938,36 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     setBusy(false);
   }
 
+  /* EVERYTHING THAT BELONGED TO THE PREVIOUS READING.
+     A second read must inherit none of it. Reading a PI sets the PI number to
+     that invoice's own number, the customer, the city, the agreed discount and
+     the colours; reading a photo afterwards replaced only the CARDS, so a
+     handwritten SPIKE slip was saved under the uploaded PI's number and came
+     back "PI number already exists: PI/590".
+     The number is the one that fails loudly. The rest — customer, discount,
+     colours — is worse, because it carries over in SILENCE: a Spike order
+     inheriting another customer's 40% discount and another shoe's colours
+     looks perfectly reasonable on screen. */
+  function resetReadState({ freshPiNumber = true } = {}){
+    setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature("");
+    setRawRead(""); setErr(""); setSavedMsg("");
+    setParty(""); setMultiParty(false); setCustomerCity("");
+    setVl(""); setSoleColour(""); setUpperColour("");
+    setDiscountOverrides({});
+    setDiscountPct((piTerms && piTerms.discount_pct != null) ? piTerms.discount_pct : 40);
+    /* A photo-read order is a NEW PI, so it takes a newly issued number. A PI
+       that was uploaded keeps its own, which ingestPi sets after this. */
+    if(freshPiNumber){ setPiNo(""); allocatePiNo(); }
+  }
+
   function ingest(parsed){
+    resetReadState();
     const built=buildPhotoCards(parsed,INPUTS);
     const out=built.cards.map(card=>withArticleDetails(card,{
       order_date:parsed.date||orderDate,
       priority:Number(card.priority)||Number(priority)||2,
     }));
-    setCards(out.length?out:null); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature("");
+    setCards(out.length?out:null);
     if(built.issues.length) setErr(built.issues.join(" "));
     if(!out.length) setErr("Nothing readable found — try a clearer photo or enter by hand.");
   }
@@ -947,7 +975,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art)[0];
     return withArticleDetails({article:art, vl:type==="ALL"?"":comboType(art,c), matched:true, raw:"",
       lines:[{combo:c,type:comboType(art,c),exact:true,raw:"",cartons:0,ppc:packQty(art,c)??""}]}); }
-  const startBlank=()=>{ setCards([blankCard()]); setPiCards(null); setPiPreviewCards(null); setPiPreviewSignature(""); setDiscountOverrides({}); setErr(""); setSavedMsg(""); };
+  const startBlank=()=>{ resetReadState(); setCards([blankCard()]); };
 
   const setCard=(i,patch)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));
   const setPiCard=(i,patch)=>setPiCards(cs=>cs.map((c,j)=>j===i?{...c,...patch}:c));

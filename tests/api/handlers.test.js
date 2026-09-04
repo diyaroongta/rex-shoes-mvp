@@ -106,6 +106,58 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
+  /* "Request a new PI number" is right for a genuinely new PI that landed on a
+     taken number, and actively harmful when the SAME PI is being saved twice:
+     following it files a second copy of the same customer order, and every
+     pair is then counted twice in production, procurement and dispatch. The
+     refusal has to say what it collided with. */
+  it("a PI number collision names what it collided with, and warns against duplicating it",async()=>{
+    const live={articles:{CUSTOM:{combos:{"1X2":{rates:{CUTTING:{MAT:1}}}},combo_order:["1X2"]}}};
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:live}]}).mockResolvedValue({rows:[]});
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("with hit as")) return {rows:[{
+        pi_no:"PI/590", party:"A to Z Uniform", status:"produced",
+        created_at:"2026-09-03T08:05:14.360Z",
+        order_count:"1",                      // bigint arrives as a STRING
+        order_nos:"JO2148" }]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await ordersHandler({headers:AUTH,method:"POST",url:"/api/orders",body:{orders:[{
+      order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"A to Z Uniform",
+      lines:[{combo:"1X2",qty:12}],pi:{pi_no:"PI/590"}}]}},res);
+
+    expect(res.statusCode).toBe(409);
+    const msg=res.body.error;
+    expect(msg).toContain("PI/590");
+    expect(msg).toContain("A to Z Uniform");
+    expect(msg).toContain("JO2148");
+    expect(msg).toMatch(/second copy/i);
+    expect(msg).toMatch(/nothing has been saved/i);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+  });
+
+  /* A number taken by a PI that never produced an order is the OTHER case, and
+     there picking a new number really is the answer. */
+  it("a collision with no orders behind it simply asks for another number",async()=>{
+    const live={articles:{CUSTOM:{combos:{"1X2":{rates:{CUTTING:{MAT:1}}}},combo_order:["1X2"]}}};
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:live}]}).mockResolvedValue({rows:[]});
+    const client={query:vi.fn(async sql=>{
+      if(String(sql).includes("with hit as")) return {rows:[{
+        pi_no:"PI/777", party:null, status:null, created_at:null, order_count:"0", order_nos:null }]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await ordersHandler({headers:AUTH,method:"POST",url:"/api/orders",body:{orders:[{
+      order_date:"2026-08-22",article_code:"CUSTOM",priority:2,party:"Buyer",
+      lines:[{combo:"1X2",qty:12}],pi:{pi_no:"PI/777"}}]}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/different PI number/i);
+    expect(res.body.error).not.toMatch(/second copy/i);
+  });
+
   it("rejects order lines whose exact sizes do not add up to the planning quantity",async()=>{
     const live={articles:{CUSTOM:{combos:{"1X2":{rates:{CUTTING:{MAT:1}}}},combo_order:["1X2"]}}};
     dbMocks.q.mockResolvedValueOnce({rows:[{value:live}]});

@@ -105,9 +105,31 @@ export default wrap(async (req, res) => {
         // and the PI materialiser then merges unrelated orders.
         for(const no of [...piNos].sort())
           await client.query("select pg_advisory_xact_lock(hashtext($1))",[no]);
-        const {rows:used}=await client.query(`select pi_no from proforma_invoices where pi_no = any($1::text[])
-          union select distinct pi->>'pi_no' as pi_no from orders where pi->>'pi_no' = any($1::text[])`,[piNos]);
-        if(used.length){await client.query("rollback");return fail(res,409,`PI number already exists: ${used.map(r=>r.pi_no).join(", ")}. Request a new PI number.`);}
+        /* A collision is answered with WHAT IT COLLIDED WITH.
+           "Request a new PI number" is right for one case — a genuinely new PI
+           that happened to land on a taken number — and actively harmful for
+           the far commoner one: re-saving a PI that has already been imported.
+           Following that advice there files a SECOND copy of the same customer
+           order under an invented number, and every pair is then counted twice
+           in production, procurement and dispatch. So the answer names the
+           customer, when it was filed and which orders it already created, and
+           says plainly what saving again would do. */
+        const {rows:used}=await client.query(`
+          with hit as (
+            select pi_no from proforma_invoices where pi_no = any($1::text[])
+            union
+            select distinct pi->>'pi_no' as pi_no from orders where pi->>'pi_no' = any($1::text[])
+          )
+          select h.pi_no, p.party, p.status, p.created_at,
+                 (select count(*) from orders o where o.pi->>'pi_no' = h.pi_no) as order_count,
+                 (select string_agg(o.order_no, ', ' order by o.order_no)
+                    from orders o where o.pi->>'pi_no' = h.pi_no) as order_nos
+          from hit h left join proforma_invoices p on p.pi_no = h.pi_no
+          order by h.pi_no`,[piNos]);
+        if(used.length){
+          await client.query("rollback");
+          return fail(res,409,piCollisionMessage(used));
+        }
       }
       const out = [];
       for(const d of drafts){
@@ -137,3 +159,27 @@ export default wrap(async (req, res) => {
 
   return fail(res, 405, `${req.method} not allowed`);
 });
+
+/* Written for the clerk looking at the screen, not for a log. */
+function piCollisionMessage(rows){
+  const one = rows.length === 1;
+  const parts = rows.map(r => {
+    const bits = [`${r.pi_no} is already on the system`];
+    if(r.party) bits.push(`for ${r.party}`);
+    if(r.created_at){
+      const d = new Date(r.created_at);
+      if(!isNaN(d)) bits.push(`filed ${d.toISOString().slice(0,10)}`);
+    }
+    const n = Number(r.order_count) || 0;
+    let line = bits.join(" ") + ".";
+    if(n) line += ` It already created ${n} order${n===1?"":"s"}${r.order_nos?` (${r.order_nos})`:""}.`;
+    return line;
+  });
+  const anyOrders = rows.some(r => Number(r.order_count) > 0);
+  const tail = anyOrders
+    ? " Nothing has been saved. If this is the same PI you already imported, it is done — open it in the PI database. "
+      + "Saving it again under a different number would file a SECOND copy of the same order, and every pair would be "
+      + "counted twice in production, procurement and dispatch. Only change the number if this is genuinely a different PI."
+    : " Nothing has been saved. Use a different PI number, or open the existing one in the PI database.";
+  return (one ? parts[0] : `These PI numbers are already on the system. ${parts.join(" ")}`) + tail;
+}

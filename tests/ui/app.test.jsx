@@ -693,6 +693,46 @@ describe("edits made in the review block reach the invoice",()=>{
   });
 });
 
+/* Reading a PI sets the PI number to that invoice's own number, the customer,
+   the city, the agreed discount and the colours. Reading anything AFTERWARDS
+   replaced only the cards — so a handwritten SPIKE slip keyed after a PI
+   upload was saved under the uploaded PI's number and came back
+   "409 — PI number already exists: PI/590".
+   The number fails loudly; the customer and the discount carry over in
+   silence, which is worse. */
+describe("a new reading inherits nothing from the last one",()=>{
+  it("issues a fresh PI number and clears the customer after a PI upload",async()=>{
+    mocks.nextPiNumber
+      .mockResolvedValueOnce({pi_no:"PI-2026-000001"})
+      .mockResolvedValue({pi_no:"PI-2026-000002"});
+    mocks.readPi.mockResolvedValue(JSON.stringify({
+      customer:"A to Z Uniform", customer_city:"Udaipur", pi_date:"2026-06-17",
+      order_no:"PI/590", discount_pct:40,
+      items:[{article:"REX GOLA (V)", vl:"VELCRO", sole_colour:"Black", upper_colour:"Black",
+        rows:[{size:"11s",qty:18}]}],
+    }));
+    const user=userEvent.setup();
+    render(<App/>);
+    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+
+    const upload=document.querySelector('input[type="file"][accept="application/pdf,image/*"]');
+    await user.upload(upload,new File(["x"],"pi.pdf",{type:"application/pdf"}));
+    // The uploaded PI keeps ITS OWN number and brings its customer with it.
+    const customer=await screen.findByLabelText(/Customer/);
+    await waitFor(()=>expect(customer.value).toBe("A to Z Uniform"));
+    const afterPiRead=mocks.nextPiNumber.mock.calls.length;
+
+    // Now start the next order, exactly as the clerk does with a fresh slip.
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+
+    // A newly issued number was requested — the previous PI's must not be reused.
+    await waitFor(()=>
+      expect(mocks.nextPiNumber.mock.calls.length).toBeGreaterThan(afterPiRead));
+    // And none of the previous reading's commercial detail survived.
+    expect((await screen.findByLabelText(/Customer/)).value).toBe("");
+  });
+});
+
 /* The whole read is somebody's handwriting, so the correction path matters as
    much as the read. The two things a clerk most often has to fix are WHICH
    RANGE a line landed in and WHICH RUN that range is — and until now the
