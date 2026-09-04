@@ -121,7 +121,15 @@ in a DIGIT takes a hyphen (`X1-01`), because `X1`+`01` = `X101` reads equally
 well as X10 №1 and a later run would hand out a number already in print.
 Assigning is master data — the `reference` allowlist refuses
 `assign_product_codes` to everyone but admin and the data manager, without
-needing a rule of its own.
+needing a rule of its own. It is a ONE-OFF action on **Data & BOM -> Product
+codes**, not something that happens on its own: until it is run every article
+has no code and every document correctly prints a blank, because an invented
+code on an invoice is worse than none. **The PI prints the code as its first
+column**, ahead of the article name — the code is how the article is identified
+on the floor and on the phone, and the name stays beside it because a code
+alone is not a description. Adding that column moved `SPAN_LEFT` in
+`PiDocument.jsx` from 7 to 8; a stale 7 puts F.O.R., Cash Discount, GST Dis and
+the total one cell out of line on every invoice.
 
 **A customer's history is the SHOE first, the variant second.** "Which variant
 had been given to that customer" is asked one level up ("have they had Jack?")
@@ -472,6 +480,8 @@ Each of these was a real bug found in production. Most have a regression test no
 | One material on several component rows | The revised BOM writes a row per CUT PIECE, so `MESH 58" WHITE` appears as VAMP MESH and again as MESH TOUNGE. The importer read those as duplicate materials and rejected the file. Removing the check naively is worse: the first row wins and the rest are discarded, understating MESH by 25% and REXINE 54" by 75% — silently, in the figure procurement buys from. Rates now ACCUMULATE (`+=`), a true duplicate is the same COMPONENT twice, and the components are stored beside `rates` so nothing that reads rates changes. |
 | A column nobody thought was missing | The factory's sheet heads that column "Cutting componenet" — with the typo. It fell into the unrecognised-column flow, so components were silently not stored at all while the upload otherwise looked fine. Their spelling is aliased. Read the client's actual header, not the one the template says. |
 | Tests that hide their own coverage | `process.exit()` at the end of a core test kills the process before V8 writes its coverage file. It looked like six new modules had no tests at all and dropped the gate to 68%. `process.exitCode` instead. (The real cause that day was a broken chain — but the exit pattern makes any such failure much harder to read.) |
+| A test file that ended in process.exit() | `tests/pi.test.mjs` finished with `process.exit()`, so tests appended after it NEVER RAN — they printed nothing and were not counted, which reads exactly like "the new tests pass". It was also truncating V8's coverage write: switching to `process.exitCode` took core coverage from ~74% to 93.84% with no new tests. The rule is already in this file; this was a live instance of it. |
+| Opening the app writing to the database | Two load-time faults with the same shape. The capacity auto-save was guarded by a "skip the first run" ref, but the effect runs on mount BEFORE the settings request returns, so the ref was spent by the time the async hydrate called `setCaps` — the hydrate then looked like a user edit and the app PUT settings back on EVERY page load, flashing "Machine capacities saved" at someone who saved nothing and showing every non-admin role a red 403 on a screen they had just opened. Separately, `next_number` is `nextval()`, and allocating on mount burned a PI number per page load: 113 consumed against 3 filed. Only a real edit marks capacities dirty, and a PI number is issued when a reading STARTS (`resetReadState`). Nothing is written by looking. |
 | A reading that inherited the last one | Reading a PI sets the PI number to that invoice's own number, plus the customer, city, agreed discount and colours. Reading a photo afterwards replaced only the CARDS — so a handwritten SPIKE slip keyed after a PI upload was filed under the uploaded PI's number and came back `409 — PI number already exists: PI/590`. The number fails loudly; the customer, the discount and the colours carried over in SILENCE, which is worse — a Spike order wearing another customer's 40% discount looks perfectly reasonable on screen. `resetReadState()` is now the one place a new reading starts from, shared by the photo path, "Enter by hand" and the PI reader, so the three cannot drift apart again. A photo-read order takes a newly issued number; an uploaded PI keeps its own. |
 | Advice that duplicated the order it was refusing | Saving a PI whose number is taken answered "PI number already exists: PI/590. Request a new PI number." That is right for a genuinely new PI that landed on a taken number, and actively harmful for the commoner case — the SAME PI being saved twice. Following it files a SECOND copy of the same customer order under an invented number, and every pair is counted twice in production, procurement and dispatch. The refusal now names what it collided with (customer, date, and the orders it already created) and says plainly what saving again would do. A collision with no orders behind it still just asks for another number. |
 | A colour outranking the product | `matchArticle("Spike Blue")` returned JACK LACE BLACK-BLUE. `blue` occurs TWICE in that name — once in `BLACK-BLUE`, again in the `(BLUE SKINFIT)` note — so a colour mentioned in passing scored 2 while SPIKE, the product actually written, scored 1; `COLOURS` was only `["black","white"]`, so every other colour counted as part of the name. `thunder red` reached JACK too. The match is made on the FAMILY alone now, tokens are deduped, bracketed notes are dropped before the family is read, and a colour or closure can only choose BETWEEN articles of the family the slip named. |
@@ -555,7 +565,8 @@ centres, 13 screens, 7 API endpoints.
   (`writes`). Reading follows the screens.
   - `admin` — everything, including the article master, BOM, parties, capacities
   - `owner` — sees the whole factory, changes nothing (Owner / Director)
-  - `planner` — orders, PIs, scheduling, dispatch, AI readers, stock (unchanged)
+  - `planner` — Production Planner: schedule, production plan, machine load. Edits
+    the PLAN, never the order — see below
   - `sales` — PIs, bulk orders, parties and their terms
   - `dispatch` — records dispatch ONLY; reads the order book and packing rules
   - `procurement` / `store` — the buying list and stock figures, never the BOM
@@ -567,9 +578,16 @@ centres, 13 screens, 7 API endpoints.
   otherwise mean a schema migration to hand somebody a login, and a role the app
   does not recognise is refused everything anyway.
   The one split worth knowing: `api/reference.js` carries BOTH stock figures (daily
-  clerical work, planner) and the BOM (master data, admin), so it is judged on the
-  body keys, not the endpoint. Mixing a BOM change in beside a stock change sinks the
-  whole request.
+  clerical work, store/procurement) and the BOM (master data, admin), so it is judged
+  on the body keys, not the endpoint. Mixing a BOM change in beside a stock change
+  sinks the whole request.
+  **The planner is judged the same way, and for a sharper reason.** Permissions are
+  enforced per ENDPOINT, but re-sequencing production is a `PATCH /api/orders` — so
+  granting that endpoint would also allow rewriting quantities and DELETING orders,
+  which the factory's access list gives to Sales. `orders:"plan"` allows a PATCH whose
+  body is `plan_override` or `priority` and nothing else, so a planner can move work
+  about but cannot change what was ordered. `isReadOnly()` counts it, or the screen
+  would hide the very controls the role exists to use.
 - The UI hides screens a role cannot use rather than disabling their buttons — a
   screen whose every control is refused reads as a broken app, not as a permission.
   The server is still the only thing that enforces it.

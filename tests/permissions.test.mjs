@@ -48,14 +48,41 @@ test("a viewer can still update stock? No — read-only means read-only", () => 
   assert.equal(allow("viewer","PATCH","/api/reference",{stock:{"REXINE":10}}), false);
 });
 
-console.log("\nC — the planner does the daily job, not the master data");
+console.log("\nC — the planner edits the PLAN, not the order");
 
-test("a planner runs orders, PIs, dispatch and the AI readers", () => {
-  for(const [method, url] of [["POST","/api/orders"],["PATCH","/api/orders/JO1"],
-                              ["DELETE","/api/orders/JO1"],["POST","/api/pis"],
-                              ["POST","/api/dispatches"],["DELETE","/api/dispatches"],
+/* Row 5 of the factory's access list: "Production, Schedule, Production plan,
+   Machine load — Edit (Production module)". This role used to be the broad
+   three-role operating role, which let a production planner raise PIs and
+   record dispatches — work the same list assigns to CRM/Sales and the Dispatch
+   Executive. */
+test("a planner re-sequences work and nudges priority", () => {
+  assert.equal(allow("planner","PATCH","/api/orders/JO1",{plan_override:{seq:1}}), true);
+  assert.equal(allow("planner","PATCH","/api/orders/JO1",{priority:1}), true);
+});
+
+/* Permissions are enforced per ENDPOINT, and re-sequencing is a PATCH on
+   /api/orders — so granting the endpoint outright would also allow rewriting
+   quantities and DELETING orders. It is judged on the body keys instead. */
+test("a planner cannot rewrite or delete the order it is scheduling", () => {
+  assert.equal(allow("planner","PATCH","/api/orders/JO1",{lines:[]}), false);
+  assert.equal(allow("planner","POST","/api/orders",{}), false);
+  assert.equal(allow("planner","DELETE","/api/orders/JO1"), false);
+});
+
+test("a plan change cannot carry an order change in beside it", () => {
+  assert.equal(allow("planner","PATCH","/api/orders/JO1",{plan_override:{},lines:[]}), false,
+    "one disallowed key sinks the whole request, as it does for stock");
+  assert.equal(allow("planner","PATCH","/api/orders/JO1",{}), false, "and an empty body is not a free pass");
+});
+
+test("a planner raises no invoice and records no dispatch", () => {
+  for(const [method, url] of [["POST","/api/pis"],["POST","/api/dispatches"],
                               ["POST","/api/read-order-photo"],["POST","/api/copilot"]])
-    assert.equal(allow("planner", method, url), true, `planner should ${method} ${url}`);
+    assert.equal(allow("planner", method, url), false, `planner must not ${method} ${url}`);
+});
+
+test("but the plan is still a change, so the screen is not read-only", () => {
+  assert.equal(isReadOnly("planner"), false);
 });
 
 test("a planner cannot change the article master, parties or capacities", () => {
@@ -65,12 +92,12 @@ test("a planner cannot change the article master, parties or capacities", () => 
     assert.equal(allow("planner", method, url), false, `planner must not ${method} ${url}`);
 });
 
-/* The BOM and the stock figures live behind one endpoint but are completely
-   different jobs: stock is daily clerical work, the BOM is master data whose
-   every error is repeated across all future orders. */
-test("a planner may update stock figures", () => {
-  assert.equal(allow("planner","PATCH","/api/reference",{stock:{"REXINE 54\" BLACK":120}}), true);
-  assert.equal(allow("planner","PATCH","/api/reference",{stock_meta:{"REXINE":{rate:5}}}), true);
+/* Stock belongs to the Store and Procurement rows of the access list, not to
+   the planner. */
+test("a planner does not keep the stock figures either", () => {
+  assert.equal(allow("planner","PATCH","/api/reference",{stock:{"REXINE 54\" BLACK":120}}), false);
+  assert.equal(allow("store","PATCH","/api/reference",{stock:{"REXINE 54\" BLACK":120}}), true);
+  assert.equal(allow("procurement","PATCH","/api/reference",{stock_meta:{"REXINE":{rate:5}}}), true);
 });
 
 test("a planner may NOT upload a BOM or bulk-remove one through the same endpoint", () => {
@@ -80,15 +107,15 @@ test("a planner may NOT upload a BOM or bulk-remove one through the same endpoin
   assert.equal(allow("planner","PATCH","/api/reference",{mrp:{}}), false);
 });
 
-test("a planner cannot smuggle a BOM change in beside a stock change", () => {
-  assert.equal(allow("planner","PATCH","/api/reference",
+test("a store keeper cannot smuggle a BOM change in beside a stock change", () => {
+  assert.equal(allow("store","PATCH","/api/reference",
     {stock:{"REXINE":10}, bom_removal:{articles:["SPIKE"]}}), false,
     "one disallowed key must sink the whole request");
 });
 
 test("an empty body does not sail through on a technicality", () => {
-  assert.equal(allow("planner","PATCH","/api/reference",{}), false);
-  assert.equal(allow("planner","PATCH","/api/reference"), false);
+  assert.equal(allow("store","PATCH","/api/reference",{}), false);
+  assert.equal(allow("store","PATCH","/api/reference"), false);
 });
 
 console.log("\nD — the admin, and anything unrecognised");
@@ -152,10 +179,13 @@ test("a viewer is not offered screens whose every button would be refused", () =
     assert.equal(canSeeTab("viewer", tab), true, `viewer should see ${tab}`);
 });
 
-test("a planner gets the production screens but not the setup ones", () => {
-  for(const tab of ["intake","jobs","jobwork","orders","schedule","plan","machines","stock","copilot"])
+test("a planner sees the production screens and the order book, nothing else", () => {
+  for(const tab of ["mis","orders","schedule","plan","machines"])
     assert.equal(canSeeTab("planner", tab), true, `planner should see ${tab}`);
-  for(const tab of ["data","rules","catalogue","parties","fabricators"])
+  /* Scheduling needs the order book to schedule FROM; raising the paperwork
+     does not belong to this role. */
+  for(const tab of ["intake","pis","dispatch","jobwork","stock","data","rules",
+                    "catalogue","parties","fabricators"])
     assert.equal(canSeeTab("planner", tab), false, `planner should not see ${tab}`);
 });
 
@@ -169,10 +199,13 @@ test("every role lands on a screen it is allowed to open", () => {
   for(const role of ROLES) assert.equal(canSeeTab(role, defaultTab(role)), true);
 });
 
-test("only the viewer is read-only", () => {
-  assert.equal(isReadOnly("viewer"), true);
-  assert.equal(isReadOnly("planner"), false);
-  assert.equal(isReadOnly("admin"), false);
+test("the roles that change nothing are marked read-only", () => {
+  for(const role of ["viewer","owner","auditor"])
+    assert.equal(isReadOnly(role), true, `${role} changes nothing`);
+  /* Each of these writes SOMETHING, even where `writes` is empty: the planner
+     edits the plan, the store keeper the stock figures. */
+  for(const role of ["admin","planner","store","procurement","sales","dispatch","data"])
+    assert.equal(isReadOnly(role), false, `${role} can change something`);
 });
 
 console.log("\nH — the narrower roles from the factory's own access list");

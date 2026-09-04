@@ -176,14 +176,28 @@ export default function App({ user=null, onSignOut=null }={}){
     refresh();
   };
 
-  // Capacities are shared config, not a per-browser preference — persist them (debounced).
-  const capsLoaded = useRef(false);
+  /* Capacities are shared config, not a per-browser preference — persist them
+     (debounced) WHEN SOMEBODY EDITS ONE.
+     The old guard was a "skip the first run" ref, and it did not hold: the
+     effect runs on mount, BEFORE the settings request comes back, so the ref
+     was already spent by the time the async hydrate called setCaps. The
+     hydrate then looked exactly like a user edit and the app PUT the settings
+     back on every single page load — flashing "Machine capacities saved" at
+     someone who had saved nothing, and, because only an admin may write
+     settings, showing every other role a red "Could not save the capacity
+     change: 403" on a screen they had only just opened.
+     Only a real edit marks it dirty, so hydrating can never be mistaken for
+     one. */
+  const capsDirty = useRef(false);
+  const editCaps = updater => { capsDirty.current = true; setCaps(updater); };
   useEffect(()=>{
-    if(!capsLoaded.current){ capsLoaded.current = true; return; }   // skip the initial hydrate
+    if(!capsDirty.current) return;
     const t=setTimeout(()=>{ api.putSettings({capacities:
         Object.fromEntries(Object.entries(caps).filter(([code])=>INPUTS.workcenters[code]))})
-      .then(()=>setFlash("Machine capacities saved — the whole plan has been recalculated."))
-      .catch(e=>setLoadErr(`Could not save the capacity change: ${e.message||e}. The figure on screen is not stored.`));
+      .then(()=>{ capsDirty.current = false;
+                  setFlash("Machine capacities saved — the whole plan has been recalculated."); })
+      .catch(e=>{ capsDirty.current = false;
+                  setLoadErr(`Could not save the capacity change: ${e.message||e}. The figure on screen is not stored.`); });
     }, 600);
     return ()=>clearTimeout(t);
   },[caps]);
@@ -527,7 +541,7 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
-        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={setCaps} targets={targets} setTargets={setTargets} />}
+        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
@@ -659,7 +673,13 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     try{const r=await api.nextPiNumber();setPiNo(r.pi_no);return r.pi_no;}
     catch(e){setErr("Could not allocate a PI number: "+(e.message||e));return "";}
   };
-  useEffect(()=>{allocatePiNo();},[]);
+  /* NOT on mount. `next_number` is nextval() on a sequence, so allocating one
+     here consumed a PI number every time anybody opened the app — 113 burned
+     against 3 actually filed on the live book, leaving gaps in a commercial
+     document series nobody can account for later. A number is issued when a
+     reading actually STARTS, which is resetReadState(): the photo path, the PI
+     reader and "Enter by hand" all go through it, so every route that begins
+     an order still gets one. */
   const ARTS=Object.keys(INPUTS.articles).filter(article=>
     ((INPUTS.articles[article]||{}).combo_order||Object.keys((INPUTS.articles[article]||{}).combos||{})).length>0);
   /* "JACK07 · JACK VELCRO WHITE" where a code has been assigned, and the plain

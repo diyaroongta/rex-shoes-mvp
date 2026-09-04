@@ -29,6 +29,9 @@ const ALL_WRITES = ["orders","pis","dispatches","reference","catalogue","parties
    repeats across all future orders. A role gets one, the other or neither —
    judged on the body keys, not on the endpoint. */
 const STOCK_KEYS = ["stock","stock_meta"];
+/* The PLAN, as opposed to the order. Both are single-key PATCHes from the
+   scheduling screens: the queue position and the manual override blob. */
+const PLAN_KEYS = ["plan_override","priority"];
 
 const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","dispatch","schedule",
                    "plan","machines","procurement","stock","parties","fabricators",
@@ -60,17 +63,23 @@ export const ROLE_DEFS = {
     tabs:["mis","orders","pis","dispatch","rules"],
     writes:["dispatches"], reference:null,
   },
-  /* UNCHANGED from the three-role model. Accounts already carry it and it is
-     the day-to-day operating role: orders, PIs, scheduling, dispatch, stock.
-     The narrower roles below sit beside it rather than carving it up. */
+  /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
+     Machine load — Edit (Production module)". It used to be the broad
+     three-role operating role, which let a production planner raise PIs and
+     record dispatches — work the same list gives to CRM/Sales and the Dispatch
+     Executive.
+     `orders:"plan"` is what makes "edit the PLAN, not the ORDER" expressible:
+     permissions are enforced per ENDPOINT, and re-sequencing work is a PATCH
+     on /api/orders, so granting the endpoint outright would also allow
+     rewriting quantities and DELETING orders. It is judged on the body keys
+     instead, the same way `reference:"stock"` is. */
   planner: {
-    label:"Planner",
-    summary:"Day-to-day production: orders, PIs, scheduling, dispatch and stock. "
-      +"Cannot change the article master, BOM, parties or capacities.",
-    tabs:["mis","intake","pis","orders","jobs","jobwork","dispatch","schedule",
-          "plan","machines","procurement","stock","copilot"],
-    writes:["orders","pis","dispatches","read-order-photo","read-pi","copilot"],
-    reference:"stock",
+    label:"Production Planner",
+    summary:"Builds the production schedule, balances machine load and tracks plan "
+      +"against output. Re-sequences work; cannot raise a PI, record a dispatch, "
+      +"or change what was ordered.",
+    tabs:["mis","orders","schedule","plan","machines"],
+    writes:[], orders:"plan", reference:null,
   },
   procurement: {
     label:"Procurement Officer",
@@ -158,6 +167,18 @@ export function can(role, method, url, body){
       : `${def.label} cannot change the BOM or reference data.` };
   }
 
+  /* Edit the plan, not the order. A production planner re-sequences work and
+     pins machines; creating, re-pricing or deleting an order belongs to
+     Sales. */
+  if(endpoint === "orders" && def.orders === "plan"){
+    if(verb !== "PATCH")
+      return { allowed:false, reason:`${def.label} can re-sequence production but cannot create or delete an order.` };
+    const keys = Object.keys(body || {});
+    if(keys.length && keys.every(k => PLAN_KEYS.includes(k))) return { allowed:true };
+    return { allowed:false,
+      reason:`${def.label} can change the plan — sequence, start date, machine, days — but not what was ordered.` };
+  }
+
   if(def.writes.includes(endpoint)) return { allowed:true };
 
   return { allowed:false,
@@ -185,5 +206,9 @@ export function defaultTab(role){
 export function isReadOnly(role){
   const def = defOf(role);
   if(!def) return true;
-  return def.writes !== "all" && def.writes.length === 0 && !def.reference;
+  /* `orders` counts: a production planner writes nothing on the ORDER but does
+     change the PLAN, so calling them read-only would be wrong on screen and
+     would hide the controls they are meant to use. */
+  return def.writes !== "all" && def.writes.length === 0
+    && !def.reference && !def.orders;
 }

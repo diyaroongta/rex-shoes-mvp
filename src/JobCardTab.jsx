@@ -145,7 +145,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         {/* A new line or job worker turns up mid-shift, and the job order that
             prompted it is already half entered. Sending the user to Setup to
             add one would discard it, so it is added from here. */}
-        <button type="button" onClick={()=>setAdding(adding?null:{name:"",type:"external",rate:"",contact:"",tat_days:""})}
+        <button type="button" onClick={()=>setAdding(adding?null:{name:"",type:"external",rate:"",contact_person:"",contact_phone:"",tat_days:""})}
           className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
           {adding?"Cancel":"+ Add a fabricator"}</button>
         <label className="text-xs text-slate-600">Date
@@ -214,6 +214,11 @@ function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
   const rules=RULES[draft.type]||{};
   const set=(k,v)=>setDraft(d=>({...d,[k]:v}));
   const clash=existing.some(f=>f.name.trim().toLowerCase()===draft.name.trim().toLowerCase());
+  /* The field names are the SCHEMA's — contact_person and contact_phone, not a
+     single "contact". validateFabricator reads those two, so a form with one
+     combined box left "a contact is required" permanently unsatisfied and the
+     Save button permanently disabled: an external fabricator could never be
+     added at all. */
   const check=validateFabricator({...draft,rate:draft.rate===""?null:Number(draft.rate),
     tat_days:draft.tat_days===""?null:Number(draft.tat_days)});
   const problems=clash?["That name is already on the fabricator list"]:check.problems;
@@ -222,7 +227,9 @@ function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
     setSaving(true);
     try{
       const created=await api.saveFabricator({name:draft.name.trim(),type:draft.type,
-        rate:draft.rate===""?null:Number(draft.rate), contact:draft.contact.trim()||null,
+        rate:draft.rate===""?null:Number(draft.rate),
+        contact_person:draft.contact_person.trim()||null,
+        contact_phone:draft.contact_phone.trim()||null,
         tat_days:draft.tat_days===""?null:Number(draft.tat_days)});
       await onSaved(created&&created.name?created:{...draft,name:draft.name.trim()});
     }catch(e){ onError(e.message||String(e)); }
@@ -245,9 +252,14 @@ function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
         <input type="number" min="0" step="0.01" value={draft.rate} aria-label="Rate"
           onChange={e=>set("rate",e.target.value)}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-40"/></label>}
-      <label className="text-xs text-slate-600">Contact{rules.contact==="required"?"":" (optional)"}
-        <input value={draft.contact} aria-label="Contact" onChange={e=>set("contact",e.target.value)}
-          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-48"/></label>
+      <label className="text-xs text-slate-600">Contact person{rules.contact==="required"?"":" (optional)"}
+        <input value={draft.contact_person} aria-label="Contact person"
+          onChange={e=>set("contact_person",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-44"/></label>
+      <label className="text-xs text-slate-600">Phone{rules.contact==="required"?"":" (optional)"}
+        <input value={draft.contact_phone} aria-label="Contact phone" inputMode="tel"
+          onChange={e=>set("contact_phone",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-40"/></label>
       <label className="text-xs text-slate-600">Turnaround (days)
         <input type="number" min="0" value={draft.tat_days} aria-label="Turnaround days"
           onChange={e=>set("tat_days",e.target.value)}

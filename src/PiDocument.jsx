@@ -1,5 +1,6 @@
 import React from "react";
 import { buildPI, inr, DEFAULT_TERMS } from "../shared/pi.js";
+import { REF as PI_REF } from "./lib/refdata.js";
 
 /* Proforma Invoice, laid out to match the format the factory already issues.
    Every number comes from shared/pi.js — this file only arranges them. */
@@ -59,8 +60,16 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
   const source = order.catalogue_source || "As per catalogue";
   const label  = order.article_label || order.article_code;
 
+  /* The product code the factory says out loud — JACK07 rather than a colour
+     and a closure read back in full. It is the FIRST column because that is
+     how the article is identified on the floor and on the phone; the full
+     name stays beside it, because a code alone is not a description. Blank
+     until codes are assigned in Data & BOM, and blank is correct: an invented
+     code on an invoice is worse than none. */
+  const codeFor = code => ((PI_REF.articles||{})[code]||{}).product_code || "";
+
   // The money column sits under Amount; labels are right-aligned before it.
-  const SPAN_LEFT = 7;    // Article..Article Image
+  const SPAN_LEFT = 8;    // Code..Article Image
   return (
     <div id="pi-area" style={{ fontFamily:"Arial, Helvetica, sans-serif", color:"#000", background:"#fff" }}>
 
@@ -93,7 +102,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
       <table style={{ width:"100%", borderCollapse:"collapse", marginTop:"-1px" }}>
         <thead>
           <tr>
-            {["Article","Closure","Sole","Upper Colour","Order Nature","Print","Article Image",
+            {["Code","Article","Closure","Sole","Upper Colour","Order Nature","Print","Article Image",
               "Size","Qty","MRP","Discount","Rate","Amount"].map(h=>(
               <th key={h} style={H}>{h}</th>
             ))}
@@ -102,6 +111,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
         <tbody>
           {pi.groups.map(g => g.lines.map((l,li)=>(
             <tr key={`${g.index}-${li}`}>
+              <td style={{...N, fontWeight:700, whiteSpace:"nowrap"}}>{codeFor(g.article_code)}</td>
               <td style={N}>{g.article_label}</td>
               <td style={N}>{l.vl || g.vl}</td>
               <td style={N}>{g.sole_colour}</td>

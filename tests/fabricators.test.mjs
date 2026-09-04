@@ -174,6 +174,39 @@ test("every type has a rule set, and every rule set a type", () => {
   assert.deepEqual(Object.keys(RULES).sort(), [...TYPES].sort());
 });
 
+console.log("\nZ — the contact is TWO fields, and the form must send both");
+
+/* The schema stores contact_person and contact_phone; there is no single
+   "contact" column, and validateFabricator reads the two. A form offering one
+   combined box therefore left "a contact is required" permanently unsatisfied,
+   which disabled Save — an external fabricator could not be added at all. */
+test("a combined 'contact' field does not satisfy the requirement", () => {
+  const combined = validateFabricator({
+    name:"New Durga Line", type:"external", rate:12, tat_days:7,
+    contact:"Ramesh 9876543210",              // the wrong shape
+  });
+  assert.equal(combined.ok, false);
+  assert.ok(combined.problems.some(p => /contact person or phone/i.test(p)),
+    "and it fails for the contact, not for something else");
+});
+
+test("contact_person or contact_phone each satisfy it on their own", () => {
+  const base = { name:"New Durga Line", type:"external", rate:12, tat_days:7 };
+  assert.equal(validateFabricator({ ...base, contact_person:"Ramesh" }).ok, true);
+  assert.equal(validateFabricator({ ...base, contact_phone:"9876543210" }).ok, true);
+  const both = validateFabricator({ ...base, contact_person:"Ramesh", contact_phone:"9876543210" });
+  assert.equal(both.value.contact_person, "Ramesh");
+  assert.equal(both.value.contact_phone, "9876543210");
+});
+
+/* Whatever a form sends, only these names reach the database. */
+test("the validated value carries the schema's own column names", () => {
+  const v = validateFabricator({ name:"X", type:"external", rate:1, tat_days:1,
+                                 contact_person:"A", contact_phone:"9999999999" }).value;
+  assert.ok("contact_person" in v && "contact_phone" in v);
+  assert.ok(!("contact" in v), "there is no contact column to write to");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes
    its coverage file, so a suite that passed reported 0% and dragged the whole

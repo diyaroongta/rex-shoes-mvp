@@ -693,6 +693,42 @@ describe("edits made in the review block reach the invoice",()=>{
   });
 });
 
+/* Opening the app must WRITE NOTHING.
+   The capacity auto-save was guarded by a "skip the first run" ref, which did
+   not hold: the effect runs on mount, BEFORE the settings request comes back,
+   so the ref was spent by the time the async hydrate called setCaps. The
+   hydrate then looked like a user edit and the app PUT the settings back on
+   every page load — flashing "Machine capacities saved" at someone who had
+   saved nothing and, because only an admin may write settings, showing every
+   other role a red 403 on a screen they had only just opened.
+   The PI number had the same shape of fault: `next_number` is nextval() on a
+   sequence, so allocating one on mount burned a PI number every time anybody
+   opened the app. */
+describe("opening the app writes nothing",()=>{
+  it("does not save capacities merely because settings were loaded",async()=>{
+    mocks.getSettings.mockResolvedValue({capacities:{CUTTING:1234}});
+    render(<App/>);
+    await screen.findByRole("button",{name:"Order Book"});
+    await waitFor(()=>expect(mocks.getSettings).toHaveBeenCalled());
+    // Give the 600ms debounce room to fire if it were going to.
+    await new Promise(r=>setTimeout(r,900));
+    expect(mocks.putSettings).not.toHaveBeenCalled();
+  });
+
+  it("does not consume a PI number until an order is actually started",async()=>{
+    render(<App/>);
+    await screen.findByRole("button",{name:"Order Book"});
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+    expect(mocks.nextPiNumber).not.toHaveBeenCalled();
+
+    const user=userEvent.setup();
+    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
+    // Starting one DOES issue a number — lazily, exactly once.
+    await waitFor(()=>expect(mocks.nextPiNumber).toHaveBeenCalledTimes(1));
+  });
+});
+
 /* Reading a PI sets the PI number to that invoice's own number, the customer,
    the city, the agreed discount and the colours. Reading anything AFTERWARDS
    replaced only the cards — so a handwritten SPIKE slip keyed after a PI

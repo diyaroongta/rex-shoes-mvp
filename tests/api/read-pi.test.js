@@ -18,7 +18,9 @@ import readPi from "../../api/read-pi.js";
 import { COOKIE, signSession } from "../../api/_lib/auth.js";
 
 process.env.AUTH_SECRET = "test-only-secret-of-at-least-32-characters";
-const AUTH = { cookie: `${COOKIE}=${signSession({ username: "tester", role: "planner" })}` };
+/* Reading a PI is CRM/Sales work on the factory's access list — the Production
+   Planner schedules what already exists and raises no paperwork. */
+const AUTH = { cookie: `${COOKIE}=${signSession({ username: "tester", role: "sales" })}` };
 
 const response = () => ({
   statusCode: 200, body: null,

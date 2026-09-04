@@ -164,5 +164,33 @@ test("lakh/crore separators", () => {
   assert.equal(inr(0), "0");
 });
 
+console.log("\nZ — the product code on the invoice");
+
+/* The factory says "JACK07", not a colour and a closure read back in full, so
+   the code leads the line. It is a COLUMN, which means the deduction ladder's
+   colspan moved with it: PiDocument's SPAN_LEFT covers Code..Article Image,
+   and a stale 7 would have pushed F.O.R., Cash Discount, GST Dis and the
+   total one cell out of line on every invoice the factory issues. */
+test("the PI's left block spans every descriptive column", () => {
+  const header = ["Code","Article","Closure","Sole","Upper Colour","Order Nature",
+                  "Print","Article Image","Size","Qty","MRP","Discount","Rate","Amount"];
+  const spanLeft = header.indexOf("Size");
+  assert.equal(spanLeft, 8, "Code..Article Image is eight columns, not seven");
+  assert.equal(header.length - spanLeft, 6, "Size..Amount is the six that carry figures");
+});
+
+/* A code is master data, and an invented one on an invoice is worse than a
+   blank. An article with no code assigned prints nothing in that column. */
+test("an uncoded article contributes no code, rather than a guessed one", () => {
+  const codeFor = (articles, code) => ((articles||{})[code]||{}).product_code || "";
+  const articles = { "JACK LACE BLACK-BLUE (BLUE SKINFIT)": { product_code:"JACK03" }, "SPIKE": {} };
+  assert.equal(codeFor(articles, "JACK LACE BLACK-BLUE (BLUE SKINFIT)"), "JACK03");
+  assert.equal(codeFor(articles, "SPIKE"), "");
+  assert.equal(codeFor(articles, "NOT AN ARTICLE"), "");
+  assert.equal(codeFor(undefined, "SPIKE"), "");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+/* exitCode, not exit(): process.exit() kills the process before V8 flushes
+   its coverage file — and before anything written below it can run. */
+process.exitCode = failed ? 1 : 0;
