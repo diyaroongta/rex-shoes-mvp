@@ -33,7 +33,7 @@ const STOCK_KEYS = ["stock","stock_meta"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","dispatch","schedule",
+const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","repair","dispatch","schedule",
                    "plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -60,7 +60,9 @@ export const ROLE_DEFS = {
     /* The order book and the packing rules are READ here: you cannot pack a
        shipment without seeing what was ordered and how it packs. Writing is
        confined to dispatch. */
-    tabs:["mis","orders","pis","dispatch","rules"],
+    /* Repair is the last thing that happens to a shoe before it goes on the
+       lorry, so it belongs to whoever is packing it. */
+    tabs:["mis","orders","pis","repair","dispatch","rules"],
     writes:["dispatches"], reference:null,
   },
   /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
@@ -102,7 +104,7 @@ export const ROLE_DEFS = {
   auditor: {
     label:"Auditor / Consultant",
     summary:"Reads the dashboard and the change history. No edit rights at all.",
-    tabs:["mis","orders","pis","dispatch","schedule","procurement","stock","data"],
+    tabs:["mis","orders","pis","repair","dispatch","schedule","procurement","stock","data"],
     writes:[], reference:null,
   },
   /* Kept because accounts already carry it, and because "sees everything,

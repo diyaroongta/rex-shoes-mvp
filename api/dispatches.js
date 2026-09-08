@@ -5,6 +5,7 @@ import { validateIssue, receive, slipFor } from "../shared/job-work.js";
 import { jobOrderBalance } from "../shared/job-orders.js";
 import { INPUTS } from "../shared/inputs.js";
 import { pairsPerCarton, setReference } from "../shared/bridge.js";
+import { validateMovement, repairLedger } from "../shared/repair.js";
 
 function validDate(value){
   if(value==null||value==="") return true;
@@ -136,10 +137,69 @@ async function jobWork(req, res){
   return fail(res, 405, `${req.method} not allowed`);
 }
 
+/* Repair lives here rather than in api/repairs.js because Vercel's Hobby plan
+   builds one function per file under api/ and allows TWELVE — the project is at
+   exactly twelve, and a thirteenth is rejected at DEPLOY time even though the
+   build and every test pass. Job work already rides here for the same reason,
+   and repair is genuinely dispatch-adjacent: it is the last thing that happens
+   to a shoe before it goes on the lorry. */
+async function repairs(req, res){
+  if(req.method === "GET"){
+    const { rows } = await q(
+      `select id, order_no, size, kind, qty, moved_on, note, created_at
+         from repairs order by id desc`);
+    return res.status(200).json(rows);
+  }
+
+  if(req.method === "POST"){
+    const body = req.body || {};
+    /* Every movement is checked against what this order can actually support,
+       using the SAME pure function the screen uses — so the browser cannot be
+       shown one answer and the database given another. */
+    const { rows: prior } = await q(
+      `select size, kind, qty from repairs where order_no = $1`, [String(body.order_no||"")]);
+    const already = { sent:0, returned:0, rejected:0 };
+    for(const r of prior)
+      if(String(r.size) === String(body.size) && already[r.kind] != null)
+        already[r.kind] += Number(r.qty) || 0;
+
+    const checked = validateMovement(body, { already, available: body.available });
+    if(!checked.ok) return fail(res, 400, checked.problems.join("; "));
+    const v = checked.value;
+
+    const { rows: ord } = await q(
+      `select order_no from orders where order_no = $1 and active`, [v.order_no]);
+    if(!ord.length) return fail(res, 404, `no live order ${v.order_no}`);
+
+    const { rows } = await q(
+      `insert into repairs (order_no, size, kind, qty, moved_on, note, created_by)
+       values ($1,$2,$3,$4,$5,$6,$7)
+       returning id, order_no, size, kind, qty, moved_on, note, created_at`,
+      [v.order_no, v.size, v.kind, v.qty, v.on, v.note, (req.user||{}).username || null]);
+    return res.status(201).json(rows[0]);
+  }
+
+  /* A movement is a RECORD OF WHAT HAPPENED, so a wrong one is deleted rather
+     than edited — an edited quantity would leave no trace that it changed. */
+  if(req.method === "DELETE"){
+    const id = Number((req.query||{}).id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const { rowCount } = await q("delete from repairs where id = $1", [id]);
+    if(!rowCount) return fail(res, 404, "that repair movement is no longer there — reload the screen");
+    return res.status(200).json({ id, deleted:true });
+  }
+
+  return fail(res, 405, `${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
   if(String((req.query||{}).resource||"") === "job_work"
      || (req.body && req.body.resource === "job_work"))
     return jobWork(req, res);
+
+  if(String((req.query||{}).resource||"") === "repairs"
+     || (req.body && req.body.resource === "repairs"))
+    return repairs(req, res);
 
   if(req.method === "GET"){
     const { rows } = await q(

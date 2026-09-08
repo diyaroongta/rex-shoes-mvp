@@ -301,3 +301,21 @@ alter table dispatches add column if not exists hidden boolean not null default 
 -- Executive then meant a schema migration to hand somebody a login, and an
 -- account whose role the app does not recognise is refused everything anyway.
 alter table users drop constraint if exists users_role_check;
+
+/* Repair, between production and dispatch. An EVENT LOG, not three counters,
+   because the factory's own ARMOUR 17004 card records each movement as a date,
+   a size and a quantity — keeping the events means the card can be reproduced
+   and a wrong entry reversed. `kind` is sent / returned / rejected; pairs sent
+   and not yet back are IN REPAIR and are not a shortage until rejected. */
+create table if not exists repairs (
+  id          bigserial primary key,
+  order_no    text not null,
+  size        text not null,
+  kind        text not null,
+  qty         integer not null,
+  moved_on    date,
+  note        text,
+  created_by  text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists repairs_order_idx on repairs (order_no);

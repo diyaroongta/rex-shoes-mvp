@@ -143,6 +143,20 @@ opposite of what was asked. Two spellings of one customer are one customer
 holds both `K.P. Burgav` and `K.P. Nurgav`, which is probably a typo and is the
 factory's to fix, not the app's to guess at.
 
+**Repair is an EVENT LOG, not three counters.** The factory's ARMOUR 17004 card
+records each movement as a DATE, a SIZE and a QUANTITY — SEND FOR REPAIR,
+RECIVED AFTER REPAIR, REJECTION — so `shared/repair.js` stores the movements and
+derives the totals. Keeping events means the card can be reproduced and a wrong
+entry reversed; keeping totals means neither, which is why a mistake is DELETED
+and re-entered rather than overtyped. The rule borrowed from job work is the one
+that matters: **a partial return is still OUT, not short.** Pairs sent and not
+back are ON THE BENCH; they become a shortage only when somebody rejects them —
+reporting the balance as a shortage says goods are lost while they are sitting in
+front of you. `heldByRepair()` is what stops a pair that failed inspection being
+shipped to the customer who rejected it. It lives in `api/dispatches.js` behind
+`?resource=repairs` for the same reason job work does: twelve functions is the
+Hobby limit and the project is at twelve.
+
 **The packing report follows the PI's three steps** — choose what is leaving,
 check the packing list, confirm — for the same reason the job card does:
 something is read out of the system, a person corrects it, and only then is the
@@ -299,6 +313,7 @@ shared/            imported by BOTH browser and server — pure, testable
   bom-components.js  cut pieces per material: job cards read these, procurement never does
   product-codes.js the article families and their codes — assigned once, then kept
   customer-history.js what a customer has been given before: shoes, then variants
+  repair.js        shoes sent back before dispatch: movements in, out and rejected
   fabricators.js   internal lines and job workers in one list; what each type requires
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs
   inputs.js        SEED reference data only — real data lives in Postgres
@@ -484,6 +499,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | Opening the app writing to the database | Two load-time faults with the same shape. The capacity auto-save was guarded by a "skip the first run" ref, but the effect runs on mount BEFORE the settings request returns, so the ref was spent by the time the async hydrate called `setCaps` — the hydrate then looked like a user edit and the app PUT settings back on EVERY page load, flashing "Machine capacities saved" at someone who saved nothing and showing every non-admin role a red 403 on a screen they had just opened. Separately, `next_number` is `nextval()`, and allocating on mount burned a PI number per page load: 113 consumed against 3 filed. Only a real edit marks capacities dirty, and a PI number is issued when a reading STARTS (`resetReadState`). Nothing is written by looking. |
 | A reading that inherited the last one | Reading a PI sets the PI number to that invoice's own number, plus the customer, city, agreed discount and colours. Reading a photo afterwards replaced only the CARDS — so a handwritten SPIKE slip keyed after a PI upload was filed under the uploaded PI's number and came back `409 — PI number already exists: PI/590`. The number fails loudly; the customer, the discount and the colours carried over in SILENCE, which is worse — a Spike order wearing another customer's 40% discount looks perfectly reasonable on screen. `resetReadState()` is now the one place a new reading starts from, shared by the photo path, "Enter by hand" and the PI reader, so the three cannot drift apart again. A photo-read order takes a newly issued number; an uploaded PI keeps its own. |
 | Advice that duplicated the order it was refusing | Saving a PI whose number is taken answered "PI number already exists: PI/590. Request a new PI number." That is right for a genuinely new PI that landed on a taken number, and actively harmful for the commoner case — the SAME PI being saved twice. Following it files a SECOND copy of the same customer order under an invented number, and every pair is counted twice in production, procurement and dispatch. The refusal now names what it collided with (customer, date, and the orders it already created) and says plainly what saving again would do. A collision with no orders behind it still just asks for another number. |
+| Navigation that only existed in one shape | The sidebar and the mobile `<select>` were two lists of the same screens that had already drifted apart once. The menu bar is ONE list for every width. Its entries carry `role="menuitem"`, which overrides the implicit button role — 40 UI tests queried them as buttons and could not find them. Tests navigate through one `goTo()` helper now, so the next nav change is one edit rather than sixty; the helper only opens a group that is shut, because clicking a group TOGGLES it. |
 | A colour outranking the product | `matchArticle("Spike Blue")` returned JACK LACE BLACK-BLUE. `blue` occurs TWICE in that name — once in `BLACK-BLUE`, again in the `(BLUE SKINFIT)` note — so a colour mentioned in passing scored 2 while SPIKE, the product actually written, scored 1; `COLOURS` was only `["black","white"]`, so every other colour counted as part of the name. `thunder red` reached JACK too. The match is made on the FAMILY alone now, tokens are deduped, bracketed notes are dropped before the family is read, and a colour or closure can only choose BETWEEN articles of the family the slip named. |
 | The narrowing order inside a family | Fixing the above by narrowing on colour/closure BEFORE the fewest-unmentioned-words rule sent `Gola` to REX GOLA PLUS — PLUS carries no closure, so "prefer the plain name" picked it. Fewest-unmentioned-words settles WHICH PRODUCT and must run first; colour then closure settle which one of it. Colour before closure, or `Jill Blue` answers plain JILL and silently drops the only word that narrowed anything. |
 | A date that was really a Date | Postgres returns `order_date` as a Date OBJECT. `String(date).slice(0,10)` is `"Wed Aug 20"`, which sorts alphabetically — so the most-recent customer came out wrong and every first/last-supplied date was nonsense. `isoDate()` normalises, and reads LOCAL time: `toISOString()` on a date-only value stored at local midnight rolls back a day and dates an order to the day before it was placed. |

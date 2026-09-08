@@ -1,7 +1,24 @@
 import React from "react";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen as screen_, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
+   its group's dropdown, so it has to be opened first. One helper, so a future
+   nav change is one edit here rather than sixty. */
+const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Orders", "Job Orders Database": "Orders", "Repair": "Orders", "Dispatch Book": "Orders", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock register": "Materials", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup", "Data & BOM": "Setup"};
+async function goTo(user, screen){
+  const group = NAV_GROUP[screen];
+  if(group){
+    /* Clicking a group TOGGLES it, so a helper that always clicks would close a
+       menu another step had already opened. Open it only if it is shut. */
+    const btn = await screen_.findByRole("button",{name:`${group} menu`});
+    if(btn.getAttribute("aria-expanded") !== "true") await user.click(btn);
+  }
+  /* Menu entries carry role="menuitem", which overrides the implicit button
+     role — so they are found as menuitems, not as buttons. */
+  await user.click(await screen_.findByRole(group ? "menuitem" : "button", {name:screen}));
+}
 
 const mocks=vi.hoisted(()=>({
   listOrders:vi.fn(),getSettings:vi.fn(),putSettings:vi.fn(),listPis:vi.fn(),listDispatches:vi.fn(),listDispatchesWithHidden:vi.fn(),
@@ -79,20 +96,20 @@ describe("critical UI contracts",()=>{
   it("keeps a PI draft mounted while the clerk visits another tab",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     expect(screen.getByText("2 · Match & check")).toBeInTheDocument();
-    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(screen.getByRole("button",{name:"From a spreadsheet"}));
     expect(screen.getByText("Add orders from a spreadsheet")).toBeInTheDocument();
-    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     expect(screen.getByText("2 · Match & check")).toBeInTheDocument();
   });
 
   it("marks a generated PI stale as soon as Match & Check changes",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     await user.type(screen.getByLabelText("Customer *"),"Test Buyer");
     await user.type(screen.getByLabelText("Order nature *"),"MTO");
@@ -159,19 +176,24 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("button",{name:"Bulk upload"})).toBeNull();
 
     // ...it is a mode within PI generation.
-    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     expect(screen.getByRole("button",{name:"From a slip or PI"})).toBeInTheDocument();
     await user.click(screen.getByRole("button",{name:"From a spreadsheet"}));
     expect(await screen.findByText("Add orders from a spreadsheet")).toBeInTheDocument();
   });
 
+  /* Navigation is a menu bar, so a screen's entry exists only while its group
+     is open. The contract is unchanged — these are the factory's own names for
+     its two books — but it has to be checked inside the menu that holds them. */
   it("names the two books the way the factory does", async ()=>{
+    const user = userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
-    expect(screen.getByRole("button",{name:"Order Book"})).toBeInTheDocument();
-    expect(screen.getByRole("button",{name:"Dispatch Book"})).toBeInTheDocument();
-    expect(screen.queryByRole("button",{name:"Orders & dispatch"})).toBeNull();
-    expect(screen.queryByRole("button",{name:"Dispatch & packing"})).toBeNull();
+    await user.click(await screen.findByRole("button",{name:"Orders menu"}));
+    expect(screen.getByRole("menuitem",{name:"Order Book"})).toBeInTheDocument();
+    expect(screen.getByRole("menuitem",{name:"Dispatch Book"})).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem",{name:"Orders & dispatch"})).toBeNull();
+    expect(screen.queryByRole("menuitem",{name:"Dispatch & packing"})).toBeNull();
   });
 
   it("places the two job-order screens immediately after the Order Book", async ()=>{
@@ -182,14 +204,19 @@ describe("critical UI contracts",()=>{
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
 
-    const navLabels=screen.getAllByRole("button").map(button=>button.textContent.trim());
+    await user.click(await screen.findByRole("button",{name:"Orders menu"}));
+    const navLabels=screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
     expect(navLabels.indexOf("Create Job Order")).toBe(navLabels.indexOf("Order Book")+1);
     expect(navLabels.indexOf("Job Orders Database")).toBe(navLabels.indexOf("Create Job Order")+1);
-    expect(screen.queryByRole("button",{name:"Job Cards"})).toBeNull();
-    expect(screen.queryByRole("button",{name:"Job work"})).toBeNull();
+    /* Repair is the last thing that happens before the lorry, so it sits
+       between the job-order screens and the Dispatch Book. */
+    expect(navLabels.indexOf("Repair")).toBe(navLabels.indexOf("Job Orders Database")+1);
+    expect(navLabels.indexOf("Dispatch Book")).toBe(navLabels.indexOf("Repair")+1);
+    expect(screen.queryByRole("menuitem",{name:"Job Cards"})).toBeNull();
+    expect(screen.queryByRole("menuitem",{name:"Job work"})).toBeNull();
 
     // The commercial record reports what is owed but no longer releases it.
-    await user.click(screen.getByRole("button",{name:"PI database"}));
+    await goTo(user, "PI database");
     expect(await screen.findByRole("button",{name:/still to release/})).toBeInTheDocument();
     expect(screen.queryByRole("button",{name:"Release production runs for PI77"})).toBeNull();
   });
@@ -225,7 +252,7 @@ describe("critical UI contracts",()=>{
     const user=userEvent.setup();
     mocks.listParties.mockResolvedValue([]);
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
 
     const selects=()=>[...document.querySelectorAll("select")];
@@ -258,7 +285,7 @@ describe("critical UI contracts",()=>{
   it("titles a read card by what the slip said, not by the product it guessed",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
 
     // The product is now a labelled field rather than the card's headline.
@@ -270,7 +297,7 @@ describe("critical UI contracts",()=>{
   it("clears the ambiguity warning once a product is actually chosen",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
 
     const product=screen.getByLabelText("Product");
@@ -362,7 +389,7 @@ describe("critical UI contracts",()=>{
       .mockResolvedValue([{name:"Test Buyer",discount_pct:27,dispatch_timeline:"30 days",deductions:[],gst_pct:5,payment_split_pct:50}]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     await user.type(screen.getByLabelText("Customer *"),"Test Buyer");
     await user.type(screen.getByLabelText("Order nature *"),"MTO");
@@ -397,7 +424,7 @@ describe("critical UI contracts",()=>{
   it("asks who is doing the work before what the work is",async()=>{
     const user=userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
-    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await goTo(user, "Create Job Order");
 
     const article=await screen.findByLabelText("Current Order");
     expect(article).toBeDisabled();
@@ -410,7 +437,7 @@ describe("critical UI contracts",()=>{
   it("offers exactly the two starting options, each labelled with its type",async()=>{
     const user=userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
-    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await goTo(user, "Create Job Order");
     const options=[...(await screen.findByLabelText("Send to")).options].map(o=>o.text);
     expect(options).toContain("Rex Internal (Internal)");
     expect(options).toContain("New Durga Line (External)");
@@ -420,7 +447,7 @@ describe("critical UI contracts",()=>{
     mocks.listOrders.mockResolvedValue([liveJobOrder()]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await goTo(user, "Create Job Order");
     await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
     await user.selectOptions(await screen.findByLabelText("Current Order"),"JO77");
     expect(screen.getByLabelText("Current Order")).toHaveValue("JO77");
@@ -435,7 +462,7 @@ describe("critical UI contracts",()=>{
     ]}}]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await goTo(user, "Create Job Order");
     await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
     await user.selectOptions(await screen.findByLabelText("Current Order"),"JO77");
     expect(await screen.findByLabelText("7X10S size 7s pairs")).toHaveValue(20);
@@ -446,7 +473,7 @@ describe("critical UI contracts",()=>{
     mocks.listOrders.mockResolvedValue([liveJobOrder()]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Create Job Order"}));
+    await goTo(user, "Create Job Order");
     await user.selectOptions(await screen.findByLabelText("Send to"),"Rex Internal");
     await user.selectOptions(await screen.findByLabelText("Current Order"),"JO77");
     await user.selectOptions(screen.getByLabelText("Send to"),"Rex Internal");
@@ -465,7 +492,7 @@ describe("critical UI contracts",()=>{
   it("uses Job Orders Database as the single issued-order register",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Job Orders Database"}));
+    await goTo(user, "Job Orders Database");
     expect(await screen.findByRole("heading",{name:"Job Orders Database"})).toBeInTheDocument();
     expect(screen.getByText("Issued Job Orders")).toBeInTheDocument();
   });
@@ -482,7 +509,7 @@ describe("critical UI contracts",()=>{
     }]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Production plan"}));
+    await goTo(user, "Production plan");
     // 100 pairs of cutting against a saved 100/day is a full day, and the cell
     // must say so against 100 — not against the seed's 2,500.
     const cutting=await screen.findByText(/100% of 100/);
@@ -497,7 +524,7 @@ describe("critical UI contracts",()=>{
   it("keeps a split article as one card and offers both rolls on every line",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
 
     const selects=()=>[...document.querySelectorAll("select")];
@@ -530,7 +557,7 @@ describe("critical UI contracts",()=>{
   it("shows handwritten exact quantities as cartons per size and derived pairs",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(screen.getByText(/AI read not working here/));
     fireEvent.change(screen.getByPlaceholderText(/Paste the JSON reply here/),{target:{value:JSON.stringify({
       date:"2026-08-27",orders:[{party:"Dhanani Shoe Guwahati",category:"Rex Gola (L)",color:"Black",lines:[
@@ -556,7 +583,7 @@ describe("critical UI contracts",()=>{
   it("asks for the customer once for the whole sheet",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     await user.click(screen.getByRole("button",{name:"+ Add category"}));
 
@@ -583,7 +610,7 @@ describe("critical UI contracts",()=>{
     }]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Order Book"}));
+    await goTo(user, "Order Book");
     await user.click(await screen.findByRole("button",{name:"Edit saved order"}));
 
     // No free-text total: the sizes are the quantity.
@@ -638,7 +665,7 @@ describe("the invoice itself is editable",()=>{
   it("edits pairs and MRP on the PI and keeps Save enabled",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     await user.type(screen.getByLabelText("Customer *"),"Test Buyer");
     await user.type(screen.getByLabelText("Order nature *"),"MTO");
@@ -674,7 +701,7 @@ describe("edits made in the review block reach the invoice",()=>{
     }));
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     const upload=document.querySelector('input[type="file"][accept="application/pdf,image/*"]');
     await user.upload(upload,new File(["x"],"pi.pdf",{type:"application/pdf"}));
 
@@ -708,7 +735,7 @@ describe("opening the app writes nothing",()=>{
   it("does not save capacities merely because settings were loaded",async()=>{
     mocks.getSettings.mockResolvedValue({capacities:{CUTTING:1234}});
     render(<App/>);
-    await screen.findByRole("button",{name:"Order Book"});
+    await screen.findByRole("button",{name:"Orders menu"});   // the app has rendered
     await waitFor(()=>expect(mocks.getSettings).toHaveBeenCalled());
     // Give the 600ms debounce room to fire if it were going to.
     await new Promise(r=>setTimeout(r,900));
@@ -717,12 +744,12 @@ describe("opening the app writes nothing",()=>{
 
   it("does not consume a PI number until an order is actually started",async()=>{
     render(<App/>);
-    await screen.findByRole("button",{name:"Order Book"});
+    await screen.findByRole("button",{name:"Orders menu"});   // the app has rendered
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
     expect(mocks.nextPiNumber).not.toHaveBeenCalled();
 
     const user=userEvent.setup();
-    await user.click(screen.getByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     // Starting one DOES issue a number — lazily, exactly once.
     await waitFor(()=>expect(mocks.nextPiNumber).toHaveBeenCalledTimes(1));
@@ -749,7 +776,7 @@ describe("a new reading inherits nothing from the last one",()=>{
     }));
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
 
     const upload=document.querySelector('input[type="file"][accept="application/pdf,image/*"]');
     await user.upload(upload,new File(["x"],"pi.pdf",{type:"application/pdf"}));
@@ -778,7 +805,7 @@ describe("a handwritten read can be corrected on screen",()=>{
   it("names the run on every line and lists what each range covers",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
 
     // The run is stated, not left to be inferred from the size chips.
@@ -809,7 +836,7 @@ describe("tabs stay in step with one another",()=>{
       article_code:"SPIKE",priority:2,party:"Buyer",lines:[{combo:"7X10S",qty:24}],pi:{pi_no:"PI77"},version:1}]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await goTo(user, "PI database");
     await user.click(await screen.findByRole("button",{name:"View / edit"}));
     await user.click(await screen.findByRole("button",{name:/Edit JO77/}));
 
@@ -845,7 +872,7 @@ describe("the production plan can be overruled by hand",()=>{
     });
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Schedule"}));
+    await goTo(user, "Schedule");
 
     // Rows are drawn in queue order, so the Adjust buttons ARE the queue.
     const queue=()=>screen.getAllByRole("button",{name:/Adjust the plan for/})
@@ -868,7 +895,7 @@ describe("the production plan can be overruled by hand",()=>{
       lines:[{combo:"7X10S",qty:20000}], plan_override:{days:{CUTTING:1}}}]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Schedule"}));
+    await goTo(user, "Schedule");
 
     // The consequence is stated on the board itself, not buried in a console.
     expect(await screen.findByText(/manual planning instruction/)).toBeInTheDocument();
@@ -882,7 +909,7 @@ describe("the production plan can be overruled by hand",()=>{
     mocks.listOrders.mockResolvedValue([{...twoOrders[0],plan_override:{seq:1}},twoOrders[1]]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Schedule"}));
+    await goTo(user, "Schedule");
     await user.click(await screen.findByRole("button",{name:"Adjust the plan for JOA"}));
     await user.click(await screen.findByRole("button",{name:/Clear all overrides/}));
     await waitFor(()=>expect(mocks.setPlanOverride).toHaveBeenCalledWith("JOA",{}));
@@ -901,7 +928,7 @@ describe("a PI can be archived or permanently deleted",()=>{
     mocks.listPis.mockResolvedValue(onePi);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await goTo(user, "PI database");
     expect(await screen.findByRole("button",{name:"Archive"})).toBeInTheDocument();
     expect(screen.getByRole("button",{name:"Delete"})).toBeInTheDocument();
 
@@ -916,7 +943,7 @@ describe("a PI can be archived or permanently deleted",()=>{
     mocks.listPis.mockResolvedValue(onePi);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await goTo(user, "PI database");
     await user.click(await screen.findByRole("button",{name:"Delete"}));
 
     // One click must not destroy anything.
@@ -933,7 +960,7 @@ describe("a PI can be archived or permanently deleted",()=>{
     mocks.listArchivedPis.mockResolvedValue(onePi);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI database"}));
+    await goTo(user, "PI database");
     await user.click(screen.getByLabelText("Show archived"));
     await waitFor(()=>expect(mocks.listArchivedPis).toHaveBeenCalled());
     await user.click(await screen.findByRole("button",{name:"Restore"}));
@@ -948,7 +975,7 @@ describe("a PI can be archived or permanently deleted",()=>{
 describe("correcting a size",()=>{
   const openDraft=async user=>{
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     await user.type(screen.getByLabelText("Customer *"),"Test Buyer");
     await user.type(screen.getByLabelText("Order nature *"),"MTO");
@@ -994,7 +1021,7 @@ describe("live orders exclude completed work",()=>{
     ]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Order Book"}));
+    await goTo(user, "Order Book");
 
     expect(await screen.findByText("Live orders · 1")).toBeInTheDocument();
     expect(screen.queryByText("JO1")).not.toBeInTheDocument();   // shipped in full
@@ -1012,7 +1039,7 @@ describe("live orders exclude completed work",()=>{
     ]);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Order Book"}));
+    await goTo(user, "Order Book");
     expect(await screen.findByText("Live orders · 2")).toBeInTheDocument();
   });
 });
@@ -1028,7 +1055,7 @@ describe("actions report what they did",()=>{
     vi.spyOn(window,"confirm").mockReturnValue(true);
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Order Book"}));
+    await goTo(user, "Order Book");
     await user.click(screen.getByRole("button",{name:"Clear all orders"}));
     expect(await screen.findByText(/1 order cleared/)).toBeInTheDocument();
     expect(screen.getByText(/PI snapshots remain/)).toBeInTheDocument();
@@ -1038,7 +1065,7 @@ describe("actions report what they did",()=>{
     mocks.putSettings.mockRejectedValue(new Error("500 — Server error"));
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"Machine load"}));
+    await goTo(user, "Machine load");
     const cap=(await screen.findAllByLabelText(/pairs per day/i))[0];
     await user.clear(cap); await user.type(cap,"999");
     expect(await screen.findByText(/is not stored/,{},{timeout:3000})).toBeInTheDocument();
@@ -1059,7 +1086,7 @@ describe("article standard colours",()=>{
     REF.articles[code]={...before,sole_colour:"Black",upper_colour:"N.Blue / S.Blue"};
     try{
       render(<App/>);
-      await user.click(await screen.findByRole("button",{name:"PI generation"}));
+      await goTo(user, "PI generation");
       await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
       expect(screen.getByLabelText("Sole colour *")).toHaveValue("Black");
       expect(screen.getByLabelText("Upper colour *")).toHaveValue("N.Blue / S.Blue");
@@ -1072,7 +1099,7 @@ describe("article standard colours",()=>{
   it("leaves the fields blank when the article master has no colour on file",async()=>{
     const user=userEvent.setup();
     render(<App/>);
-    await user.click(await screen.findByRole("button",{name:"PI generation"}));
+    await goTo(user, "PI generation");
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     expect(screen.getByLabelText("Sole colour *")).toHaveValue("");
     expect(screen.getByLabelText("Upper colour *")).toHaveValue("");

@@ -100,6 +100,15 @@ export const seedInternalLines = ()   => j("/api/parties?resource=fabricators", 
 export const retireFabricator  = name => j(
   `/api/parties?resource=fabricators&name=${encodeURIComponent(name)}`, { method:"DELETE" });
 
+/* Repair, between production and dispatch. Rides on the dispatches endpoint —
+   see the note in api/dispatches.js about Vercel's twelve-function limit. */
+export const listRepairs   = ()   => j("/api/dispatches?resource=repairs");
+export const addRepair     = m    => j("/api/dispatches?resource=repairs", {
+  method:"POST", headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({ ...m, resource:"repairs" }) });
+export const deleteRepair  = id   => j(`/api/dispatches?resource=repairs&id=${encodeURIComponent(id)}`,
+  { method:"DELETE" });
+
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);

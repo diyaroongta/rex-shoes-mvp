@@ -20,6 +20,7 @@ import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
 import MISDashboard from "./MISDashboard.jsx";
 import FabricatorsTab from "./FabricatorsTab.jsx";
 import JobCardTab from "./JobCardTab.jsx";
+import RepairTab from "./RepairTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
@@ -292,6 +293,9 @@ export default function App({ user=null, onSignOut=null }={}){
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
       ["jobs","Create Job Order"],
       ["jobwork","Job Orders Database"],
+      /* Before Dispatch Book, because that is when it happens: a finished shoe
+         fails inspection on the way to the lorry. */
+      ["repair","Repair"],
       ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
@@ -349,71 +353,38 @@ export default function App({ user=null, onSignOut=null }={}){
         .navbadge{margin-left:auto;font-size:10.5px;padding:1px 6px;border-radius:99px;
           font-family:'IBM Plex Mono',monospace;font-weight:600;color:#fff}
         @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+        /* Top menu bar. The screens are the same; the sidebar spent 212px of
+           every page on a list that is mostly not being used, and the groups
+           were already the right shape for a menu. */
+        .menubar{display:flex;align-items:stretch;background:#0F2233;position:sticky;top:0;z-index:40}
+        .menubtn{display:flex;align-items:center;gap:6px;padding:0 15px;height:44px;border:none;
+          background:transparent;color:#C6D3E1;font-size:13.5px;font-weight:600;cursor:pointer;
+          font-family:inherit;white-space:nowrap}
+        .menubtn:hover{background:#183149;color:#fff}
+        .menubtn[data-open="1"]{background:#0B6BCB;color:#fff}
+        .menubtn[data-on="1"]{color:#fff;box-shadow:inset 0 -3px 0 #0B6BCB}
+        .menubtn:focus-visible{outline:2px solid #7DB3F0;outline-offset:-2px}
+        .caret{font-size:9px;opacity:.75}
+        .menupanel{position:absolute;top:44px;left:0;background:#fff;border:1px solid #D9E1EA;
+          border-top:none;border-radius:0 0 10px 10px;box-shadow:0 14px 34px rgba(15,34,51,.18);
+          padding:10px;min-width:230px;z-index:41}
+        .menuitem{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:none;
+          background:transparent;padding:7px 10px;border-radius:7px;font-size:13px;color:#22364B;
+          cursor:pointer;font-family:inherit;white-space:nowrap}
+        .menuitem:hover{background:#EEF4FB;color:#0B4F98}
+        .menuitem[data-on="1"]{background:#0B6BCB;color:#fff;font-weight:600}
+        .menuitem:focus-visible{outline:2px solid #0B6BCB;outline-offset:-2px}
+        .menuscrim{position:fixed;inset:0;z-index:39;background:transparent}
       `}</style>
 
-      <div style={{display:"flex",minHeight:"100vh"}}>
+      <div style={{display:"flex",flexDirection:"column",minHeight:"100vh"}}>
 
-        <aside data-noprint className="hidden md:flex"
-               style={{background:"#0F2233",width:212,flexShrink:0,flexDirection:"column",
-                       position:"sticky",top:0,height:"100vh"}}>
-          <div style={{padding:"18px 16px 14px"}}>
-            <div className="sign" style={{color:"#fff",fontSize:19,fontWeight:700,lineHeight:1}}>Factory OS</div>
-            <div className="mono" style={{color:"#7B8FA6",fontSize:10,marginTop:5}}>
-              {fmt(t.orders)} live · {fmt(t.total_pairs)} pairs
-            </div>
-            {/* Which build you are actually looking at. Without this there is
-                no way to tell a fix that is not deployed from a fix that does
-                not work — they look identical from the browser. */}
-            <div className="mono" style={{color:"#4A6076",fontSize:9,marginTop:3}}
-                 title="Build currently running. Compare with the latest commit to confirm a deploy landed.">
-              build {typeof __BUILD__==="undefined"?"dev":__BUILD__}
-            </div>
-            {/* The background refresh can fail forever without a word, leaving
-                the screen stale while it looks current. Say when it last
-                actually reached the server. */}
-            <div className="mono" style={{fontSize:9,marginTop:2,
-                 color:syncFailed?"#E08947":"#4A6076"}}
-                 title={syncFailed?"The last automatic refresh did not reach the server":"Last successful refresh"}>
-              {syncFailed ? "refresh failed — figures may be stale"
-                : syncedAt ? `synced ${syncedAt.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}`
-                : "synced on load"}
-            </div>
-          </div>
-
-          <nav style={{padding:"0 10px",overflowY:"auto",flex:1}}>
-            {nav.map(([group,items])=>(
-              <div key={group} style={{marginBottom:14}}>
-                <div className="sign" style={{color:"#5C7A99",fontSize:10,padding:"0 8px 5px",fontWeight:600}}>{group}</div>
-                {items.map(([k,label,badge])=>(
-                  <button key={k} onClick={()=>setTab(k)} data-on={tab===k?"1":"0"} className="navitem">
-                    <span>{label}</span>
-                    {badge && badge.n>0 && <span className="navbadge" style={{background:badge.tone}}>{badge.n}</span>}
-                  </button>
-                ))}
-              </div>
-            ))}
-          </nav>
-
-          <div style={{padding:10,borderTop:"1px solid #183149"}}>
-            {canSeeTab(role,"copilot") && <button onClick={()=>setTab("copilot")} data-on={tab==="copilot"?"1":"0"} className="navitem">
-              <span>Ask the copilot</span>
-            </button>}
-          </div>
-        </aside>
-
-        <div data-noprint className="md:hidden" style={{position:"sticky",top:0,zIndex:20,background:"#0F2233",padding:"10px 12px"}}>
-          <div className="sign" style={{color:"#fff",fontSize:16,fontWeight:700,marginBottom:8}}>Factory OS</div>
-          <select value={tab} onChange={e=>setTab(e.target.value)}
-            style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #24425E",
-                    background:"#183149",color:"#fff",fontSize:14}}>
-            {nav.map(([group,items])=>(
-              <optgroup key={group} label={group}>
-                {items.map(([k,label])=><option key={k} value={k}>{label}</option>)}
-              </optgroup>
-            ))}
-            {canSeeTab(role,"copilot") && <option value="copilot">Ask the copilot</option>}
-          </select>
-        </div>
+        {/* ONE menu, not one per breakpoint. The sidebar and the mobile
+            <select> were two lists of the same screens that had already drifted
+            apart once. */}
+        <MenuBar nav={nav} tab={tab} setTab={setTab} role={role}
+                 totals={t} syncedAt={syncedAt} syncFailed={syncFailed} />
 
         <main style={{flex:1,minWidth:0}}>
           <header data-noprint style={{background:"#fff",borderBottom:"1px solid #E4E9F0",padding:"13px 22px",
@@ -538,6 +509,7 @@ export default function App({ user=null, onSignOut=null }={}){
           <JobCardTab orders={orders||[]} onIssued={syncAll} />
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
+        {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
@@ -1980,6 +1952,7 @@ const VIEWS = {
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},
+  repair:      {title:"Repair",             sub:"Shoes sent back before dispatch, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };
 
@@ -2386,6 +2359,84 @@ async function pdfPagesToJpeg(file, maxDim=2000, quality=0.82){
   }
   if(!pages.length) throw new Error("That PDF has no pages.");
   return pages;
+}
+
+/* The top menu bar.
+   Each heading opens ONE dropdown of the screens in that group — the groups
+   were already the right shape for this, so nothing is renamed or invented to
+   fill a menu out. Only screens the role may open appear, which is the same
+   rule the sidebar used: a screen whose every control would be refused reads
+   as a broken app rather than as a permission. */
+function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
+  const [open, setOpen] = useState(null);
+  const wrap = useRef(null);
+
+  /* Escape closes, and so does clicking away — a menu that can only be closed
+     by picking something from it traps the user. */
+  useEffect(()=>{
+    if(open === null) return;
+    const onKey = e => { if(e.key === "Escape") setOpen(null); };
+    window.addEventListener("keydown", onKey);
+    return ()=>window.removeEventListener("keydown", onKey);
+  },[open]);
+
+  const go = k => { setTab(k); setOpen(null); };
+  const groupHasTab = items => items.some(([k]) => k === tab);
+
+  return <div data-noprint ref={wrap} style={{position:"relative"}}>
+    {open !== null && <div className="menuscrim" onClick={()=>setOpen(null)} />}
+    <div className="menubar">
+      <button className="menubtn" onClick={()=>go("mis")} data-on={tab==="mis"?"1":"0"}
+        style={{fontWeight:700,color:"#fff",fontSize:15,paddingLeft:18,paddingRight:18}}>
+        <span className="sign">Factory OS</span>
+      </button>
+
+      {nav.map(([group, items], gi)=>(
+        <div key={group} style={{position:"relative"}}>
+          <button className="menubtn" data-open={open===gi?"1":"0"} data-on={groupHasTab(items)?"1":"0"}
+            aria-expanded={open===gi} aria-haspopup="true" aria-label={`${group} menu`}
+            onClick={()=>setOpen(open===gi?null:gi)}
+            /* Hovering ACROSS the bar with one already open is how menus are
+               used; hovering onto a closed bar and having it spring open is
+               not. */
+            onMouseEnter={()=>{ if(open!==null) setOpen(gi); }}>
+            <span>{group}</span><span className="caret">▼</span>
+            {items.some(([,,b])=>b&&b.n>0) &&
+              <span className="navbadge" style={{background:(items.find(([,,b])=>b&&b.n>0)[2]).tone}}>
+                {items.reduce((n,[,,b])=>n+((b&&b.n)||0),0)}</span>}
+          </button>
+          {open===gi && <div className="menupanel" role="menu">
+            {items.map(([k,label,badge])=>(
+              <button key={k} className="menuitem" role="menuitem" data-on={tab===k?"1":"0"}
+                onClick={()=>go(k)}>
+                <span>{label}</span>
+                {badge && badge.n>0 &&
+                  <span className="navbadge" style={{marginLeft:"auto",background:badge.tone}}>{badge.n}</span>}
+              </button>
+            ))}
+          </div>}
+        </div>
+      ))}
+
+      {canSeeTab(role,"copilot") &&
+        <button className="menubtn" onClick={()=>go("copilot")} data-on={tab==="copilot"?"1":"0"}>
+          <span>Copilot</span></button>}
+
+      {/* Kept from the sidebar: which build is running, and whether the last
+          refresh actually reached the server. Without these a fix that is not
+          deployed and a fix that does not work look identical. */}
+      <div className="mono" style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,
+                                    padding:"0 16px",fontSize:9.5,color:"#5C7A99"}}>
+        <span>{fmt(totals.orders)} live · {fmt(totals.total_pairs)} pairs</span>
+        <span title="Build currently running">build {typeof __BUILD__==="undefined"?"dev":__BUILD__}</span>
+        <span style={{color:syncFailed?"#E08947":"#5C7A99"}}
+          title={syncFailed?"The last automatic refresh did not reach the server":"Last successful refresh"}>
+          {syncFailed ? "refresh failed" : syncedAt
+            ? `synced ${syncedAt.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}` : "synced"}
+        </span>
+      </div>
+    </div>
+  </div>;
 }
 
 /* What this customer has already been given.
