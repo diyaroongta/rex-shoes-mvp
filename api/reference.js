@@ -209,6 +209,7 @@ export default wrap(async (req, res) => {
       if(req.body && req.body.restore_revision != null){
         const id = Number(req.body.restore_revision);
         if(!Number.isInteger(id)) return fail(res, 400, "restore_revision must be a revision id");
+        let restoredCodes = 0;
         const { rows } = await q("select value, change_type, article_code, created_at from reference_data_history where revision_id = $1",[id]);
         if(!rows.length) return fail(res, 404, `no such revision: ${id}`);
         const snapshot = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
@@ -226,8 +227,32 @@ export default wrap(async (req, res) => {
         }
         if(conflicts.length) return fail(res,409,"Cannot restore while it would invalidate live orders — "+conflicts.slice(0,10).join("; "));
         const result = await mutateReference("restore", rows[0].article_code, async (ref,client) => {
+          /* A PRODUCT CODE IS AN IDENTITY, NOT A STATE.
+             The restore replaces the whole reference document, which rolled the
+             codes back with it — a restore on 4 Sep silently wiped every JACK
+             and JILL code assigned that morning. That defeats the one guarantee
+             the codes exist for: JA003 is printed on a job card and a PI, and
+             if a rollback frees it, the next assignment can hand JA003 to a
+             DIFFERENT article and last month's paperwork quietly points at the
+             wrong shoe. Codes are carried across; everything else — BOM,
+             packing, MRP, stock — rolls back as before. */
+          const keepCodes = {};
+          for(const [name, def] of Object.entries(ref.articles || {}))
+            if(def && def.product_code) keepCodes[name] = def.product_code;
+
           for(const k of Object.keys(ref)) delete ref[k];
           Object.assign(ref, snapshotRef);
+
+          let carried = 0;
+          for(const [name, code] of Object.entries(keepCodes)){
+            /* Only for articles the snapshot still has. One that the restore
+               removes takes its code with it, which is correct. */
+            if(ref.articles && ref.articles[name] && ref.articles[name].product_code !== code){
+              ref.articles[name].product_code = code;
+              carried++;
+            }
+          }
+          restoredCodes = carried;
           if(snapshotCatalogue){
             await client.query("delete from catalogue");
             for(const entry of snapshotCatalogue)
@@ -241,7 +266,10 @@ export default wrap(async (req, res) => {
         return res.status(200).json({ ok:true, restored_revision:id,
           undid: rows[0].change_type, article_code: rows[0].article_code,
           articles_total: result.articles, materials_total: result.materials,
-          catalogue_total: result.catalogue });
+          catalogue_total: result.catalogue,
+          /* Reported so the person restoring can SEE that the codes were kept
+             rather than having to trust it. */
+          product_codes_kept: restoredCodes });
       }
 
       const {parsed,routing,batch,confirm_replace=false,confirm_remove_ranges=false,bom_mode="replace"}=req.body||{};

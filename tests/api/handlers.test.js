@@ -111,6 +111,47 @@ describe("database API contracts",()=>{
      following it files a second copy of the same customer order, and every
      pair is then counted twice in production, procurement and dispatch. The
      refusal has to say what it collided with. */
+  /* A PRODUCT CODE IS AN IDENTITY, NOT A STATE. Restoring the reference
+     document used to roll the codes back with it — a restore on 4 Sep wiped
+     every JACK and JILL code assigned that morning. JA003 is printed on a job
+     card and a PI; if a rollback frees it, the next assignment can hand JA003
+     to a DIFFERENT article and the paperwork quietly points at the wrong shoe. */
+  it("a restore rolls back the BOM but keeps the product codes",async()=>{
+    const live={ articles:{ SPIKE:{ product_code:"SI001", combos:{"6X8":{rates:{}}}, combo_order:["6X8"] },
+                            SPADE:{ product_code:"SP001", combos:{"6X8":{rates:{}}}, combo_order:["6X8"] } },
+                 materials:{} };
+    // The snapshot predates the codes, and has an older BOM.
+    const snap={ reference:{ articles:{ SPIKE:{ combos:{"6X8":{rates:{OLD:1}}}, combo_order:["6X8"] },
+                                        SPADE:{ combos:{"6X8":{rates:{OLD:1}}}, combo_order:["6X8"] } },
+                             materials:{} } };
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from reference_data_history")) return {rows:[{value:snap,change_type:"master-upload",article_code:null,created_at:"2026-09-04"}]};
+      if(t.includes("from orders")) return {rows:[]};
+      return {rows:[{value:live}]};
+    });
+    let written=null;
+    const client={query:vi.fn(async(sql,params)=>{
+      const t=String(sql);
+      if(t.includes("select value from reference_data")) return {rows:[{value:live}]};
+      if(t.startsWith("insert into reference_data ")) { written=JSON.parse(params[0]); return {rows:[]}; }
+      if(t.includes("catalogue")) return {rows:[]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference",body:{restore_revision:7}},res);
+
+    expect(res.statusCode).toBe(200);
+    expect(written).not.toBeNull();
+    // The BOM really did roll back...
+    expect(written.articles.SPIKE.combos["6X8"].rates).toEqual({OLD:1});
+    // ...and the codes did not go with it.
+    expect(written.articles.SPIKE.product_code).toBe("SI001");
+    expect(written.articles.SPADE.product_code).toBe("SP001");
+    expect(res.body.product_codes_kept).toBe(2);
+  });
+
   it("a PI number collision names what it collided with, and warns against duplicating it",async()=>{
     const live={articles:{CUSTOM:{combos:{"1X2":{rates:{CUTTING:{MAT:1}}}},combo_order:["1X2"]}}};
     dbMocks.q.mockResolvedValueOnce({rows:[{value:live}]}).mockResolvedValue({rows:[]});
