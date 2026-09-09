@@ -4,8 +4,8 @@ import { buildPackingList } from "../shared/packing-list.js";
 import { validateIssue, receive, slipFor } from "../shared/job-work.js";
 import { jobOrderBalance } from "../shared/job-orders.js";
 import { INPUTS } from "../shared/inputs.js";
-import { pairsPerCarton, setReference } from "../shared/bridge.js";
-import { validateMovement, repairLedger } from "../shared/repair.js";
+import { setReference } from "../shared/bridge.js";
+import { validateMovement, repairLedger, heldByCombo } from "../shared/repair.js";
 
 function validDate(value){
   if(value==null||value==="") return true;
@@ -242,16 +242,45 @@ export default wrap(async (req, res) => {
     for(const p of prev)
       for(const [c,v] of Object.entries(p.dispatched)) already[c] = (already[c] || 0) + Number(v);
 
+    /* PAIRS ON THE REPAIR BENCH ARE NOT SHIPPABLE.
+       They exist and they are not short — but sending one is how a customer
+       receives the very shoe that failed inspection. Enforced HERE and not only
+       on the screen, because the server is the only thing that enforces
+       anything. Repair is recorded per SIZE and dispatch happens per RANGE, so
+       a size that sits in two ranges on this order cannot be charged to either;
+       `heldByCombo` returns those as `unattributed` and they are subtracted
+       from the ORDER total instead of being guessed onto a range. */
+    const { rows: repairRows } = await q(
+      `select order_no, size, kind, qty from repairs where order_no = $1`, [order_no]);
+    const held = heldByCombo(repairLedger(repairRows), ord[0]);
+
     const clean = {};
     for(const [combo, v] of Object.entries(dispatched)){
       const n = Number(v);
       if(!Number.isInteger(n) || n < 0) return fail(res, 400, `${combo}: pairs must be a whole number of 0 or more`);
       if(n === 0) continue;
       if(ordered[combo] == null) return fail(res, 400, `${combo} is not on order ${order_no}`);
-      const remaining = ordered[combo] - (already[combo] || 0);
+      const outstanding = ordered[combo] - (already[combo] || 0);
+      const onBench = held.by_combo[combo] || 0;
+      const remaining = outstanding - onBench;
       if(n > remaining)
-        return fail(res, 400, `${combo}: only ${remaining} pairs remain outstanding, cannot dispatch ${n}`);
+        return fail(res, 400, onBench > 0
+          ? `${combo}: ${outstanding} pairs are outstanding but ${onBench} are on the repair bench, `
+            + `so only ${Math.max(0, remaining)} can ship. Receive them back from repair first, or reject them.`
+          : `${combo}: only ${remaining} pairs remain outstanding, cannot dispatch ${n}`);
       clean[combo] = n;
+    }
+
+    /* Held pairs that could not be attributed to a range still cannot ship, so
+       they are checked against the order as a whole. */
+    if(held.unattributed > 0){
+      const shipping = Object.values(clean).reduce((a, n) => a + n, 0);
+      const outstandingAll = Object.keys(ordered)
+        .reduce((a, c) => a + ordered[c] - (already[c] || 0), 0);
+      if(shipping > outstandingAll - held.unattributed)
+        return fail(res, 400,
+          `${held.unattributed} pair(s) are on the repair bench for a size that sits in more than one range, `
+          + `so only ${Math.max(0, outstandingAll - held.unattributed)} pairs can ship on this order.`);
     }
     // A closing dispatch may ship nothing at all — writing the whole remaining
     // balance off short is legitimate. Any other dispatch must ship something.
@@ -263,17 +292,8 @@ export default wrap(async (req, res) => {
       return fail(res,400,"a reason is required when closing an order with a shortage");
     const k = closes_order ? "shortage" : remainingAfter===0 ? "full" : "partial";
 
-    // Cartons are a derived audit field. Recalculate them from the line's
-    // snapshotted ppc first, then the current packing rule; never trust a
-    // browser-supplied carton total that can disagree with dispatched pairs.
     const {rows:refRows}=await q("select value from reference_data where id = 1");
     setReference(refRows[0]?.value?.articles?refRows[0].value:INPUTS);
-    const cleanCartons={};
-    for(const [combo,n] of Object.entries(clean)){
-      const linePpc=(ord[0].lines||[]).find(l=>l.combo===combo&&Number(l.ppc)>0)?.ppc;
-      const ppc=Number(linePpc)||pairsPerCarton(ord[0].article_code,combo);
-      if(ppc) cleanCartons[combo]=n/ppc;
-    }
     /* The packing list is the document that travels with the lorry; `clean` is
        what the pending balance is reduced by. Letting them disagree would put
        one number on the customer's gate pass and a different one in the order
@@ -290,6 +310,19 @@ export default wrap(async (req, res) => {
       if(!built.ok) return fail(res, 400, built.problems.slice(0,5).join("; "));
       sheet = req.body.packing_list;
     }
+
+    /* CARTONS ARE COUNTED, NEVER DERIVED.
+       This used to store `pairs / packing rate` — 4.166666666666667 cartons,
+       which cannot go on a lorry, and is wrong anyway whenever sizes inside one
+       range pack at different rates. It ignored the packer's own count even
+       when a packing list was supplied. The count now comes off the SHEET,
+       which has already been reconciled against the dispatched pairs above; a
+       dispatch with no sheet has NOT been counted, so it stores nothing rather
+       than a fraction nobody measured. */
+    const cleanCartons = {};
+    if(sheet)
+      for(const line of buildPackingList(sheet).lines)
+        if(line.combo) cleanCartons[line.combo] = (cleanCartons[line.combo] || 0) + line.cartons;
 
     const { rows } = await q(
       `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list)

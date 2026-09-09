@@ -428,6 +428,29 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   for(const o of orphaned)
     problems.push(`${o.order_no}: article ${o.article_code} no longer exists — `
       +`this order cannot be planned until its article is restored or the order is re-articled`);
+
+  /* AN ARTICLE THAT EXISTS BUT HAS NO BOM IS WORSE THAN ONE THAT IS MISSING.
+     A missing article is loud: the order is set aside and reported. An article
+     with size ranges and no RATES is silent — it schedules normally, books
+     machine capacity, and requires ZERO material, so procurement reports
+     `can_run: true` and nothing short for work that cannot actually be made.
+     REX GOLA PLUS carried the two largest orders on the book, 10,015 pairs,
+     and produced not one line of material demand or a single warning. */
+  const seenNoBom = new Set();
+  for(const o of planned){
+    const art = articles[o.article_code];
+    if(!art || seenNoBom.has(o.article_code)) continue;
+    let rates = 0;
+    for(const combo of Object.values(art.combos || {}))
+      for(const stage of Object.values(combo.rates || {})) rates += Object.keys(stage).length;
+    if(rates > 0) continue;
+    seenNoBom.add(o.article_code);
+    const pairs = orders.filter(x => x.article_code === o.article_code)
+      .reduce((a, x) => a + (x.lines || []).reduce((n, l) => n + (Number(l.qty) || 0), 0), 0);
+    problems.push(`${o.article_code} has NO BOM — ${pairs} pair(s) across `
+      + `${orders.filter(x => x.article_code === o.article_code).length} order(s) are scheduled and book machine `
+      + `capacity, but require no material at all. Procurement cannot see them. Upload its BOM.`);
+  }
   const sla=slaEval(sched, riskWindow, targets);
   const netted=netting(rollup(planned,articles),materials);
   /* Attributed in the order the plan actually runs, so re-sequencing the queue
@@ -436,6 +459,9 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const procurement=netted.filter(n=>n.shortfall>1e-6).sort((a,b)=>b.shortfall-a.shortfall);
   const orderViews=planned.map(o=>{
     const sr=sched.orders[o.order_no], sl=sla[o.order_no];
+    /* Flagged per order as well as in schedule_problems, so the Order Book can
+       say it beside the row rather than only in a banner. */
+    const bomMissing = seenNoBom.has(o.article_code);
     const slBy={}; sl.stages.forEach(x=>slBy[x.stage]=x);
     const art=articles[o.article_code];
     let prevEnd=null;
@@ -452,6 +478,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     });
     const unknown=o.lines.filter(l=>!art.combos[l.combo]).map(l=>l.combo);
     return {order_no:o.order_no,party:o.party,article:o.article_code,article_code:o.article_code,
+      ...(bomMissing ? { bom_missing:true } : {}),
       override:normalizeOverride(overrides[o.order_no]), overridden:!!sr.overridden,
       plan_warnings:sched.warnings.filter(w=>w.order_no===o.order_no),
       sole_type:art.sole_type, pi:o.pi||{}, stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",

@@ -273,6 +273,34 @@ test("every role is described for whoever hands out the account", () => {
   }
 });
 
+
+console.log("\nZ — creating a material is stock-adjacent, on purpose");
+
+/* A material entering the system is master data — it reaches BOMs, netting and
+   the buying list. But the person who FINDS one missing is the store keeper
+   unpacking a delivery, not the data manager, and refusing them makes the
+   feature useless to the only people who need it. */
+test("a store keeper and a procurement officer can add a material", () => {
+  assert.equal(allow("store","PATCH","/api/reference",{new_material:{name:"GLUE",uom:"LTR"}}), true);
+  assert.equal(allow("procurement","PATCH","/api/reference",{new_material:{name:"GLUE",uom:"LTR"}}), true);
+  assert.equal(allow("data","PATCH","/api/reference",{new_material:{name:"GLUE",uom:"LTR"}}), true);
+  assert.equal(allow("admin","PATCH","/api/reference",{new_material:{name:"GLUE",uom:"LTR"}}), true);
+});
+
+/* It is a widening of the stock allowlist, not of everything. */
+test("adding a material does not open the BOM to the same roles", () => {
+  assert.equal(allow("store","PATCH","/api/reference",{bom_removal:{articles:["SPIKE"]}}), false);
+  assert.equal(allow("store","POST","/api/reference",{parsed:{}}), false);
+  assert.equal(allow("store","PATCH","/api/reference",
+    {new_material:{name:"GLUE",uom:"LTR"}, bom_removal:{articles:["SPIKE"]}}), false,
+    "one disallowed key still sinks the whole request");
+});
+
+test("roles with no stock rights still cannot add a material", () => {
+  for(const role of ["planner","dispatch","sales","viewer","owner","auditor"])
+    assert.equal(allow(role,"PATCH","/api/reference",{new_material:{name:"GLUE",uom:"LTR"}}), false, role);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes
    its coverage file, so a suite that passed reported 0% and dragged the whole

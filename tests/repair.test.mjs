@@ -1,6 +1,6 @@
 /* Repair, between production and dispatch. Run: npm test */
 import assert from "node:assert/strict";
-import { validateMovement, repairLedger, heldByRepair, repairTotals, repairRate, MOVEMENTS }
+import { validateMovement, repairLedger, heldByRepair, heldByCombo, repairTotals, repairRate, MOVEMENTS }
   from "../shared/repair.js";
 
 let passed = 0, failed = 0;
@@ -139,6 +139,61 @@ test("rubbish in the log is skipped, never counted as zero-or-worse", () => {
                             ev("JO1","","sent",5), ev("JO1","8","nonsense",5), ev("JO1","8","sent",-2)]);
   assert.equal(led.JO1.sent, 10, "only the one real movement counted");
   assert.equal(Object.keys(led).length, 1);
+});
+
+
+console.log("\nF — joining repair (per size) to dispatch (per size range)");
+
+const ORDER = { order_no:"JO1", lines:[
+  { combo:"6X10", sizes:{ "6s":50, "7s":50 } },
+  { combo:"2X5",  sizes:{ "5":40 } },
+]};
+
+/* The dispatch screen works in RANGES; repair is recorded per SIZE. They are
+   joined through the order's own lines. */
+test("held pairs are attributed to the range that contains the size", () => {
+  const led = repairLedger([ev("JO1","6s","sent",12), ev("JO1","5","sent",4)]);
+  const held = heldByCombo(led, ORDER);
+  assert.equal(held.by_combo["6X10"], 12);
+  assert.equal(held.by_combo["2X5"], 4);
+  assert.equal(held.unattributed, 0);
+  assert.equal(held.total, 16);
+});
+
+test("what has come back is no longer held", () => {
+  const led = repairLedger([ev("JO1","6s","sent",12), ev("JO1","6s","returned",5)]);
+  assert.equal(heldByCombo(led, ORDER).by_combo["6X10"], 7, "12 out, 5 back");
+});
+
+test("rejected pairs stop being held — they are a shortage, not a hold", () => {
+  const led = repairLedger([ev("JO1","6s","sent",12), ev("JO1","6s","rejected",12)]);
+  const held = heldByCombo(led, ORDER);
+  assert.equal(held.total, 0);
+  assert.equal(held.by_combo["6X10"], undefined);
+});
+
+/* The record says "8" and two ranges on the order both contain an 8. Charging
+   it to whichever was read first would block the wrong range silently. */
+test("a size in two ranges is unattributed, not guessed at", () => {
+  const twoWays = { order_no:"JO1", lines:[
+    { combo:"6X8",  sizes:{ "8":30 } },
+    { combo:"8X12", sizes:{ "8":30 } },
+  ]};
+  const held = heldByCombo(repairLedger([ev("JO1","8","sent",9)]), twoWays);
+  assert.deepEqual(held.by_combo, {});
+  assert.equal(held.unattributed, 9, "still held, just not against one range");
+  assert.equal(held.total, 9, "and never lost from the total");
+});
+
+test("a size on no line at all is held at order level", () => {
+  const held = heldByCombo(repairLedger([ev("JO1","99","sent",3)]), ORDER);
+  assert.equal(held.unattributed, 3);
+  assert.equal(held.total, 3);
+});
+
+test("an order with nothing in repair holds nothing", () => {
+  assert.deepEqual(heldByCombo(repairLedger([]), ORDER), { by_combo:{}, unattributed:0, total:0 });
+  assert.deepEqual(heldByCombo({}, undefined), { by_combo:{}, unattributed:0, total:0 });
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

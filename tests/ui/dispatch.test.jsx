@@ -3,15 +3,21 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
-const mocks=vi.hoisted(()=>({listDispatches:vi.fn(),addDispatch:vi.fn(),
+const mocks=vi.hoisted(()=>({
+  listRepairs:vi.fn(),listDispatches:vi.fn(),addDispatch:vi.fn(),
   undoDispatch:vi.fn(),hideDispatch:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>({
+  /* The screen reads the repair bench so it can subtract pairs that cannot
+     ship — see the note in DispatchTab about shipping a shoe that failed
+     inspection to the customer who rejected it. */
+  listRepairs:mocks.listRepairs,
   listDispatches:mocks.listDispatches,addDispatch:mocks.addDispatch,
   undoDispatch:mocks.undoDispatch,hideDispatch:mocks.hideDispatch,deleteDispatch:mocks.undoDispatch,
 }));
 import DispatchTab from "../../src/DispatchTab.jsx";
 
 beforeEach(()=>{vi.clearAllMocks();mocks.listDispatches.mockResolvedValue([]);
+  mocks.listRepairs.mockResolvedValue([]);
   mocks.addDispatch.mockResolvedValue({});
   mocks.undoDispatch.mockResolvedValue({});mocks.hideDispatch.mockResolvedValue({});});
 

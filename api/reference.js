@@ -6,6 +6,7 @@ import { SOLE_TYPES, routingForSole } from "../shared/reference-edit.js";
 import { resolveArticleSizeIn, splitScopedSizeKey, scopedSizeKey } from "../shared/bridge.js";
 import { planRemoval, applyRemoval, ordersAtRisk } from "../shared/bom-removal.js";
 import { assignCodes } from "../shared/product-codes.js";
+import { colouredMaterialName } from "../shared/bom-import.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -416,6 +417,62 @@ export default wrap(async (req, res) => {
       return res.status(200).json({ ok:true, codes:result.codes,
         assigned:result.assigned, conflicts:result.conflicts,
         newly_coded:Object.keys(result.assigned).length });
+    }
+
+    /* A material the BOM has never mentioned. Today one can only be born from a
+       BOM upload, and the Stock register refuses a figure against a material it
+       does not know — so a delivery of something new cannot be recorded at all
+       until somebody edits a workbook. */
+    if(body.new_material && typeof body.new_material === "object"){
+      const m = body.new_material;
+      const name = String(m.name || "").replace(/\s+/g," ").trim().toUpperCase();
+      const uom  = String(m.uom  || "").replace(/\s+/g," ").trim().toUpperCase();
+      if(!name) return fail(res, 400, "A material name is required");
+      if(!uom)  return fail(res, 400, "A unit of measure is required — it is part of the material's identity");
+      if(name.length > 200) return fail(res, 400, "Material name must be 200 characters or fewer");
+
+      const num = (v,label) => {
+        if(v == null || v === "") return 0;
+        const n = Number(v);
+        if(!Number.isFinite(n) || n < 0) throw new Error(`${label} must be 0 or more`);
+        return n;
+      };
+      let opening, min, rate;
+      try{ opening = num(m.opening,"Opening stock"); min = num(m.min,"Minimum"); rate = num(m.rate,"Rate"); }
+      catch(e){ return fail(res, 400, e.message); }
+
+      /* Checked BEFORE the transaction so the answer is a sentence rather than
+         a 500. The in-transaction check below stays as the real guard — two
+         people adding the same material at once would both pass this one. */
+      const existing = await current();
+      const preview = `${colouredMaterialName(name, m.colour)}||${uom}`;
+      if((existing.materials || {})[preview])
+        return fail(res, 409, `${preview} is already on the material list. `
+          + `Search for it on the Stock register and set its figures there.`);
+
+      let created = null, key = "";
+      try{
+      await mutateReference("material-add", null, async ref => {
+        /* The colour is folded into the NAME, because black and blue rexine are
+           bought, stocked and netted separately — the same rule the BOM import
+           follows, so a material added here and one added by upload land on the
+           same key rather than becoming two materials. */
+        const full = colouredMaterialName(name, m.colour);
+        key = `${full}||${uom}`;
+        if(ref.materials[key]) throw Object.assign(new Error(`${key} is already on the material list`), {status:409});
+        ref.materials[key] = { name: full, uom, stock: opening,
+          ...(String(m.colour||"").trim() ? { colour: String(m.colour).trim().toUpperCase() } : {}) };
+        ref.stock_meta = ref.stock_meta || {};
+        ref.stock_meta[key] = { opening, rec:0, issue:0,
+          ...(min ? { min_stock:min } : {}), ...(rate ? { rate } : {}) };
+        created = ref.materials[key];
+      });
+      }catch(e){
+        if(e && e.status === 409) return fail(res, 409, e.message);
+        throw e;
+      }
+
+      return res.status(201).json({ ok:true, material_key:key, material:created });
     }
 
     if(body.bom_removal && typeof body.bom_removal === "object"){

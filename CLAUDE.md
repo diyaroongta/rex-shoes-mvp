@@ -143,6 +143,32 @@ opposite of what was asked. Two spellings of one customer are one customer
 holds both `K.P. Burgav` and `K.P. Nurgav`, which is probably a typo and is the
 factory's to fix, not the app's to guess at.
 
+**Procurement answers WHEN, not just what.** A list sorted by shortfall answers
+"what is short"; the buyer asks "what is short and needed on Thursday", and a
+small shortfall due tomorrow beats a huge one due in three weeks. Every piece was
+already computed and thrown away: `netByOrder` walks orders in plan sequence, each
+order carries `stages` with a `start_date`, and the BOM says which STAGE consumes
+a material. `shared/procurement-timing.js` joins them, so a sole is dated from
+MOLDING and not from cutting. An undated shortfall sorts BELOW the dated ones and
+reports `days_until: null` — "no date" and "due in 999 days" are different claims.
+
+**The stock register is unfilled, not noisy.** The instinct was to hide materials
+"not in use"; measuring said that filter hid THREE rows, because nearly every
+material IS in some BOM. The real number is that **195 of 266 have never had a
+figure recorded** — so the stock every shortfall is netted against is mostly an
+assumed zero, and no material has a minimum, which means the below-minimum alert
+and the order quantity can never fire. The view names those states and shows their
+counts rather than hiding anything.
+
+**A material can be created by the store, deliberately.** It is master data — it
+reaches BOMs, netting and the buying list — but the person who discovers one
+missing is the store keeper unpacking a delivery. `new_material` is allowed
+alongside the stock keys for `reference:"stock"` roles; editing or deleting a
+material stays master data, and one disallowed key still sinks the whole request.
+The colour folds into the NAME and the UOM is part of the KEY (`NAME||UOM`),
+following the BOM importer, so a material added by hand and one added by upload
+land on the same key instead of becoming two materials.
+
 **Repair is an EVENT LOG, not three counters.** The factory's ARMOUR 17004 card
 records each movement as a DATE, a SIZE and a QUANTITY — SEND FOR REPAIR,
 RECIVED AFTER REPAIR, REJECTION — so `shared/repair.js` stores the movements and
@@ -314,6 +340,7 @@ shared/            imported by BOTH browser and server — pure, testable
   product-codes.js the article families and their codes — assigned once, then kept
   customer-history.js what a customer has been given before: shoes, then variants
   repair.js        shoes sent back before dispatch: movements in, out and rejected
+  procurement-timing.js  WHEN a shortfall bites, from the stage that consumes it
   fabricators.js   internal lines and job workers in one list; what each type requires
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs
   inputs.js        SEED reference data only — real data lives in Postgres
@@ -500,6 +527,9 @@ Each of these was a real bug found in production. Most have a regression test no
 | A reading that inherited the last one | Reading a PI sets the PI number to that invoice's own number, plus the customer, city, agreed discount and colours. Reading a photo afterwards replaced only the CARDS — so a handwritten SPIKE slip keyed after a PI upload was filed under the uploaded PI's number and came back `409 — PI number already exists: PI/590`. The number fails loudly; the customer, the discount and the colours carried over in SILENCE, which is worse — a Spike order wearing another customer's 40% discount looks perfectly reasonable on screen. `resetReadState()` is now the one place a new reading starts from, shared by the photo path, "Enter by hand" and the PI reader, so the three cannot drift apart again. A photo-read order takes a newly issued number; an uploaded PI keeps its own. |
 | Advice that duplicated the order it was refusing | Saving a PI whose number is taken answered "PI number already exists: PI/590. Request a new PI number." That is right for a genuinely new PI that landed on a taken number, and actively harmful for the commoner case — the SAME PI being saved twice. Following it files a SECOND copy of the same customer order under an invented number, and every pair is counted twice in production, procurement and dispatch. The refusal now names what it collided with (customer, date, and the orders it already created) and says plainly what saving again would do. A collision with no orders behind it still just asks for another number. |
 | Navigation that only existed in one shape | The sidebar and the mobile `<select>` were two lists of the same screens that had already drifted apart once. The menu bar is ONE list for every width. Its entries carry `role="menuitem"`, which overrides the implicit button role — 40 UI tests queried them as buttons and could not find them. Tests navigate through one `goTo()` helper now, so the next nav change is one edit rather than sixty; the helper only opens a group that is shut, because clicking a group TOGGLES it. |
+| Cartons still derived on the SERVER | "Cartons are counted, never derived" was applied to the SCREEN and not to `api/dispatches.js`, which went on storing `pairs / packing rate` — a real dispatch came back `cartons: 4.166666666666667`. Worse, it ignored the packer's own count even when a packing list WAS supplied. The count now comes off the SHEET (already reconciled against the dispatched pairs); a dispatch with no sheet stores `{}`, because nobody counted it. A browser-supplied carton total is still not trusted. The old test asserted the derived behaviour and had to be rewritten. |
+| A hidden screen polling forever | `JobCardTab` polls every 60s. Once the tab was kept MOUNTED so a half-built job order survives a tab switch, that interval ran on every page whether or not anyone was looking — and its catch wiped both lists to `[]` and set an error nothing ever cleared. So one dropped request left "Load failed" on a screen the user opened an hour later, with the data blanked. It polls only while `active`, a failed refresh KEEPS the last good data, and the next success clears the message. ("Load failed" is the browser's own wording for a request that never completed — `client.js` can only ever produce `"500 — …"` or `"Sign in required"`, so that string is always network-level, never ours.) |
+| An article with no BOM, planned in silence | A MISSING article is loud — the order is set aside and reported. An article with size ranges and NO RATES is silent: it schedules normally, books machine capacity, and requires zero material, so `netByOrder` answers `can_run: true, nothing short`. On the live book REX GOLA PLUS carried the two LARGEST orders — 10,015 pairs, JO2112 and JO2140 — and produced not one line of material demand and not a single warning. `compute()` now reports it once per article (not once per order, which nobody reads) with the pair count, and flags `bom_missing` on the order view so a row can say it too. |
 | A colour outranking the product | `matchArticle("Spike Blue")` returned JACK LACE BLACK-BLUE. `blue` occurs TWICE in that name — once in `BLACK-BLUE`, again in the `(BLUE SKINFIT)` note — so a colour mentioned in passing scored 2 while SPIKE, the product actually written, scored 1; `COLOURS` was only `["black","white"]`, so every other colour counted as part of the name. `thunder red` reached JACK too. The match is made on the FAMILY alone now, tokens are deduped, bracketed notes are dropped before the family is read, and a colour or closure can only choose BETWEEN articles of the family the slip named. |
 | The narrowing order inside a family | Fixing the above by narrowing on colour/closure BEFORE the fewest-unmentioned-words rule sent `Gola` to REX GOLA PLUS — PLUS carries no closure, so "prefer the plain name" picked it. Fewest-unmentioned-words settles WHICH PRODUCT and must run first; colour then closure settle which one of it. Colour before closure, or `Jill Blue` answers plain JILL and silently drops the only word that narrowed anything. |
 | A date that was really a Date | Postgres returns `order_date` as a Date OBJECT. `String(date).slice(0,10)` is `"Wed Aug 20"`, which sorts alphabetically — so the most-recent customer came out wrong and every first/last-supplied date was nonsense. `isoDate()` normalises, and reads LOCAL time: `toISOString()` on a date-only value stored at local midnight rolls back a day and dates an order to the day before it was placed. |

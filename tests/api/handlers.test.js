@@ -62,25 +62,54 @@ describe("database API contracts",()=>{
   });
 
   it("rejects an over-dispatch before writing it",async()=>{
-    dbMocks.q.mockResolvedValueOnce({rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"7X10S",qty:100}]}]})
-      .mockResolvedValueOnce({rows:[{dispatched:{"7X10S":80}}]});
+    /* Matched on the SQL rather than on a call count: the handler also reads
+       the repair bench now, and a test that pins the number of queries breaks
+       every time a read is added while saying nothing about what it guards. */
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from orders")) return {rows:[{order_no:"JO1",article_code:"SPIKE",
+        lines:[{combo:"7X10S",qty:100}]}]};
+      if(t.includes("from dispatches")) return {rows:[{dispatched:{"7X10S":80}}]};
+      if(t.includes("from repairs")) return {rows:[]};
+      return {rows:[]};
+    });
     const res=response();
     await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":30}}},res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/only 20 pairs remain/);
-    expect(dbMocks.q).toHaveBeenCalledTimes(2);
+    /* What the test is actually for: nothing was written. */
+    expect(dbMocks.q.mock.calls.some(([sql])=>String(sql).startsWith("insert into dispatches"))).toBe(false);
   });
 
-  it("derives dispatch cartons from the order's snapshotted packing rate",async()=>{
-    dbMocks.q.mockResolvedValueOnce({rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"7X10S",qty:240,ppc:24}]}]})
-      .mockResolvedValueOnce({rows:[]})
-      .mockResolvedValueOnce({rows:[]})
-      .mockResolvedValueOnce({rows:[{id:1,order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":2},kind:"partial",dispatched_on:"2026-08-25",closes_order:false}]});
+  /* CARTONS ARE COUNTED, NEVER DERIVED — and this test used to assert the
+     opposite. Dividing pairs by a packing rate produced things like
+     "4.166666666666667 cartons", which cannot go on a lorry, and it is wrong
+     anyway whenever sizes inside one range pack at different rates. It also
+     ignored the packer's own count even when a packing list was supplied.
+     A browser-supplied carton total is still not trusted — the count is taken
+     from the SHEET, which has already been reconciled against the dispatched
+     pairs. */
+  it("never stores a fraction of a carton, and ignores a browser-supplied count",async()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from orders")) return {rows:[{order_no:"JO1",article_code:"SPIKE",
+        lines:[{combo:"7X10S",qty:240,ppc:24}]}]};
+      if(t.includes("from repairs")) return {rows:[]};
+      if(t.includes("from reference_data")) return {rows:[{value:{articles:{}}}]};
+      if(t.startsWith("insert into dispatches")) return {rows:[{id:1}]};
+      return {rows:[]};
+    });
     const res=response();
-    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",body:{order_no:"JO1",dispatched:{"7X10S":48},cartons:{"7X10S":999},kind:"partial",dispatched_on:"2026-08-25"}},res);
+    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",
+      body:{order_no:"JO1",dispatched:{"7X10S":50},cartons:{"7X10S":999},
+            kind:"partial",dispatched_on:"2026-08-25"}},res);
     expect(res.statusCode).toBe(201);
     const insert=dbMocks.q.mock.calls.find(([sql])=>String(sql).includes("insert into dispatches"));
-    expect(JSON.parse(insert[1][2])).toEqual({"7X10S":2});
+    const stored=JSON.parse(insert[1][2]);
+    /* 50 pairs at 24/carton is 2.083…; nobody counted, so nothing is stored. */
+    expect(stored).toEqual({});
+    expect(Object.values(stored).some(n=>!Number.isInteger(n))).toBe(false);
+    expect(stored["7X10S"]).not.toBe(999);
   });
 
   it("rejects an impossible dispatch date before reading an order",async()=>{
@@ -116,6 +145,50 @@ describe("database API contracts",()=>{
      every JACK and JILL code assigned that morning. JA003 is printed on a job
      card and a PI; if a rollback frees it, the next assignment can hand JA003
      to a DIFFERENT article and the paperwork quietly points at the wrong shoe. */
+  /* PAIRS ON THE REPAIR BENCH ARE NOT SHIPPABLE. They exist and they are not
+     short, but sending one is how a customer receives the very shoe that failed
+     inspection. Enforced on the SERVER, because the screen is not what enforces
+     anything. */
+  it("refuses to dispatch pairs that are on the repair bench",async()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from orders")) return {rows:[{order_no:"JO1",article_code:"SPIKE",
+        lines:[{combo:"6X8",qty:100,sizes:{"6":50,"7":50}}]}]};
+      if(t.includes("from repairs")) return {rows:[{order_no:"JO1",size:"6",kind:"sent",qty:30}]};
+      if(t.includes("from dispatches")) return {rows:[]};
+      if(t.includes("from reference_data")) return {rows:[{value:{articles:{}}}]};
+      return {rows:[]};
+    });
+    const res=response();
+    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",
+      body:{order_no:"JO1",dispatched:{"6X8":100},kind:"partial",dispatched_on:"2026-09-09"}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/repair bench/i);
+    expect(res.body.error).toMatch(/only 70 can ship/i);
+  });
+
+  it("allows exactly what is left once the bench is subtracted",async()=>{
+    let written=null;
+    dbMocks.q.mockImplementation(async(sql,params)=>{
+      const t=String(sql);
+      if(t.includes("from orders")) return {rows:[{order_no:"JO1",article_code:"SPIKE",
+        lines:[{combo:"6X8",qty:100,sizes:{"6":50,"7":50}}]}]};
+      if(t.includes("from repairs")) return {rows:[{order_no:"JO1",size:"6",kind:"sent",qty:30}]};
+      if(t.startsWith("insert into dispatches")){ written=params; return {rows:[{id:1,cartons:params[2]}]}; }
+      if(t.includes("from reference_data")) return {rows:[{value:{articles:{}}}]};
+      return {rows:[]};
+    });
+    const res=response();
+    await dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches",
+      body:{order_no:"JO1",dispatched:{"6X8":70},kind:"partial",dispatched_on:"2026-09-09"}},res);
+    expect(res.statusCode).toBe(201);
+    /* CARTONS ARE COUNTED, NEVER DERIVED. This used to store pairs / packing
+       rate — "4.166666666666667 cartons", which cannot go on a lorry — and it
+       ignored the packer's own count even when a sheet was supplied. With no
+       sheet, nothing was counted, so nothing is stored. */
+    expect(JSON.parse(written[2])).toEqual({});
+  });
+
   it("a restore rolls back the BOM but keeps the product codes",async()=>{
     const live={ articles:{ SPIKE:{ product_code:"SI001", combos:{"6X8":{rates:{}}}, combo_order:["6X8"] },
                             SPADE:{ product_code:"SP001", combos:{"6X8":{rates:{}}}, combo_order:["6X8"] } },

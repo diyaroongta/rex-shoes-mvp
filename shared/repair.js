@@ -117,6 +117,42 @@ export function heldByRepair(ledger, orderNo){
   return rec ? rec.in_repair : 0;
 }
 
+/* Pairs on the bench, PER SIZE RANGE, so the dispatch screen can subtract them
+   from what is shippable.
+ *
+ * Repair is recorded per SIZE and dispatch happens per SIZE RANGE, so the two
+ * have to be joined through the order's own lines. A size that appears in more
+ * than one range on the same order cannot be attributed to either — the record
+ * says "8" and both ranges contain an 8 — so those pairs come back as
+ * `unattributed` rather than being charged to whichever range was read first.
+ * The caller subtracts them at ORDER level, which is still correct and does not
+ * invent an attribution the record never made.
+ */
+export function heldByCombo(ledger, order){
+  const rec = (ledger || {})[clean((order || {}).order_no)];
+  const out = { by_combo: {}, unattributed: 0, total: 0 };
+  if(!rec) return out;
+
+  /* size -> the ranges on THIS order that contain it. */
+  const owners = {};
+  for(const line of (order.lines || [])){
+    const combo = clean(line.combo);
+    if(!combo) continue;
+    for(const size of Object.keys(line.sizes || {}))
+      (owners[sizeKey(size)] = owners[sizeKey(size)] || []).push(combo);
+  }
+
+  for(const [size, row] of Object.entries(rec.sizes || {})){
+    const held = Math.max(0, row.in_repair);
+    if(held <= 0) continue;
+    out.total += held;
+    const where = [...new Set(owners[size] || [])];
+    if(where.length === 1) out.by_combo[where[0]] = (out.by_combo[where[0]] || 0) + held;
+    else out.unattributed += held;   // no range, or more than one
+  }
+  return out;
+}
+
 /* The whole factory's repair position, for a dashboard line. */
 export function repairTotals(ledger){
   const out = { orders: 0, sent: 0, returned: 0, rejected: 0, in_repair: 0 };

@@ -29,6 +29,12 @@ const ALL_WRITES = ["orders","pis","dispatches","reference","catalogue","parties
    repeats across all future orders. A role gets one, the other or neither —
    judged on the body keys, not on the endpoint. */
 const STOCK_KEYS = ["stock","stock_meta"];
+/* Creating a material is MASTER data — it enters BOMs, netting and the buying
+   list — but the person who discovers a material is missing is the store keeper
+   unpacking a delivery, not the data manager. Refusing them makes the feature
+   useless to the only people who need it. So it is allowed alongside stock, and
+   ONLY as a creation: editing or deleting a material stays master data. */
+const MATERIAL_KEYS = ["new_material"];
 /* The PLAN, as opposed to the order. Both are single-key PATCHes from the
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
@@ -162,7 +168,8 @@ export function can(role, method, url, body){
   if(endpoint === "reference"){
     if(def.reference === "all") return { allowed:true };
     const keys = Object.keys(body || {});
-    if(def.reference === "stock" && keys.length && keys.every(k => STOCK_KEYS.includes(k)))
+    if(def.reference === "stock" && keys.length
+       && keys.every(k => STOCK_KEYS.includes(k) || MATERIAL_KEYS.includes(k)))
       return { allowed:true };
     return { allowed:false, reason: def.reference === "stock"
       ? "You can update stock figures, but only a data manager or an administrator can change the BOM, packing or MRP."

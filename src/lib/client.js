@@ -162,6 +162,10 @@ export const removeBom = (selection, confirmInUse=false) =>
    code already printed on a job card or PI never moves. */
 export const assignProductCodes = () => patchReference({ assign_product_codes:true });
 
+/* A material the BOM has never mentioned — a delivery of something new. The
+   store keeper can do this, deliberately: see the note in shared/permissions.js. */
+export const addMaterial = m => patchReference({ new_material:m });
+
 /* ---- product catalogue ---- */
 export const getCatalogue   = ()        => j("/api/catalogue");
 export const putCatalogue   = entry     => j("/api/catalogue", {

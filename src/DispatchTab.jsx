@@ -1,10 +1,11 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import PackingList from "./PackingList.jsx";
 import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
+import { repairLedger, heldByCombo } from "../shared/repair.js";
 import { comboSizes } from "../shared/pi.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
@@ -25,6 +26,11 @@ const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
    "only N pairs remain outstanding". The ledger below sees everything; only
    the history list filters. */
 export default function DispatchTab({ orders, dispatches = [], onChanged }){
+  /* Pairs on the repair bench are NOT shippable — sending one is how a customer
+     receives the very shoe that failed inspection. The screen subtracts them so
+     the clerk sees a true "can ship" figure rather than being refused by the
+     server after filling the whole report in. */
+  const [repairs,setRepairs]=useState([]);
   const [open,setOpen]=useState(null);
   /* The packing list for the dispatch being recorded. Null until the packer
      opens it — a dispatch can still be recorded without one, because a
@@ -47,6 +53,21 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const [preview,setPreview]=useState(null);
   const [stale,setStale]=useState(false);
   const historyMsgRef=useRef(null);
+  useEffect(()=>{ let live=true;
+    api.listRepairs().then(r=>{ if(live) setRepairs(r||[]); })
+      .catch(()=>{ /* a repair read failing must not take the dispatch screen
+                      down; nothing is held and the server still enforces it. */ });
+    return ()=>{ live=false; };
+  },[dispatches]);
+
+  const repairHold=useMemo(()=>{
+    const led=repairLedger(repairs);
+    const out={};
+    for(const o of orders||[]) out[o.order_no]=heldByCombo(led,o);
+    return out;
+  },[repairs,orders]);
+
+
 
   /* A packing report can be mis-keyed. Removing one returns its pairs to the
      order's pending balance, so this is a correction — not a way to make a
@@ -96,7 +117,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
 
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
-    const d={}; for(const r of rec.rows) d[r.combo]=r.pending>0?r.pending:0;
+    /* Pre-filled with what can actually SHIP. Pre-filling the whole outstanding
+       balance would put pairs that are on the repair bench into the report by
+       default, and the server would then refuse the whole thing. */
+    const hold=(repairHold[rec.order.order_no]||{by_combo:{}}).by_combo;
+    const d={}; for(const r of rec.rows)
+      d[r.combo]=Math.max(0, (r.pending>0?r.pending:0) - (hold[r.combo]||0));
     setDraft(d); setSheet(null); setPreview(null); setStale(false);
   }
 
@@ -218,7 +244,9 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                     ? <span className="text-slate-300" title="No packing list on this order's dispatches">—</span>
                     : <>{fmt(rec.total_cartons)}<span className="text-slate-400 text-xs"> ctn</span></>}</td>
                 <td className="text-right mono font-semibold" style={{color:rec.total_pending>0?"#b45309":"#16a34a"}}>
-                  {fmt(rec.total_pending)}</td>
+                  {fmt(rec.total_pending)}
+                  {(repairHold[rec.order.order_no]||{}).total>0 && <div className="text-[10px] font-normal text-amber-700">
+                    {fmt(repairHold[rec.order.order_no].total)} in repair</div>}</td>
                 <td className="pl-3">
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{
                     background: rec.status==="complete"?"#dcfce7":rec.status==="closed short"?"#ffe4e6"
@@ -248,14 +276,24 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                         <th className="text-right">Dispatch now</th></tr></thead>
                       <tbody>
                         {rec.rows.map(r=>{
+                          const onBench=(repairHold[rec.order.order_no]||{by_combo:{}}).by_combo[r.combo]||0;
+                          const canShip=Math.max(0,r.pending-onBench);
                           return <tr key={r.combo}>
                             <td className="mono py-1">{r.combo}</td>
                             <td className="text-right mono">{fmt(r.ordered)}</td>
                             <td className="text-right mono">{fmt(r.dispatched)}</td>
-                            <td className="text-right mono">{fmt(r.pending)}</td>
+                            <td className="text-right mono">{fmt(r.pending)}
+                              {/* Outstanding and SHIPPABLE are different numbers
+                                  once something is on the bench, so both are
+                                  shown rather than one quietly replacing the
+                                  other. */}
+                              {onBench>0 && <div className="text-[10px] text-amber-700">
+                                −{fmt(onBench)} in repair</div>}</td>
                             <td className="text-right">
-                              <input type="number" min={0} max={r.pending} value={draft[r.combo]??0}
+                              <input type="number" min={0} max={canShip} value={draft[r.combo]??0}
                                 onChange={e=>editDraft(r.combo,e.target.value)}
+                                style={onBench>0?{borderColor:"#f59e0b"}:undefined}
+                                title={onBench>0?`${onBench} pair(s) are on the repair bench and cannot ship`:undefined}
                                 className="w-20 text-sm border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>
                           </tr>;})}
                       </tbody>

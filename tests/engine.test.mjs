@@ -418,5 +418,55 @@ test("an orphan does not consume stock it can no longer compute a need for", () 
   });
 }
 
+/* AN ARTICLE THAT EXISTS BUT HAS NO BOM IS WORSE THAN ONE THAT IS MISSING.
+   A missing article is loud — the order is set aside and reported. An article
+   with size ranges and no RATES is SILENT: it schedules, books machine
+   capacity, and requires zero material, so procurement answers "can_run: true,
+   nothing short" for work that cannot be made. On the live book REX GOLA PLUS
+   carried the two largest orders — 10,015 pairs — and produced not one line of
+   material demand and not a single warning. */
+test("an article with no BOM is reported, not silently planned", () => {
+  const noBom = { ...articles, "HOLLOW": { ...articles["REX GOLA (V)"],
+    combos: Object.fromEntries(Object.entries(articles["REX GOLA (V)"].combos)
+      .map(([c, v]) => [c, { ...v, rates: {} }])) } };
+  const orders = [
+    { order_no:"JO1", order_date:"2026-07-06", article_code:"HOLLOW",
+      priority:2, party:"A", pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:5001 }] },
+  ];
+  const s = compute(orders, noBom, materials, wcs, origin, {});
+  const said = s.schedule_problems.find(p => /HOLLOW/.test(p) && /NO BOM/i.test(p));
+  assert.ok(said, "the whole point: it must say so");
+  assert.match(said, /5001 pair/, "and say how much work it is quietly covering");
+  assert.equal(s.orders.find(o => o.order_no === "JO1").bom_missing, true,
+    "flagged per order too, so a row can show it and not only a banner");
+});
+
+/* It must not fire for the ordinary case, or it becomes another banner people
+   learn to scroll past. */
+test("an article WITH a BOM raises no such warning", () => {
+  const orders = [
+    { order_no:"JO1", order_date:"2026-07-06", article_code:"REX GOLA (V)",
+      priority:2, party:"A", pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:60 }] },
+  ];
+  const s = run(orders);
+  assert.equal(s.schedule_problems.some(p => /NO BOM/i.test(p)), false);
+  assert.equal(s.orders.find(o => o.order_no === "JO1").bom_missing, undefined);
+});
+
+/* Two orders on one hollow article are ONE problem, not two — a warning
+   repeated per order is a warning nobody reads. */
+test("one hollow article reports once, however many orders it carries", () => {
+  const noBom = { ...articles, "HOLLOW": { ...articles["REX GOLA (V)"],
+    combos: Object.fromEntries(Object.entries(articles["REX GOLA (V)"].combos)
+      .map(([c, v]) => [c, { ...v, rates: {} }])) } };
+  const orders = [1,2,3].map(n => ({ order_no:`JO${n}`, order_date:"2026-07-06",
+    article_code:"HOLLOW", priority:2, party:"A", pi:{pi_no:`PI-${n}`},
+    lines:[{ combo:"11X13", qty:100 }] }));
+  const s = compute(orders, noBom, materials, wcs, origin, {});
+  assert.equal(s.schedule_problems.filter(p => /NO BOM/i.test(p)).length, 1);
+  assert.match(s.schedule_problems.find(p => /NO BOM/i.test(p)), /300 pair/, "totalled across all three");
+});
+
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

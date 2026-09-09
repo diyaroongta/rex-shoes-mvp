@@ -18,7 +18,7 @@ const shortDate = iso => {
 /* Job Order creation. The Order Book supplies the article and ceiling; the
    operator supplies who receives it, the date and the exact size-wise cutting
    quantities. The Job Card is its printable document, not another workflow. */
-export default function JobCardTab({ orders=[], initialOrderNo="", embedded=false, onIssued=null }){
+export default function JobCardTab({ orders=[], initialOrderNo="", embedded=false, onIssued=null, active=true }){
   const [fabricators,setFabricators]=useState(null);
   const [jobs,setJobs]=useState(null);
   const [orderNo,setOrderNo]=useState("");
@@ -33,17 +33,36 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   const [msg,setMsg]=useState("");
   const [adding,setAdding]=useState(null);   // the inline "new fabricator" draft
 
-  async function reload(){
+  /* A REFRESH THAT FAILS MUST NOT DESTROY WHAT IS ALREADY ON SCREEN.
+     This used to wipe both lists to [] and set an error that nothing ever
+     cleared, so one dropped request — a Neon cold start, a lost second of
+     wifi — emptied the screen permanently and left "Load failed" sitting
+     there. ("Load failed" is the BROWSER's words for a request that never
+     completed; nothing in this app produces that string.) A failed refresh now
+     keeps the last good data, and the next success clears the message. */
+  async function reload({ initial = false } = {}){
     try{
       const [f,j]=await Promise.all([api.listFabricators(),api.listJobWork()]);
-      setFabricators(f); setJobs(j);
-    }catch(e){ setErr(e.message||String(e)); setFabricators([]); setJobs([]); }
+      setFabricators(f); setJobs(j); setErr("");
+    }catch(e){
+      setErr((e && e.message) || String(e));
+      /* Only on the FIRST load is empty the truth. After that, stale figures
+         beat a blank screen — and the error says they may be stale. */
+      if(initial){ setFabricators([]); setJobs([]); }
+    }
   }
+
+  /* Polls only while this screen is actually being looked at. The tab stays
+     MOUNTED so a half-built job order survives a tab switch, which means an
+     unconditional interval would poll every sixty seconds forever on every
+     page — and a blip from a poll nobody saw would still be on screen an hour
+     later when they finally opened it. */
   useEffect(()=>{
-    reload();
+    if(!active) return;
+    reload({ initial: fabricators === null });
     const timer=setInterval(reload,60000);
     return()=>clearInterval(timer);
-  },[]);
+  },[active]);
 
   const queue=useMemo(()=>jobOrderQueue(orders,jobs||[]),[orders,jobs]);
   const openOrders=queue.filter(row=>row.remaining>0);

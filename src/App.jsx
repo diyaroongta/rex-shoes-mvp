@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { labelFor } from "../shared/product-codes.js";
 import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
+import { neededBy, buyingList, urgencyOf, daysBetween } from "../shared/procurement-timing.js";
 import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
@@ -506,7 +507,7 @@ export default function App({ user=null, onSignOut=null }={}){
             screen. Same reason NewOrderFlow stays mounted behind the
             spreadsheet mode. */}
         <div style={{display:tab==="jobs"?"block":"none"}}>
-          <JobCardTab orders={orders||[]} onIssued={syncAll} />
+          <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} />
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
@@ -3117,23 +3118,98 @@ function ScheduleTab({state,setPlanOverride}){
   </div>;
 }
 
+/* The buying list, not the materials list.
+   The old screen showed all 111 netted materials sorted by SHORTFALL, which
+   answers "what is short" — a different question from the one procurement
+   actually asks, which is "what is short AND needed on Thursday". A small
+   shortfall due tomorrow and a huge one due in three weeks look identical
+   sorted by quantity, and they are not the same problem. */
 function ProcurementTab({state}){
+  const [showAll,setShowAll]=useState(false);
+  const [leadDays,setLeadDays]=useState(7);
+  const today=new Date().toISOString().slice(0,10);
+
+  const timing=useMemo(
+    ()=>neededBy(state.procurement_by_order||{}, state.orders||[], INPUTS.articles||{}),
+    [state.procurement_by_order,state.orders]);
+  const list=useMemo(
+    ()=>buyingList(state.procurement||[], timing, today),
+    [state.procurement,timing,today]);
+
+  const TONE={overdue:{bg:"#fef2f2",fg:"#b91c1c"},urgent:{bg:"#fff7ed",fg:"#c2410c"},
+              planned:{bg:"#fff",fg:"#475569"},undated:{bg:"#fff",fg:"#94a3b8"}};
+  const counts=list.reduce((a,r)=>{const u=urgencyOf(r,leadDays);a[u]=(a[u]||0)+1;return a;},{});
+
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
-    <p className="text-sm text-slate-500 mb-3">All {state.netted.length} real materials rolled up across {state.totals.orders} orders (cutting + stitching, as per your BOM file), netted against stock. <b className="text-orange-700">{state.procurement.length} need purchasing.</b> Stock figures are placeholders.</p>
-    <table className="w-full text-sm" style={{borderCollapse:"collapse",minWidth:660}}>
+    <div className="flex items-center gap-3 flex-wrap mb-2">
+      <div className="text-sm font-semibold text-slate-700">
+        {showAll?`All materials · ${state.netted.length}`:`To buy · ${list.length}`}</div>
+      {/* The lead time is the buyer's, not the factory's, so it is set here
+          rather than assumed — a material that takes three weeks to arrive is
+          urgent long before one that arrives next day. */}
+      <label className="text-xs text-slate-600 flex items-center gap-1.5">
+        Supplier lead time
+        <input type="number" min="0" max="120" value={leadDays} aria-label="Supplier lead time in days"
+          onChange={e=>setLeadDays(Math.max(0,Number(e.target.value)||0))}
+          className="w-16 border border-slate-300 rounded px-1.5 py-0.5 mono text-right text-xs"/>
+        days
+      </label>
+      <button onClick={()=>setShowAll(v=>!v)} className="text-xs font-semibold text-indigo-700 hover:underline">
+        {showAll?"Show only what needs buying":`Show all ${state.netted.length} materials`}</button>
+    </div>
+
+    <div className="flex gap-4 flex-wrap text-xs mb-3">
+      {counts.overdue>0 && <span className="text-slate-500">Already late <b className="mono" style={{color:TONE.overdue.fg}}>{counts.overdue}</b></span>}
+      {counts.urgent>0 && <span className="text-slate-500">Within {leadDays} days <b className="mono" style={{color:TONE.urgent.fg}}>{counts.urgent}</b></span>}
+      {counts.planned>0 && <span className="text-slate-500">Planned <b className="mono text-slate-700">{counts.planned}</b></span>}
+      {counts.undated>0 && <span className="text-slate-500">No date <b className="mono text-slate-400">{counts.undated}</b></span>}
+    </div>
+
+    {!list.length && !showAll && <div className="text-sm text-slate-500 py-6 text-center">
+      Nothing needs buying — every material is covered by stock.</div>}
+
+    <table className="w-full text-sm" style={{borderCollapse:"collapse",minWidth:820}}>
       <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
+        <th className="text-left py-2 px-2">Needed by</th>
         <th className="text-left py-2 px-2">Material</th>
-        <th className="text-right py-2 px-2">Required</th><th className="text-right py-2 px-2">In stock</th><th className="text-right py-2 px-2">Shortfall</th><th className="text-left py-2 px-2">UOM</th>
+        <th className="text-right py-2 px-2">Required</th><th className="text-right py-2 px-2">In stock</th>
+        <th className="text-right py-2 px-2">Shortfall</th><th className="text-left py-2 px-2">UOM</th>
+        <th className="text-left py-2 px-2">Why then</th>
       </tr></thead>
-      <tbody>{[...state.netted].sort((a,b)=>b.shortfall-a.shortfall).map(m=>(
-        <tr key={m.material_key} style={{background:m.shortfall>0?"#fffaf5":"#fff"}}>
+      <tbody>{(showAll
+          ? [...state.netted].sort((a,b)=>b.shortfall-a.shortfall)
+              .map(m=>({...m,...(timing[m.material_key]||{}),
+                        days_until:timing[m.material_key]?daysBetween(today,timing[m.material_key].needed_on):null}))
+          : list).map(m=>{
+        const u=urgencyOf(m,leadDays);
+        const tone=TONE[u]||TONE.planned;
+        return <tr key={m.material_key} style={{background:m.shortfall>0?tone.bg:"#fff"}}>
+          <td className="py-2 px-2 mono text-xs" style={{borderTop:"1px solid #eef0f4",color:tone.fg,whiteSpace:"nowrap"}}>
+            {m.shortfall>0
+              ? (m.needed_on
+                  ? <>{niceDate(m.needed_on)}{m.days_until!=null &&
+                      <span className="text-slate-400"> · {m.days_until<0?`${-m.days_until}d late`:`${m.days_until}d`}</span>}</>
+                  : <span className="text-slate-300">no date</span>)
+              : <span className="text-slate-300">—</span>}
+          </td>
           <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>{m.name}</td>
           <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>{fmt(m.required,1)}</td>
           <td className="py-2 px-2 text-right mono text-slate-500" style={{borderTop:"1px solid #eef0f4"}}>{fmt(m.stock,1)}</td>
-          <td className="py-2 px-2 text-right mono font-semibold" style={{borderTop:"1px solid #eef0f4",color:m.shortfall>0?"#c2410c":"#0f9d6b"}}>{m.shortfall>0?fmt(m.shortfall,1):"—"}</td>
+          <td className="py-2 px-2 text-right mono font-semibold" style={{borderTop:"1px solid #eef0f4",color:m.shortfall>0?tone.fg:"#0f9d6b"}}>
+            {m.shortfall>0?fmt(m.shortfall,1):"—"}</td>
           <td className="py-2 px-2 mono text-xs text-slate-500" style={{borderTop:"1px solid #eef0f4"}}>{m.uom}</td>
-        </tr>))}</tbody>
+          {/* Which order and which stage put the date there — a date with no
+              reason behind it is one nobody trusts enough to buy against. */}
+          <td className="py-2 px-2 text-xs text-slate-500" style={{borderTop:"1px solid #eef0f4",whiteSpace:"nowrap"}}>
+            {m.shortfall>0&&m.needed_for ? <>{m.stage||"start"} · <span className="mono">{m.needed_for}</span></> : ""}</td>
+        </tr>;})}</tbody>
     </table>
+
+    <p className="text-xs text-slate-400 mt-3">
+      Netted across {state.totals.orders} orders against stock. A date is the day the first order short of that
+      material reaches the stage that consumes it — read from the BOM, so a sole is dated from molding and not
+      from cutting. Stock figures are only as good as the Stock register.
+    </p>
   </div>;
 }
 
