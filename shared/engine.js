@@ -435,8 +435,21 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
      machine capacity, and requires ZERO material, so procurement reports
      `can_run: true` and nothing short for work that cannot actually be made.
      REX GOLA PLUS carried the two largest orders on the book, 10,015 pairs,
-     and produced not one line of material demand or a single warning. */
+     and produced not one line of material demand or a single warning.
+
+     It is a DATA GAP, not a schedule problem, and the difference is the whole
+     reason it has its own channel. `schedule_problems` is the red banner above
+     EVERY screen, and it is right for something that broke today's plan — a
+     capacity violation, an order whose article no longer exists. A BOM that
+     has not been uploaded yet is a standing condition: it will still be true
+     tomorrow and next week, so putting it there parks a red bar over the whole
+     app until somebody uploads a workbook, and teaches people to scroll past
+     the banner that is telling them the plan is actually broken.
+
+     So it is reported STRUCTURED and where its audience is: procurement, whose
+     buying list is the thing missing the pairs, and the order row itself. */
   const seenNoBom = new Set();
+  const dataGaps = [];
   for(const o of planned){
     const art = articles[o.article_code];
     if(!art || seenNoBom.has(o.article_code)) continue;
@@ -445,11 +458,14 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       for(const stage of Object.values(combo.rates || {})) rates += Object.keys(stage).length;
     if(rates > 0) continue;
     seenNoBom.add(o.article_code);
-    const pairs = orders.filter(x => x.article_code === o.article_code)
-      .reduce((a, x) => a + (x.lines || []).reduce((n, l) => n + (Number(l.qty) || 0), 0), 0);
-    problems.push(`${o.article_code} has NO BOM — ${pairs} pair(s) across `
-      + `${orders.filter(x => x.article_code === o.article_code).length} order(s) are scheduled and book machine `
-      + `capacity, but require no material at all. Procurement cannot see them. Upload its BOM.`);
+    const on = orders.filter(x => x.article_code === o.article_code);
+    dataGaps.push({
+      kind: "bom_missing",
+      article_code: o.article_code,
+      orders: on.length,
+      order_nos: on.map(x => x.order_no),
+      pairs: on.reduce((a, x) => a + (x.lines || []).reduce((n, l) => n + (Number(l.qty) || 0), 0), 0),
+    });
   }
   const sla=slaEval(sched, riskWindow, targets);
   const netted=netting(rollup(planned,articles),materials);
@@ -517,7 +533,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       busy_days:act.length,avg_util_pct:round2(100*booked/(wc.capacity_per_day*span),1)});
   }
   loadSummary.sort((a,b)=>b.avg_util_pct-a.avg_util_pct);
-  return {orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,daily_load:sched.load,
+  return {orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,data_gaps:dataGaps,daily_load:sched.load,
     plan_warnings:sched.warnings, forced_load:sched.forced_load,
     procurement_by_order:byOrder, procurement_by_pi:shortfallByPi(byOrder),
     totals:{orders:orders.length,total_pairs:orders.reduce((s,o)=>s+o.lines.reduce((a,l)=>a+l.qty,0),0),

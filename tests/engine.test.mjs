@@ -434,11 +434,33 @@ test("an article with no BOM is reported, not silently planned", () => {
       priority:2, party:"A", pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:5001 }] },
   ];
   const s = compute(orders, noBom, materials, wcs, origin, {});
-  const said = s.schedule_problems.find(p => /HOLLOW/.test(p) && /NO BOM/i.test(p));
-  assert.ok(said, "the whole point: it must say so");
-  assert.match(said, /5001 pair/, "and say how much work it is quietly covering");
+  const gap = s.data_gaps.find(g => g.article_code === "HOLLOW");
+  assert.ok(gap, "the whole point: it must say so");
+  assert.equal(gap.kind, "bom_missing");
+  assert.equal(gap.pairs, 5001, "and say how much work it is quietly covering");
+  assert.deepEqual(gap.order_nos, ["JO1"], "and which orders, so it can be chased");
   assert.equal(s.orders.find(o => o.order_no === "JO1").bom_missing, true,
     "flagged per order too, so a row can show it and not only a banner");
+});
+
+/* IT IS A DATA GAP, NOT A SCHEDULE PROBLEM. `schedule_problems` is the red bar
+   above every screen and belongs to things that broke TODAY'S plan. A BOM that
+   has not been uploaded is a standing condition — it is still true next week —
+   so reporting it there parks a permanent red bar over the whole app and
+   teaches people to scroll past the banner that means the plan really is
+   broken. This is the regression test for exactly that. */
+test("a missing BOM never reaches the app-wide red banner", () => {
+  const noBom = { ...articles, "HOLLOW": { ...articles["REX GOLA (V)"],
+    combos: Object.fromEntries(Object.entries(articles["REX GOLA (V)"].combos)
+      .map(([c, v]) => [c, { ...v, rates: {} }])) } };
+  const orders = [
+    { order_no:"JO1", order_date:"2026-07-06", article_code:"HOLLOW",
+      priority:2, party:"A", pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:5001 }] },
+  ];
+  const s = compute(orders, noBom, materials, wcs, origin, {});
+  assert.equal(s.schedule_problems.some(p => /BOM/i.test(p)), false,
+    "not in the banner");
+  assert.equal(s.data_gaps.length, 1, "reported, just not there");
 });
 
 /* It must not fire for the ordinary case, or it becomes another banner people
@@ -449,7 +471,7 @@ test("an article WITH a BOM raises no such warning", () => {
       priority:2, party:"A", pi:{pi_no:"PI-1"}, lines:[{ combo:"11X13", qty:60 }] },
   ];
   const s = run(orders);
-  assert.equal(s.schedule_problems.some(p => /NO BOM/i.test(p)), false);
+  assert.deepEqual(s.data_gaps, []);
   assert.equal(s.orders.find(o => o.order_no === "JO1").bom_missing, undefined);
 });
 
@@ -463,8 +485,9 @@ test("one hollow article reports once, however many orders it carries", () => {
     article_code:"HOLLOW", priority:2, party:"A", pi:{pi_no:`PI-${n}`},
     lines:[{ combo:"11X13", qty:100 }] }));
   const s = compute(orders, noBom, materials, wcs, origin, {});
-  assert.equal(s.schedule_problems.filter(p => /NO BOM/i.test(p)).length, 1);
-  assert.match(s.schedule_problems.find(p => /NO BOM/i.test(p)), /300 pair/, "totalled across all three");
+  assert.equal(s.data_gaps.length, 1);
+  assert.equal(s.data_gaps[0].pairs, 300, "totalled across all three");
+  assert.equal(s.data_gaps[0].orders, 3);
 });
 
 

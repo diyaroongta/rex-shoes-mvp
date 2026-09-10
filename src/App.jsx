@@ -262,6 +262,7 @@ export default function App({ user=null, onSignOut=null }={}){
         peak_util_pct:m.peak_util_pct, avg_util_pct:m.avg_util_pct, busy_days:m.busy_days,
       })),
       schedule_problems: state.schedule_problems,
+      data_gaps: state.data_gaps,
       procurement: state.procurement.slice(0,15).map(p=>({material:p.name,uom:p.uom,required:p.required,stock:p.stock,shortfall:p.shortfall})),
       totals: state.totals,
     };
@@ -3244,6 +3245,24 @@ function ProcurementTab({state}){
       {counts.planned>0 && <span className="text-slate-500">Planned <b className="mono text-slate-700">{counts.planned}</b></span>}
       {counts.undated>0 && <span className="text-slate-500">No date <b className="mono text-slate-400">{counts.undated}</b></span>}
     </div>
+
+    {/* An article with no BOM requires zero material, so its orders are not
+        "covered by stock" — they are absent from this list altogether. That is
+        a quiet, permanent fact about the DATA, so it sits here, in front of the
+        buyer it actually affects, rather than in the red bar above every
+        screen where it would sit until somebody uploaded a workbook. */}
+    {!!(state.data_gaps||[]).length && <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-2.5 py-2 mb-3">
+      <b>{state.data_gaps.length} article{state.data_gaps.length===1?" has":"s have"} no BOM</b>, so{" "}
+      <span className="mono">{state.data_gaps.reduce((a,g)=>a+g.pairs,0).toLocaleString("en-IN")}</span>{" "}
+      pair(s) of live work require no material at all and are missing from this list — not covered by stock, just invisible.
+      <ul className="list-disc ml-4 mt-1">
+        {state.data_gaps.map(g=><li key={g.article_code}>
+          <span className="mono">{g.article_code}</span> — {g.pairs.toLocaleString("en-IN")} pair(s) across {g.orders} order(s)
+          {g.order_nos.length<=4 && <> (<span className="mono">{g.order_nos.join(", ")}</span>)</>}
+        </li>)}
+      </ul>
+      <div className="mt-1">Upload the workbook on <b>Data &amp; BOM</b> and these appear here on their own.</div>
+    </div>}
 
     {!list.length && !showAll && <div className="text-sm text-slate-500 py-6 text-center">
       Nothing needs buying — every material is covered by stock.</div>}
