@@ -145,6 +145,65 @@ describe("database API contracts",()=>{
      every JACK and JILL code assigned that morning. JA003 is printed on a job
      card and a PI; if a rollback frees it, the next assignment can hand JA003
      to a DIFFERENT article and the paperwork quietly points at the wrong shoe. */
+  /* A REMAKE IS ASKED FOR, NEVER ASSUMED. Pairs written off as a job-work
+     shortage went out and never came back; `issued` already counts them, so the
+     order reads as fully issued and they could not be re-issued to anyone while
+     the customer was still owed them. The cap lifts only when the request says
+     so, and only by that much. */
+  const shortOrder = () => dbMocks.q.mockImplementation(async sql=>{
+    const t=String(sql);
+    if(t.includes("from orders")) return {rows:[{order_no:"JO1",article_code:"SPIKE",
+      lines:[{combo:"6X8",qty:500,sizes:{"6":250,"7":250}}]}]};
+    if(t.includes("from job_work")) return {rows:[{order_no:"JO1",qty:500,shortage:100,
+      status:"closed",card:{lines:[{combo:"6X8",qty:500,sizes:{"6":250,"7":250}}]}}]};
+    if(t.includes("from fabricators")) return {rows:[{name:"Rex Internal",type:"internal_line",
+      rate:0,tat_days:0,payable:false,active:true}]};
+    if(t.startsWith("insert into job_work")) return {rows:[{id:9,order_no:"JO1",qty:100}]};
+    return {rows:[]};
+  });
+  const issue = (body) => { const res=response();
+    return dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches?resource=job_work",
+      body:{resource:"job_work",fabricator:"Rex Internal",article:"SPIKE",order_no:"JO1",
+            stage:"STITCHING",...body}},res).then(()=>res); };
+
+  it("refuses to re-issue lost pairs unless a remake is asked for",async()=>{
+    shortOrder();
+    const res=await issue({qty:100,card:{lines:[{combo:"6X8",qty:100,sizes:{"6":100}}]}});
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/only 0 pairs left/i);
+    /* And it SAYS a remake is possible, rather than leaving a dead end. */
+    expect(res.body.error).toMatch(/100 pair\(s\) were written off short/i);
+    expect(res.body.error).toMatch(/REMAKE/);
+  });
+
+  it("allows exactly the lost pairs when the remake is asked for",async()=>{
+    shortOrder();
+    const res=await issue({qty:100,remake:true,card:{lines:[{combo:"6X8",qty:100,sizes:{"6":100}}]}});
+    expect(res.statusCode).toBe(201);
+  });
+
+  it("a remake does not become a blank cheque",async()=>{
+    shortOrder();
+    const res=await issue({qty:150,remake:true,card:{lines:[{combo:"6X8",qty:150,sizes:{"6":150}}]}});
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/0 pairs left plus 100 to remake/i);
+  });
+
+  it("asking to remake an order with no shortage is refused, not silently allowed",async()=>{
+    dbMocks.q.mockImplementation(async sql=>{
+      const t=String(sql);
+      if(t.includes("from orders")) return {rows:[{order_no:"JO1",article_code:"SPIKE",
+        lines:[{combo:"6X8",qty:500,sizes:{"6":250,"7":250}}]}]};
+      if(t.includes("from job_work")) return {rows:[]};
+      if(t.includes("from fabricators")) return {rows:[{name:"Rex Internal",type:"internal_line",
+        rate:0,tat_days:0,payable:false,active:true}]};
+      return {rows:[]};
+    });
+    const res=await issue({qty:10,remake:true,card:{lines:[{combo:"6X8",qty:10,sizes:{"6":10}}]}});
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/nothing to remake/i);
+  });
+
   /* PAIRS ON THE REPAIR BENCH ARE NOT SHIPPABLE. They exist and they are not
      short, but sending one is how a customer receives the very shoe that failed
      inspection. Enforced on the SERVER, because the screen is not what enforces

@@ -796,6 +796,71 @@ describe("a new reading inherits nothing from the last one",()=>{
   });
 });
 
+/* An uploaded PI used to allow only CORRECTING the numbers that were read. But
+   an invoice is as likely to need a range added, an article dropped or a second
+   article put on as a photographed slip is — the customer rang and added a
+   line, or the PI missed one. The controls write to `piCards`, which IS
+   `sourceCards` for this flow; writing to `cards` instead would be accepted on
+   screen and silently ignored by the invoice. */
+describe("an uploaded PI can be changed structurally, not only corrected",()=>{
+  const readOnePi = () => mocks.readPi.mockResolvedValue(JSON.stringify({
+    customer:"Test Buyer", pi_date:"2026-08-27", order_no:"PI-2026-000009", discount_pct:40,
+    items:[{article:"REX GOLA (V)", vl:"VELCRO", sole_colour:"Black", upper_colour:"Black",
+      rows:[{size:"11s",qty:18},{size:"12s",qty:18},{size:"13s",qty:18}]}],
+  }));
+
+  const uploadPi = async user => {
+    await goTo(user, "PI generation");
+    const upload=document.querySelector('input[type="file"][accept="application/pdf,image/*"]');
+    await user.upload(upload,new File(["x"],"pi.pdf",{type:"application/pdf"}));
+    await screen.findByLabelText("REX GOLA (V) 11X13 size 11s pairs");
+  };
+
+  it("offers the same structural edits a slip gets",async()=>{
+    readOnePi();
+    const user=userEvent.setup();
+    render(<App/>);
+    await uploadPi(user);
+    expect(screen.getByRole("button",{name:"+ Add size range"})).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"+ Add article"})).toBeInTheDocument();
+  });
+
+  /* The point of the whole change: a range added here has to reach the printed
+     invoice, not just the screen. */
+  it("a size range added after the read reaches the invoice",async()=>{
+    readOnePi();
+    const user=userEvent.setup();
+    render(<App/>);
+    await uploadPi(user);
+
+    await user.click(screen.getByRole("button",{name:"Generate PI from these edits"}));
+    const printedRows = () => screen.getAllByLabelText(/pairs$/).filter(el=>el.closest("#pi-area")).length;
+    const before = printedRows();
+
+    await user.click(screen.getByRole("button",{name:"+ Add size range"}));
+    /* A range added with every size at zero is worth zero pairs, and a
+       zero-pair line correctly prints NOTHING — the same rule that drops an
+       uncosted line. So the range only reaches the invoice once a quantity is
+       actually typed into it, which is what the clerk would do. */
+    const added = screen.getAllByLabelText(/^REX GOLA \(V\) (?!11X13)\S+ size .* pairs$/);
+    expect(added.length).toBeGreaterThan(0);
+    await user.clear(added[0]); await user.type(added[0],"24");
+
+    await user.click(await screen.findByRole("button",{name:/Generate PI|Regenerate/i}));
+    await waitFor(()=>expect(printedRows()).toBeGreaterThan(before));
+  });
+
+  /* One article must not be removable down to nothing — a PI with no lines is
+     not a PI. */
+  it("the last article cannot be removed",async()=>{
+    readOnePi();
+    const user=userEvent.setup();
+    render(<App/>);
+    await uploadPi(user);
+    expect(screen.queryByTitle("Remove this article from the PI")).toBeNull();
+  });
+});
+
 /* The whole read is somebody's handwriting, so the correction path matters as
    much as the read. The two things a clerk most often has to fix are WHICH
    RANGE a line landed in and WHICH RUN that range is — and until now the

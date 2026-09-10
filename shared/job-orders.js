@@ -61,7 +61,29 @@ export function jobOrderBalance(order, jobs = []){
 
   const ordered = lines.reduce((a,line)=>a+line.ordered,0);
   const issued = lines.reduce((a,line)=>a+line.issued,0);
-  return { order, lines, ordered, issued, remaining:Math.max(0,ordered-issued), fully_issued:issued>=ordered };
+
+  /* WORK THAT WENT OUT AND NEVER CAME BACK.
+     `issued` counts what LEFT, so issuing 500, receiving 400 and writing 100
+     off short leaves the order reading as fully issued — and the 100 lost pairs
+     could not be re-issued to anyone, while the customer was still owed them.
+     They are surfaced SEPARATELY rather than quietly added back to `remaining`:
+     losing a hundred pairs is something a person should see and decide about,
+     not something the balance heals on its own. Raising a remake is a
+     deliberate act — see `remake` in api/dispatches.js.
+     A shortage is recorded per JOB, not per size range, so it is not split
+     across combos here; pretending to know which range was lost would be
+     inventing factory data. */
+  const to_remake = (jobs || [])
+    .filter(job => String(job?.order_no || "") === String(order?.order_no || ""))
+    .reduce((a, job) => a + Math.max(0, qty(job.shortage)), 0);
+
+  return { order, lines, ordered, issued,
+    remaining: Math.max(0, ordered - issued),
+    to_remake,
+    /* What a card MAY carry when the operator deliberately includes the lost
+       pairs. Never used unless they ask for it. */
+    remake_allowance: Math.max(0, ordered - issued) + to_remake,
+    fully_issued: issued >= ordered && to_remake === 0 };
 }
 
 export function jobOrderQueue(orders = [], jobs = []){

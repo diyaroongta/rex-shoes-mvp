@@ -32,6 +32,10 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
   const [adding,setAdding]=useState(null);   // the inline "new fabricator" draft
+  /* Pairs written off as a job-work shortage are re-issued only when somebody
+     ASKS. Losing a hundred pairs should be seen and decided about, not healed
+     by arithmetic. */
+  const [remake,setRemake]=useState(false);
 
   /* A REFRESH THAT FAILS MUST NOT DESTROY WHAT IS ALREADY ON SCREEN.
      This used to wipe both lists to [] and set an error that nothing ever
@@ -80,7 +84,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       nextQty[line.combo]=line.remaining;
       if(line.remaining_sizes) nextSizes[line.combo]={...line.remaining_sizes};
     }
-    setQty(nextQty); setSizes(nextSizes);
+    setQty(nextQty); setSizes(nextSizes); setRemake(false);
   }
 
   useEffect(()=>{
@@ -93,8 +97,20 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     size_order:order?comboSizesForArticle(order.article_code,combo):[],
   })),[qty,sizes,order]);
   const totalPairs=lines.reduce((a,line)=>a+line.qty,0);
-  const over=balance?balance.lines.filter(line=>Number(qty[line.combo]||0)>line.remaining):[];
-  const ready=!!order&&!!who&&totalPairs>0&&!over.length;
+  /* Only meaningful while the card is still a DRAFT. Once it has been issued
+     the balance has already been reduced by these very pairs, so comparing the
+     draft against the new remaining accuses the clerk of over-assigning the
+     quantities they just successfully assigned. */
+  const issued=!!(card&&card.card_no);
+  const toRemake=balance?balance.to_remake:0;
+  /* On a remake the lost pairs belong to no particular size range — a shortage
+     is recorded per JOB — so the per-line check lifts by the pool and the TOTAL
+     is what bounds the card. */
+  const over=(!issued&&balance)
+    ? balance.lines.filter(line=>Number(qty[line.combo]||0)>line.remaining+(remake?toRemake:0)) : [];
+  const cap=balance?(remake?balance.remake_allowance:balance.remaining):0;
+  const overTotal=!issued&&balance&&totalPairs>cap;
+  const ready=!!order&&!!who&&totalPairs>0&&!over.length&&!overTotal;
 
   function touched(){ if(card)setStale(true); }
   function setRange(combo,value){ setQty(q=>({...q,[combo]:value})); touched(); }
@@ -120,10 +136,17 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       const snapshot={...card,lines};
       const made=await api.issueJobWork({fabricator:who.name,article:order.article_code,qty:totalPairs,
         stage:"STITCHING",order_no:order.order_no,issued_on:date,
-        note:`Job card for ${order.order_no}`,card:snapshot});
+        ...(remake?{remake:true}:{}),
+        note:`${remake?"Remake — ":""}Job card for ${order.order_no}`,card:snapshot});
       setCard(c=>({...c,card_no:String(made.id)}));
       setJobs(current=>[made,...(current||[])]);
-      setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs.`);
+      /* The draft is SPENT. The printable card keeps its own copy of the lines
+         (taken at Preview), so clearing these empties the entry form without
+         touching the document — and stops the next render comparing a spent
+         draft against a balance that has already absorbed it. */
+      setQty({}); setSizes({}); setRemake(false);
+      setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs. `
+        + `Print it below, or choose another order to raise the next one.`);
       if(onIssued)await onIssued(made);
     }catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
@@ -200,6 +223,20 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         </label>
       </div>
       {order&&<div className="mt-2 text-xs text-slate-600">Article <b>{order.article_code}</b> · Party <b>{order.party||"—"}</b> · <b>{fmt(balance.remaining)}</b> pairs still available for job orders.</div>}
+      {/* Work that went out and never came back. Shown as its own decision,
+          never folded into the balance: the customer is still owed these, but
+          somebody has to choose to make them again. */}
+      {order&&toRemake>0&&<div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+        <label className="flex items-start gap-2 text-xs text-amber-900">
+          <input type="checkbox" checked={remake} aria-label="Remake pairs lost to a shortage"
+            onChange={e=>{setRemake(e.target.checked);touched();}} className="mt-0.5"/>
+          <span>
+            <b>{fmt(toRemake)} pair(s) were written off short</b> on an earlier job order for {order.order_no} —
+            they went out and never came back, and the customer is still owed them.
+            Tick this to raise a card that REMAKES them; the balance above stays as it is.
+          </span>
+        </label>
+      </div>}
     </div>
 
     {order&&<div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
@@ -216,6 +253,9 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         })}</tbody><tfoot><tr className="border-t border-slate-200"><td className="py-2 font-semibold">TOTAL (PAIR)</td><td></td><td></td><td className="text-right mono font-semibold">{fmt(totalPairs)}</td></tr></tfoot>
       </table></div>
       {!!over.length&&<div className="mt-2 text-xs font-semibold text-rose-700">More than the unassigned balance was entered for {over.map(line=>line.combo).join(", ")}.</div>}
+      {overTotal&&!over.length&&<div className="mt-2 text-xs font-semibold text-rose-700">
+        This card totals {fmt(totalPairs)} pairs but only {fmt(cap)} can be issued
+        {remake?" including the remake":""}.</div>}
       {!article&&<div className="mt-2 text-[11px] rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5"><b>{order.article_code} has no BOM loaded</b>, so material rows will be blank until its BOM is loaded.</div>}
       <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}

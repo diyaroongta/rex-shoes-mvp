@@ -55,10 +55,28 @@ async function jobWork(req, res){
       if(String(order.article_code)!==v.article)
         return fail(res,400,`${v.order_no} is for ${order.article_code}, not ${v.article}`);
       const {rows:prior}=await q(
-        `select order_no, qty, card from job_work where order_no=$1`,[v.order_no]);
+        `select order_no, qty, shortage, status, card from job_work where order_no=$1`,[v.order_no]);
       const balance=jobOrderBalance(order,prior);
-      if(v.qty>balance.remaining)
-        return fail(res,409,`${v.order_no} has only ${balance.remaining} pairs left for job cards`);
+
+      /* A REMAKE IS ASKED FOR, NEVER ASSUMED.
+         Pairs written off as a job-work shortage went out and never came back;
+         the customer is still owed them, but `issued` already counts them, so
+         the order reads as fully issued. Rather than quietly adding them back
+         to the balance — which would make a hundred lost pairs disappear into
+         an arithmetic — the operator says "remake these" and the cap lifts by
+         exactly that much, for that request only. */
+      const remake = b.remake === true || b.remake === "true";
+      const cap = remake ? balance.remake_allowance : balance.remaining;
+      if(remake && balance.to_remake <= 0)
+        return fail(res,409,`${v.order_no} has no pairs written off short, so there is nothing to remake`);
+      if(v.qty>cap)
+        return fail(res,409, remake
+          ? `${v.order_no} has ${balance.remaining} pairs left plus ${balance.to_remake} to remake — `
+            + `${cap} in all, and ${v.qty} was asked for`
+          : balance.to_remake > 0
+            ? `${v.order_no} has only ${balance.remaining} pairs left for job cards. `
+              + `${balance.to_remake} pair(s) were written off short and can be re-issued as a REMAKE.`
+            : `${v.order_no} has only ${balance.remaining} pairs left for job cards`);
 
       const cardLines=Array.isArray(b.card?.lines)?b.card.lines:[];
       if(!cardLines.length) return fail(res,400,"Issue Order Book work through a size-wise Job Card");
@@ -71,13 +89,23 @@ async function jobWork(req, res){
         if(!available) return fail(res,400,`${combo||"(blank)"} is not on ${v.order_no}`);
         if(named.has(combo)) return fail(res,400,`${combo} appears twice on the Job Card`);
         named.add(combo); cardTotal+=amount;
-        if(amount>available.remaining)
-          return fail(res,409,`${v.order_no} ${combo} has only ${available.remaining} pairs left for job cards`);
+        /* On a remake the lost pairs are not attributable to a size range —
+           a shortage is recorded per JOB — so any range may carry them, and
+           the TOTAL cap above is what actually bounds the card. */
+        const comboCap = available.remaining + (remake ? balance.to_remake : 0);
+        if(amount>comboCap)
+          return fail(res,409,`${v.order_no} ${combo} has only ${comboCap} pairs left for job cards`);
         if(line.sizes&&typeof line.sizes==="object"){
           const sizeTotal=Object.values(line.sizes).reduce((a,n)=>a+Math.max(0,Math.round(Number(n)||0)),0);
           if(sizeTotal!==amount) return fail(res,400,`${combo} size quantities total ${sizeTotal}, not ${amount}`);
           for(const [size,n] of Object.entries(line.sizes)){
-            if(available.remaining_sizes&&Math.max(0,Math.round(Number(n)||0))>Number(available.remaining_sizes[size]||0))
+            /* On a remake every size's remaining is zero — the order IS fully
+               issued — and a shortage was never recorded per size, so the
+               per-size cap lifts by the remake pool and the TOTAL is what
+               bounds the card. Without this every size would be refused and
+               the remake could not be raised at all. */
+            const sizeCap = Number((available.remaining_sizes||{})[size]||0) + (remake ? balance.to_remake : 0);
+            if(available.remaining_sizes&&Math.max(0,Math.round(Number(n)||0))>sizeCap)
               return fail(res,409,`${v.order_no} ${combo} size ${size} exceeds its Order Book balance`);
           }
         }

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
-import { labelFor } from "../shared/product-codes.js";
+import { labelFor, familyOf, parseCode } from "../shared/product-codes.js";
 import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
 import { neededBy, buyingList, urgencyOf, daysBetween } from "../shared/procurement-timing.js";
 import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
@@ -662,6 +662,37 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const PRODUCT_CODES=Object.fromEntries(Object.entries(INPUTS.articles||{})
     .filter(([,a])=>a&&a.product_code).map(([name,a])=>[name,a.product_code]));
   const artLabel=a=>labelFor(a,PRODUCT_CODES);
+
+  /* THE SAME SHOE TOGETHER.
+     The list used to come out in `Object.keys(articles)` order, which is the
+     reference document's STORAGE order — whatever the uploads happened to
+     write — so eleven Jacks were scattered between Glamour, Thunder and Rex
+     Gola and nobody could find one. Grouped by family, families A-Z so a name
+     can be looked up, and within a family by CODE so JA001..JA011 read in
+     order rather than alphabetically by colour. */
+  const ARTICLE_GROUPS=useMemo(()=>{
+    const by={};
+    for(const a of ARTS) (by[familyOf(a)||a]=by[familyOf(a)||a]||[]).push(a);
+    for(const list of Object.values(by))
+      list.sort((x,z)=>{
+        const cx=parseCode(PRODUCT_CODES[x]), cz=parseCode(PRODUCT_CODES[z]);
+        /* An uncoded article has no place in the numbering, so it sorts by
+           name at the end rather than being given an invented position. */
+        if(cx&&cz) return cx.n-cz.n;
+        if(cx) return -1;
+        if(cz) return 1;
+        return x.localeCompare(z);
+      });
+    return Object.keys(by).sort().map(f=>[f,by[f]]);
+  },[ARTS,PRODUCT_CODES]);
+
+  /* One shoe, one <optgroup>. A family with a single article still gets its own
+     heading — a list where some rows are grouped and others float loose is
+     harder to scan than one where every row sits under a name. */
+  const articleOptions=()=>ARTICLE_GROUPS.map(([family,list])=>
+    <optgroup key={family} label={`${family}${list.length>1?`  (${list.length})`:""}`}>
+      {list.map(a=><option key={a} value={a}>{artLabel(a)}</option>)}
+    </optgroup>);
   /* The article master can carry the article's standard sole and upper colour
      (optional columns on the BOM upload). They are a starting point only —
      both fields stay editable, and anything already known about THIS order,
@@ -985,6 +1016,41 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const delLine=(i,k)=>setCards(cs=>cs.map((c,j)=>j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
   const addCard=()=>setCards(cs=>[...(cs||[]),blankCard()]);
   const delCard=i=>setCards(cs=>cs.filter((_,j)=>j!==i));
+
+  /* THE SAME STRUCTURAL EDITS ON A PI AS ON A SLIP.
+     A PI upload used to allow only correcting the numbers that were read —
+     but an uploaded invoice is as likely to need a range added, an article
+     dropped, or a second article put on, as a photographed slip is. These
+     write to `piCards`, which IS `sourceCards` for this flow, so a change here
+     reaches the invoice; writing to `cards` instead would be accepted on
+     screen and silently ignored by the document. A structural change moves the
+     signature, so the generated preview correctly reads as stale. */
+  const addPiLine=i=>setPiCards(cs=>cs.map((c,j)=>{
+    if(j!==i) return c;
+    const used=new Set(c.lines.map(l=>l.combo));
+    const all=articleTypeCombos(c.article);
+    const combo=all.find(x=>!used.has(x))||all[0];
+    if(!combo) return c;
+    /* Seeded at ZERO per size, never at a guessed quantity — the sizes are the
+       range's own, and what is actually ordered is typed in. */
+    const sizes={}; for(const sz of (comboSizesForArticle(c.article,combo)||[])) sizes[sz]=0;
+    return {...c,lines:[...c.lines,{combo,type:comboType(c.article,combo),exact:true,raw:"",
+      qty:0,sizes,ppc:packQty(c.article,combo)??"",size_order:comboSizesForArticle(c.article,combo)}]};
+  }));
+  const delPiLine=(i,k)=>setPiCards(cs=>cs.map((c,j)=>
+    j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
+  const addPiCard=()=>setPiCards(cs=>[...(cs||[]),blankPiCard()]);
+  const delPiCard=i=>setPiCards(cs=>cs.filter((_,j)=>j!==i));
+
+  /* Like blankCard, but per-size and starting at zero, because a PI records
+     exact pairs rather than cartons off a slip. */
+  function blankPiCard(){
+    const art=ARTS[0]; const combo=articleTypeCombos(art)[0];
+    const sizes={}; for(const sz of (comboSizesForArticle(art,combo)||[])) sizes[sz]=0;
+    return withArticleDetails({article:art, vl:comboType(art,combo), matched:true, raw:"", party,
+      lines:[{combo,type:comboType(art,combo),exact:true,raw:"",qty:0,sizes,
+        ppc:packQty(art,combo)??"",size_order:comboSizesForArticle(art,combo)}]});
+  }
   /* Changing the article remaps each line onto the equivalent range of the new
      article BY POSITION across its whole range list — both rolls together, so a
      Velcro line stays Velcro and a Lace line stays Lace instead of the shoe
@@ -1465,7 +1531,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   onChange={e=>onArticleChange(i,e.target.value)}
                   className="border rounded-lg px-2 py-1.5 text-sm font-semibold bg-white"
                   style={{borderColor:unconfirmed?"#f59e0b":"#e2e8f0"}}>
-                  {ARTS.map(a=><option key={a} value={a}>{artLabel(a)}</option>)}</select>
+                  {articleOptions()}</select>
                 {unconfirmed && <span className="text-[11px] font-semibold rounded-full px-2 py-0.5"
                   style={{background:"#fef3c7",color:"#92400e"}}>not confirmed</span>}
               </div>
@@ -1820,10 +1886,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
           {sheetHeader()}
           {piCards.map((c,ci)=>(
             <div key={ci} className="mb-3 last:mb-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
-              <div className="px-3 py-2 bg-slate-50">
+              <div className="px-3 py-2 bg-slate-50 flex items-center gap-2">
                 <select value={c.article} onChange={e=>onPiArticleChange(ci,e.target.value)} className="text-xs font-semibold border border-slate-200 rounded px-2 py-1 bg-white">
-                  {ARTS.map(a=><option key={a} value={a}>{artLabel(a)}</option>)}
+                  {articleOptions()}
                 </select>
+                {piCards.length>1 && <button onClick={()=>delPiCard(ci)} title="Remove this article from the PI"
+                  className="ml-auto text-rose-500 px-1.5 text-lg leading-none">×</button>}
               </div>
               {articleDetails(c, patch=>setPiCard(ci,patch), type=>onTypeChange(ci,type,true))}
               <div className="p-3">
@@ -1843,8 +1911,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                         onChange={e=>editPiCell(c,{combo:l.combo,size:sz},"qty",e.target.value)}
                         className="block mt-0.5 w-16 text-sm border border-slate-300 rounded px-1 py-0.5 mono" /></label>))}
                   <span className="text-xs text-slate-400 ml-1">= {l.qty} pairs</span>
+                  {c.lines.length>1 && <button onClick={()=>delPiLine(ci,li)}
+                    title="Remove this size range" aria-label={`Remove ${l.combo} from ${c.article}`}
+                    className="text-rose-500 text-lg leading-none">−</button>}
                 </div>
               ))}
+              <button onClick={()=>addPiLine(ci)}
+                className="text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-md px-2.5 py-1.5 mt-1">
+                + Add size range</button>
               </div>
               <details className="mx-3 mb-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
                 <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
@@ -1852,6 +1926,12 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
               </details>
             </div>
           ))}
+          {/* An uploaded PI is as likely to need a second article added as a
+              photographed slip is — the customer rang and added a line, or the
+              invoice missed one. */}
+          <button onClick={addPiCard}
+            className="text-sm font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg px-3 py-1.5">
+            + Add article</button>
         </div>
       )}
 
