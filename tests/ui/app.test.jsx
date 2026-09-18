@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Orders", "Job Orders Database": "Orders", "Repair": "Orders", "Dispatch Book": "Orders", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock register": "Materials", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup", "Data & BOM": "Setup"};
+const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Production", "Job Orders Database": "Production", "Daily Production Upload": "Production", "Quality & Repair": "Quality & Dispatch", "Dispatch Book": "Quality & Dispatch", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock register": "Materials", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup", "Data & BOM": "Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -182,21 +182,21 @@ describe("critical UI contracts",()=>{
     expect(await screen.findByText("Add orders from a spreadsheet")).toBeInTheDocument();
   });
 
-  /* Navigation is a menu bar, so a screen's entry exists only while its group
-     is open. The contract is unchanged — these are the factory's own names for
-     its two books — but it has to be checked inside the menu that holds them. */
-  it("names the two books the way the factory does", async ()=>{
+  it("keeps commercial orders separate from quality and dispatch", async ()=>{
     const user = userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
     await user.click(await screen.findByRole("button",{name:"Orders menu"}));
     expect(screen.getByRole("menuitem",{name:"Order Book"})).toBeInTheDocument();
-    expect(screen.getByRole("menuitem",{name:"Dispatch Book"})).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem",{name:"Dispatch Book"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Orders & dispatch"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Dispatch & packing"})).toBeNull();
+    fireEvent.click(screen.getByRole("button",{name:"Quality & Dispatch menu"}));
+    expect(screen.getByRole("menuitem",{name:"Quality & Repair"})).toBeInTheDocument();
+    expect(screen.getByRole("menuitem",{name:"Dispatch Book"})).toBeInTheDocument();
   });
 
-  it("places the two job-order screens immediately after the Order Book", async ()=>{
+  it("orders the navigation in the same sequence as factory work", async ()=>{
     const user = userEvent.setup();
     mocks.listPis.mockResolvedValue([{ pi_no:"PI77", pi_date:"2026-08-01", party:"Buyer",
       status:"produced", revision:0, snapshot:{ orders:[{ order_no:"S1", article_code:"SPIKE",
@@ -204,16 +204,18 @@ describe("critical UI contracts",()=>{
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
 
-    await user.click(await screen.findByRole("button",{name:"Orders menu"}));
+    await user.click(await screen.findByRole("button",{name:"Production menu"}));
     const navLabels=screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
-    expect(navLabels.indexOf("Create Job Order")).toBe(navLabels.indexOf("Order Book")+1);
+    expect(navLabels[0]).toBe("Create Job Order");
     expect(navLabels.indexOf("Job Orders Database")).toBe(navLabels.indexOf("Create Job Order")+1);
-    /* Repair is the last thing that happens before the lorry, so it sits
-       between the job-order screens and the Dispatch Book. */
-    expect(navLabels.indexOf("Repair")).toBe(navLabels.indexOf("Job Orders Database")+1);
-    expect(navLabels.indexOf("Dispatch Book")).toBe(navLabels.indexOf("Repair")+1);
+    expect(navLabels.indexOf("Daily Production Upload")).toBe(navLabels.indexOf("Job Orders Database")+1);
     expect(screen.queryByRole("menuitem",{name:"Job Cards"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Job work"})).toBeNull();
+
+    fireEvent.click(screen.getByRole("button",{name:"Quality & Dispatch menu"}));
+    const finalLabels=screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
+    expect(finalLabels).toEqual(["Quality & Repair","Dispatch Book"]);
+    fireEvent.click(screen.getByRole("button",{name:"Quality & Dispatch menu"}));
 
     // The commercial record reports what is owed but no longer releases it.
     await goTo(user, "PI database");

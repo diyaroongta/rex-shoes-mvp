@@ -310,18 +310,23 @@ export default function App({ user=null, onSignOut=null }={}){
       ["intake","PI generation"],
       ["pis","PI database"],
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
-      ["jobs","Create Job Order"],
-      ["jobwork","Job Orders Database"],
-      /* Before Dispatch Book, because that is when it happens: a finished shoe
-         fails inspection on the way to the lorry. */
-      ["repair","Repair"],
-      ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
-      ["production","Daily production"],
+      /* A job order is the release of an Order Book row to the floor, so both
+         job-order screens begin the production flow rather than ending the
+         commercial Orders menu. */
+      ["jobs","Create Job Order"],
+      ["jobwork","Job Orders Database"],
+      ["production","Daily Production Upload"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
       ["machines","Machine load"],
+    ]],
+    ["Quality & Dispatch", [
+      /* Quality failures create repair movements. Dispatch stays a separate
+         book because repairing a pair is not the same event as shipping it. */
+      ["repair","Quality & Repair"],
+      ["dispatch","Dispatch Book"],
     ]],
     ["Materials", [
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
@@ -2093,7 +2098,7 @@ const VIEWS = {
   jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
-  production:  {title:"Daily production",  sub:"Actual output, rejects and downtime from every machine and shift"},
+  production:  {title:"Daily Production Upload", sub:"Upload actual output, rejects and downtime from every machine and shift"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
@@ -2104,7 +2109,7 @@ const VIEWS = {
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},
-  repair:      {title:"Repair",             sub:"Shoes sent back before dispatch, what came back and what was rejected"},
+  repair:      {title:"Quality & Repair",   sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };
 
