@@ -116,7 +116,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
       if(missingBom===code) setMissingBom("");
       setVersion(v=>v+1);
       if(onChanged) onChanged();
-      setMsg(`${code} was removed from the catalogue. The change can be restored from Data & BOM history.`);
+      setMsg(`${code} was removed from the catalogue. The change can be restored from BOM Upload & Tracker history.`);
     }catch(e){setErr(String(e.message||e));}
     finally{setBusy("");}
   }

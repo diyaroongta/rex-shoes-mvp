@@ -223,7 +223,7 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
         if(out.removed_articles?.length) bits.push(`${out.removed_articles.length} article(s): ${out.removed_articles.join(", ")}`);
         if(out.removed_ranges?.length) bits.push(`${out.removed_ranges.length} size range(s)`);
         if(out.removed_materials) bits.push(`${out.removed_materials} material rate(s)`);
-        setMsg(`Removed ${bits.join(", ")||"nothing"}. ${out.orders_affected?.length?`${out.orders_affected.length} order(s) are now unplanned. `:""}The change is in Data & BOM revision history and can be restored.`);
+        setMsg(`Removed ${bits.join(", ")||"nothing"}. ${out.orders_affected?.length?`${out.orders_affected.length} order(s) are now unplanned. `:""}The change is in BOM Upload & Tracker revision history and can be restored.`);
         onChanged&&onChanged();
       }} />}
     <ArticleRules article={article} type={type} editable packingEdits={packingEdits}

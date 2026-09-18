@@ -23,7 +23,6 @@ import FabricatorsTab from "./FabricatorsTab.jsx";
 import JobCardTab from "./JobCardTab.jsx";
 import RepairTab from "./RepairTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
-import ProductionInputTab from "./ProductionInputTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -54,9 +53,6 @@ export default function App({ user=null, onSignOut=null }={}){
   const [dispatches, setDispatches] = useState([]);
   const [dispatchLoading, setDispatchLoading] = useState(true);
   const [dispatchErr, setDispatchErr] = useState("");
-  const [productionLogs, setProductionLogs] = useState([]);
-  const [productionLoading, setProductionLoading] = useState(true);
-  const [productionErr, setProductionErr] = useState("");
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
   /* A role must never land on a screen it cannot open. The server is the only
      thing that actually enforces permissions; this just keeps the app honest
@@ -101,21 +97,13 @@ export default function App({ user=null, onSignOut=null }={}){
     finally{ setDispatchLoading(false); }
   })(); },[]);
 
-  useEffect(()=>{ (async()=>{
-    try{ setProductionLogs(await api.listProductionLogs()); setProductionErr(""); }
-    catch(e){ setProductionErr(e.message||String(e)); }
-    finally{ setProductionLoading(false); }
-  })(); },[]);
-
   // The executive view is intended to stay open on a management screen. Pull
   // fresh orders and dispatch events once a minute so another clerk's update
   // appears without requiring a full browser reload.
   useEffect(()=>{
     const timer=setInterval(()=>{
-      Promise.all([api.listOrders(), api.listDispatchesWithHidden(),
-        api.listProductionLogs().catch(e=>{ setProductionErr(e.message||String(e)); return null; })])
-        .then(([o,d,p])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
-                         if(p){ setProductionLogs(p); setProductionErr(""); }
+      Promise.all([api.listOrders(), api.listDispatchesWithHidden()])
+        .then(([o,d])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
                          setSyncedAt(new Date()); setSyncFailed(false); })
         .catch(()=>setSyncFailed(true));   // shown in the header, not as a banner every minute
     },60000);
@@ -129,16 +117,11 @@ export default function App({ user=null, onSignOut=null }={}){
     catch(e){ setDispatchErr(e.message||String(e)); }
     finally{ setDispatchLoading(false); }
   };
-  const refreshProduction = async ()=>{
-    try{ setProductionLoading(true); setProductionLogs(await api.listProductionLogs()); setProductionErr(""); }
-    catch(e){ setProductionErr(e.message||String(e)); }
-    finally{ setProductionLoading(false); }
-  };
   /* ONE refresh for every screen. Orders, dispatches and the PI master are
      three views of the same rows, so a change made on any tab has to reload
      all of them — editing an order from the PI database used to leave the
      schedule, dispatch and MIS showing the figures from before the edit. */
-  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProduction()]); };
+  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches()]); };
 
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
@@ -317,7 +300,6 @@ export default function App({ user=null, onSignOut=null }={}){
          commercial Orders menu. */
       ["jobs","Create Job Order"],
       ["jobwork","Job Orders Database"],
-      ["production","Daily Production Upload"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
       ["machines","Machine load"],
@@ -332,13 +314,17 @@ export default function App({ user=null, onSignOut=null }={}){
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
       ["stock","Stock register"],
     ]],
+    ["Inputs", [
+      /* This is the spreadsheet data Factory OS actually uses: article codes,
+         size ranges, BOM rates, packing rules and catalogue/MRP values. */
+      ["data","BOM Upload & Tracker"],
+    ]],
     ["Setup", [
       ["parties","Parties & terms"],
       /* Who work goes OUT to, as parties are who it comes IN from. */
       ["fabricators","Fabricators & lines"],
       ["catalogue","Catalogue"],
       ["rules","Packing & BOM rules"],
-      ["data","Data & BOM"],
     ]],
   ].map(([group, items]) => [group, items.filter(([key]) => canSeeTab(role, key))])
    .filter(([, items]) => items.length);
@@ -509,7 +495,6 @@ export default function App({ user=null, onSignOut=null }={}){
             <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
         </div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
-          productionLogs={productionLogs} productionLoading={productionLoading} productionError={productionErr}
           onRefresh={syncAll} />}
         {tab==="pis" && <PiDatabaseTab orders={orders} shortfall={state?state.procurement_by_pi:null}
                             onGoToJobs={()=>setTab("jobs")}
@@ -536,8 +521,6 @@ export default function App({ user=null, onSignOut=null }={}){
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
-        {tab==="production" && <ProductionInputTab orders={state.orders||[]} logs={productionLogs}
-          loading={productionLoading} loadError={productionErr} onChanged={refreshProduction} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
@@ -2098,7 +2081,6 @@ const VIEWS = {
   jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
-  production:  {title:"Daily Production Upload", sub:"Upload actual output, rejects and downtime from every machine and shift"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
@@ -2108,7 +2090,7 @@ const VIEWS = {
   fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
-  data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},
+  data:        {title:"BOM Upload & Tracker",sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
   repair:      {title:"Quality & Repair",   sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };

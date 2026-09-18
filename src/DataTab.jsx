@@ -186,14 +186,15 @@ export default function DataTab({ onChanged }){
   })():INPUTS;
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-    <div className="text-base font-semibold text-slate-800 mb-1">Article master upload</div>
+    <div className="text-base font-semibold text-slate-800 mb-1">BOM workbook upload</div>
     <p className="text-xs text-slate-500 mb-3">
-      One workbook can update BOMs, sizes, packing rules, catalogue details and optional MRP. Uploading only previews
-      the changes; nothing reaches the database until you confirm below.
+      This is the existing Factory OS article-master format: article code, sole type, size range, stage, material,
+      UOM, rate per pair, packing quantity and optional catalogue/MRP details. Uploading only previews the changes;
+      nothing reaches the database until you confirm below.
     </p>
     <div className="flex gap-3 items-center flex-wrap mb-3">
       <a href="/Factory_OS_Reference_Upload_Template.xlsx" download
-        className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-2">Download upload template</a>
+        className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-2">Download exact BOM template</a>
       <label className="text-xs font-semibold bg-indigo-600 text-white rounded-lg px-3 py-2 cursor-pointer">
         Choose completed workbook
         <input type="file" accept=".xlsx,.xls" onChange={e=>pickMaster(e.target.files&&e.target.files[0])} className="sr-only" />

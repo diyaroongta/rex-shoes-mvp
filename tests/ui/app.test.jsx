@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Production", "Job Orders Database": "Production", "Daily Production Upload": "Production", "Quality & Repair": "Quality & Dispatch", "Dispatch Book": "Quality & Dispatch", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock register": "Materials", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup", "Data & BOM": "Setup"};
+const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Production", "Job Orders Database": "Production", "Quality & Repair": "Quality & Dispatch", "Dispatch Book": "Quality & Dispatch", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock register": "Materials", "BOM Upload & Tracker": "Inputs", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -208,7 +208,7 @@ describe("critical UI contracts",()=>{
     const navLabels=screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
     expect(navLabels[0]).toBe("Create Job Order");
     expect(navLabels.indexOf("Job Orders Database")).toBe(navLabels.indexOf("Create Job Order")+1);
-    expect(navLabels.indexOf("Daily Production Upload")).toBe(navLabels.indexOf("Job Orders Database")+1);
+    expect(navLabels.indexOf("Schedule")).toBe(navLabels.indexOf("Job Orders Database")+1);
     expect(screen.queryByRole("menuitem",{name:"Job Cards"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Job work"})).toBeNull();
 
@@ -216,6 +216,11 @@ describe("critical UI contracts",()=>{
     const finalLabels=screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
     expect(finalLabels).toEqual(["Quality & Repair","Dispatch Book"]);
     fireEvent.click(screen.getByRole("button",{name:"Quality & Dispatch menu"}));
+
+    fireEvent.click(screen.getByRole("button",{name:"Inputs menu"}));
+    expect(screen.getAllByRole("menuitem").map(item=>item.textContent.trim()))
+      .toEqual(["BOM Upload & Tracker"]);
+    fireEvent.click(screen.getByRole("button",{name:"Inputs menu"}));
 
     // The commercial record reports what is owed but no longer releases it.
     await goTo(user, "PI database");

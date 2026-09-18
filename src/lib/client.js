@@ -124,17 +124,6 @@ export const listDispatchesWithHidden = () => j("/api/dispatches?include_hidden=
 /* Kept so nothing that already calls it changes meaning. */
 export const deleteDispatch  = undoDispatch;
 
-/* ---- daily production actuals ----
-   A distinct resource even though it shares the dispatches server function.
-   This lets a production planner enter output without gaining dispatch rights. */
-export const listProductionLogs = () => j("/api/dispatches?resource=production_logs");
-export const addProductionLog = entry => post("/api/dispatches?resource=production_logs",
-  { ...entry, resource:"production_logs" });
-export const importProductionLogs = entries => post("/api/dispatches?resource=production_logs",
-  { entries, resource:"production_logs" });
-export const voidProductionLog = id => j(
-  `/api/dispatches?resource=production_logs&id=${encodeURIComponent(id)}`, { method:"DELETE" });
-
 /* ---- job work: what is out with a line or a fabricator ----
    Served by /api/dispatches to stay within Vercel's 12-function limit — a job
    work issue and a dispatch are the same shape of movement. */

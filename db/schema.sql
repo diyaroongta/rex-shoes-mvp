@@ -319,38 +319,3 @@ create table if not exists repairs (
   created_at  timestamptz not null default now()
 );
 create index if not exists repairs_order_idx on repairs (order_no);
-
--- ---------------------------------------------------------------------------
--- Daily shop-floor actuals. One row is one machine/work centre, shift and
--- order/article event. The plan remains computed from the Order Book; this is
--- the actual feed used to compare the factory with that plan.
---
--- Corrections are voids, not overwrites. A supervisor can therefore correct a
--- mis-keyed row without destroying the fact that it was originally recorded.
-create table if not exists production_logs (
-  id                bigserial primary key,
-  production_on     date        not null,
-  shift             text        not null,
-  work_center       text        not null,
-  order_no          text        not null,
-  article           text        not null,
-  stage             text        not null,
-  good_pairs        integer     not null default 0 check (good_pairs >= 0),
-  rejected_pairs    integer     not null default 0 check (rejected_pairs >= 0),
-  downtime_minutes  integer     not null default 0 check (downtime_minutes between 0 and 1440),
-  downtime_reason   text,
-  supervisor        text,
-  note              text,
-  import_key        text,
-  created_by        text,
-  created_at        timestamptz not null default now(),
-  voided_by         text,
-  voided_at         timestamptz
-);
-alter table production_logs add column if not exists import_key text;
-create index if not exists production_logs_day_idx
-  on production_logs (production_on desc, work_center, shift);
-create index if not exists production_logs_order_idx
-  on production_logs (order_no, production_on desc);
-create unique index if not exists production_logs_import_key_idx
-  on production_logs (import_key) where import_key is not null;

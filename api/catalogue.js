@@ -92,7 +92,7 @@ export default wrap(async (req, res) => {
       if(ranges.length && String(req.query.confirm_bom||"")!=="1"){
         await client.query("rollback");
         return fail(res,409,`${canonical} has a BOM: ${ranges.length} size range(s) and their material rates, `
-          +`packing and MRP would all be deleted. Confirm to continue — it can be restored from Data & BOM history.`);
+          +`packing and MRP would all be deleted. Confirm to continue — it can be restored from BOM Upload & Tracker history.`);
       }
 
       const catalogueBefore=await client.query(
