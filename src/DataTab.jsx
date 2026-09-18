@@ -5,7 +5,8 @@ import { packingArticleSourceFor, pairsPerCarton } from "../shared/bridge.js";
 import { parseReferenceWorkbook, COLUMN_LABELS, COLUMN_HELP, SHEET_COLUMNS,
   IGNORE_COLUMN, NOTE_COLUMN } from "../shared/reference-import.js";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
-import { families } from "../shared/product-codes.js";
+import { families, familyOf } from "../shared/product-codes.js";
+import { auditBom } from "../shared/bom-audit.js";
 import * as api from "./lib/client.js";
 
 const MAX_WORKBOOK_BYTES=10*1024*1024,MAX_SHEETS=20,MAX_ROWS=25000;
@@ -446,8 +447,140 @@ export default function DataTab({ onChanged }){
       </div>
     </div>}
 
+    <BomCoverage />
     <ProductCodes onChanged={onChanged} />
     <ReferenceHistory onChanged={onChanged} />
+  </div>;
+}
+
+/* WHAT IS ACTUALLY LOADED — the check on the entry tracker.
+   The factory works through its BOM entry on a spreadsheet, three articles a
+   day, each row marked Done. That records that somebody did the work; it
+   cannot record whether the work arrived intact. GOLA was marked Done while
+   its master still had no size range covering the adult 6, which is what
+   silently dropped four cartons off one invoice and one off another — every
+   row that DID print was correct, so nothing looked wrong.
+
+   Grouped by FAMILY, because the tracker lists GOLA and SPIKE while the master
+   holds GOLA LACE BLACK BLACK (BLACK SKINFIT) and eleven Jacks. A row here is
+   meant to be read straight against a row on that sheet. */
+const COVERAGE = {
+  rated:    { label:"Rates loaded", bg:"#ecfdf5", fg:"#065f46" },
+  partial:  { label:"Part loaded",  bg:"#fef3c7", fg:"#92400e" },
+  no_rates: { label:"No rates",     bg:"#fee2e2", fg:"#991b1b" },
+  empty:    { label:"No ranges",    bg:"#f1f5f9", fg:"#475569" },
+};
+
+function BomCoverage(){
+  const [open,setOpen]=useState(false);
+  const audit=auditBom(INPUTS,{familyOf,packQty:(article,combo)=>pairsPerCarton(article,combo)});
+  if(!audit.totals.articles) return null;
+  const { totals }=audit;
+  /* The silent ones first. An article the master does not hold is refused
+     loudly when it is ordered; an article with ranges and NO rates schedules
+     normally, books machine capacity and requires zero material, so the buying
+     list is short and nothing says so. */
+  const attention=audit.families.filter(f=>f.state!=="rated");
+
+  return <div className="border-t border-slate-200 pt-4 mt-5">
+    <div className="text-sm font-semibold text-slate-700 mb-1">BOM coverage</div>
+    <p className="text-xs text-slate-500 mb-3">
+      What the article master actually holds, family by family — so an entry tracker
+      marked <b>Done</b> can be checked against the data rather than trusted. Nothing here
+      fills a gap; it counts what is loaded and names what is not.
+    </p>
+
+    <div className="flex flex-wrap gap-2 mb-3 text-xs">
+      {[["articles",totals.articles],["families",totals.families],["size ranges",totals.ranges],
+        ["BOM rate entries",totals.rate_entries]].map(([k,v])=>
+        <span key={k} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5">
+          <b className="mono">{v}</b> <span className="text-slate-500">{k}</span></span>)}
+    </div>
+
+    {attention.length
+      ? <div className="text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
+          <b>{attention.length} famil{attention.length===1?"y":"ies"} not fully loaded:</b>{" "}
+          {attention.map(f=>f.family).join(", ")}.{" "}
+          A family with size ranges and no rates still schedules and still books machine
+          capacity — it simply requires no material, so the buying list is short and
+          nothing else says so.
+        </div>
+      : <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">
+          Every family in the master carries material rates on every size range.
+        </div>}
+
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead><tr className="text-slate-500 border-b border-slate-200">
+          <th className="text-left py-1.5 pr-3">Family</th>
+          <th className="text-left py-1.5 pr-3">Coverage</th>
+          <th className="text-right py-1.5 pr-3">Ranges</th>
+          <th className="text-right py-1.5 pr-3">Rated</th>
+          <th className="text-right py-1.5 pr-3">Packed</th>
+          <th className="text-right py-1.5 pr-3">Priced</th>
+          <th className="text-right py-1.5 pr-3">Rate entries</th>
+        </tr></thead>
+        <tbody>
+          {audit.families.map(f=>{
+            const look=COVERAGE[f.state];
+            return <tr key={f.family} className="border-b border-slate-100">
+              <td className="py-1.5 pr-3 font-semibold text-slate-800">{f.family}
+                <span className="text-slate-400 font-normal"> · {f.articles.length}</span></td>
+              <td className="py-1.5 pr-3">
+                <span className="font-semibold rounded-full px-2 py-0.5"
+                  style={{background:look.bg,color:look.fg}}>{look.label}</span></td>
+              <td className="py-1.5 pr-3 text-right mono">{f.ranges}</td>
+              <td className="py-1.5 pr-3 text-right mono">{f.ranges_rated}</td>
+              <td className="py-1.5 pr-3 text-right mono">{f.ranges_packed}</td>
+              <td className="py-1.5 pr-3 text-right mono">{f.ranges_priced}</td>
+              <td className="py-1.5 pr-3 text-right mono">{f.rate_entries}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+    </div>
+
+    {/* Packing and MRP are counted APART from material rates on purpose.
+        Thirteen of fourteen articles carry no MRP at all, and letting that
+        colour the coverage state would paint the whole master red and teach
+        people to ignore the column that means something. */}
+    <p className="text-[11px] text-slate-500 mt-2">
+      <b>Rated</b> is size ranges carrying material rates — the figure the buying list is built
+      from. <b>Packed</b> and <b>Priced</b> are counted separately: a missing MRP stops an invoice
+      pricing, and a missing packing rate makes a line price to zero pairs and drop off it
+      entirely, but neither is a BOM fault.
+    </p>
+
+    <button onClick={()=>setOpen(o=>!o)} className="text-xs font-semibold text-indigo-700 mt-2">
+      {open?"Hide":"Show"} every article
+    </button>
+    {open && <div className="overflow-x-auto mt-2">
+      <table className="w-full text-xs">
+        <thead><tr className="text-slate-500 border-b border-slate-200">
+          <th className="text-left py-1.5 pr-3">Article</th>
+          <th className="text-left py-1.5 pr-3">Coverage</th>
+          <th className="text-right py-1.5 pr-3">Ranges</th>
+          <th className="text-right py-1.5 pr-3">Rated</th>
+          <th className="text-left py-1.5 pr-3">Ranges with no rates</th>
+        </tr></thead>
+        <tbody>
+          {audit.articles.map(a=>{
+            const look=COVERAGE[a.state];
+            return <tr key={a.article} className="border-b border-slate-100">
+              <td className="py-1.5 pr-3">
+                {a.product_code && <span className="mono text-slate-400">{a.product_code} · </span>}
+                {a.article}</td>
+              <td className="py-1.5 pr-3">
+                <span className="font-semibold rounded-full px-2 py-0.5"
+                  style={{background:look.bg,color:look.fg}}>{look.label}</span></td>
+              <td className="py-1.5 pr-3 text-right mono">{a.ranges}</td>
+              <td className="py-1.5 pr-3 text-right mono">{a.ranges_rated}</td>
+              <td className="py-1.5 pr-3 mono text-slate-500">{a.without_rates.join(", ")||"—"}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+    </div>}
   </div>;
 }
 
