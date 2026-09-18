@@ -131,6 +131,36 @@ export function readQuantity(written, ppc){
   return { pairs: ppc ? n*ppc : 0, cartons:n, basis:"cartons" };
 }
 
+/* CARTONS THAT WILL NOT REACH THE INVOICE.
+ *
+ * A line with no size range, or with a range but no packing rate, prices to
+ * ZERO pairs — and `buildLines` emits no row for a zero-pair line, so those
+ * cartons leave the document entirely. The slip's own "= 15 CTN" does not
+ * catch it: `cartons` is recorded on such a line exactly as written, so the
+ * checksum adds up to 15 and passes while the invoice carries 11. The
+ * checksum answers "did the reader see every row", which is a DIFFERENT
+ * question from "will every row be invoiced", and only the first was ever
+ * asked.
+ *
+ * Nothing here invents a range or a rate to close the gap — the factory has
+ * to supply those. It states the size of the hole, in the cartons the slip
+ * was written in, so the clerk sees it before the PI is raised instead of the
+ * customer seeing it at the gate.
+ */
+export function uncostedCartons(lines){
+  let cartons = 0;
+  const sizes = [];
+  for(const line of lines || []){
+    if(Number(line.qty) > 0) continue;              // priced: it will print
+    const written = Number(line.cartons) || 0;
+    if(written <= 0) continue;                      // nothing was ordered on it
+    cartons += written;
+    const label = String(line.raw || line.single || "").trim();
+    if(label && !sizes.includes(label)) sizes.push(label);
+  }
+  return { cartons: +cartons.toFixed(4), sizes };
+}
+
 function mergeSpecific(lines, incoming){
   const existing = incoming.combo
     && lines.find(line => line.combo === incoming.combo && line.sizes && incoming.sizes);
@@ -305,6 +335,21 @@ export function buildPhotoCards(parsed, reference){
         // A shoe ordered in both rolls has no single type, and must not be
         // split into two articles just to give it one.
         const present = [...new Set(lines.map(l => l.type).filter(Boolean))];
+        /* Said once per ARTICLE with a total, not once per line. The per-line
+           amber already explains each gap; what nobody could see was how many
+           cartons the invoice would be short in the end. */
+        const uncosted = uncostedCartons(lines);
+        if(uncosted.cartons > 0)
+          issues.push(`${article}: ${+uncosted.cartons.toFixed(2)} carton`
+            + `${uncosted.cartons === 1 ? "" : "s"} (${uncosted.sizes.join(", ")}) `
+            + `price to no pairs and will NOT appear on the invoice at all — it goes out `
+            + `${+uncosted.cartons.toFixed(2)} carton${uncosted.cartons === 1 ? "" : "s"} short of the slip. `
+            + `Give ${uncosted.sizes.length > 1 ? "those sizes" : "that size"} a size range and a packing `
+            + `rate in Data & BOM, or drop the line deliberately.`);
+        /* NOT stored on the card. The clerk fixes these by picking a range or
+           typing a rate, and a snapshot taken at read time would go on saying
+           "4 cartons short" after it was put right — the same fault as a label
+           the invoice never printed. The screen recomputes it from the lines. */
         cards.push({
           article,
           party: String(order.party || "").trim(),

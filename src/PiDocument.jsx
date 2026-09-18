@@ -5,8 +5,23 @@ import { REF as PI_REF } from "./lib/refdata.js";
 /* Proforma Invoice, laid out to match the format the factory already issues.
    Every number comes from shared/pi.js — this file only arranges them. */
 
+/* THE LETTERHEAD IS PART OF THE FORM, NOT CONFIGURATION.
+   The packing list already worked this way and the invoice did not: it began
+   straight at the PROFORMA INVOICE bar, so every PI the app produced went out
+   on blank paper while the factory's own export carries the REX mark and the
+   founder's "Mark Of Originality" panel across the top. `company_name` was
+   declared here and never rendered, which is why uploading the artwork
+   changed nothing — there was no place on the document for it to land.
+
+   The mark is a real file under public/brand/, not an inlined data URL, for
+   the same reason the header and the job card use one: it can be replaced
+   without touching code, and every document then shows the same artwork.
+   `letterhead` also accepts an image data URL, so a new design drops in
+   through settings; the wordmark below prints until it does. */
 export const DEFAULT_PI_CONFIG = {
-  company_name: "",
+  company_name: "REX",
+  tagline: "Mark Of Originality",
+  letterhead: "/brand/rex-pi-letterhead.jpg",
   terms: [
     "The company has established fixed MRP for all its articles, which are uniform across India and cannot be customized for individual regions, locations, or orders.",
     "Ordered goods once sold will not be returned.",
@@ -72,6 +87,20 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
   const SPAN_LEFT = 8;    // Code..Article Image
   return (
     <div id="pi-area" style={{ fontFamily:"Arial, Helvetica, sans-serif", color:"#000", background:"#fff" }}>
+
+      {/* The letterhead, above the document exactly as on the factory's own
+          export. It is NOT marked data-noprint: the app header hides its mark
+          when printing because the document carries its own, and this is that
+          one. */}
+      <div style={{ textAlign:"center", padding:"4px 0 8px" }}>
+        {cfg.letterhead
+          ? <img src={cfg.letterhead} alt={cfg.company_name || "REX"}
+                 style={{ height:"64px", maxWidth:"100%", objectFit:"contain" }} />
+          : <div>
+              <div style={{ fontSize:"26px", fontWeight:800, letterSpacing:"-.02em" }}>{cfg.company_name}</div>
+              {cfg.tagline && <div style={{ fontSize:"9px", color:"#444", marginTop:"-2px" }}>{cfg.tagline}</div>}
+            </div>}
+      </div>
 
       <div style={{ textAlign:"center", fontWeight:700, fontSize:"13px", border:"1px solid #000", padding:"5px" }}>
         PROFORMA INVOICE

@@ -628,6 +628,56 @@ describe("critical UI contracts",()=>{
     expect(screen.getByLabelText("Customer *")).toHaveValue("Bansal Banmala");
   });
 
+  /* WHICH RUN THE ORDERED SIZE IS IN — not which run the range starts in.
+     ARMOUR's 11X1 is 11s, 12s, 13s and then the adult 1, so a slip ordering a
+     lone size 1 was badged "SMALL run" off the range's first size: the badge
+     contradicted the very size printed beside it, on exactly the reading it
+     exists to let the clerk check. */
+  it("names the run of the size that was ordered, not of the range",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "PI generation");
+    await user.click(screen.getByText(/AI read not working here/));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the JSON reply here/),{target:{value:JSON.stringify({
+      date:"2026-09-17",orders:[{party:"Paras Indore",category:"Armour",color:"Black",
+        lines:[{sizes:["1"],cartons:1,group:"LARGE"}]}],
+    })}});
+    await user.click(screen.getByRole("button",{name:"Use pasted result"}));
+
+    // The line landed on 11X1 — a range that starts in the kids run…
+    expect(screen.getByText(/mapped to 11X1/)).toBeInTheDocument();
+    // …but the size ordered is the adult 1, and that is what the badge says.
+    expect(screen.getByText("LARGE run")).toBeInTheDocument();
+    expect(screen.queryByText("SMALL run")).not.toBeInTheDocument();
+  });
+
+  /* CARTONS THAT WILL NOT BE ON THE INVOICE, COUNTED ON THE CARD.
+     The Star Flw row off the 17-Sep slip: Gola (V), 1X3 / 4X5 / 6X9, one
+     carton each, "= 3 CTN". No configured Gola range covers 6X9, so that line
+     prices to zero pairs — and a zero-pair line emits NO ROW on the PI. The
+     card read "36 pr", which is perfectly correct for the two rows that WILL
+     print and gives no hint that a third of the order has gone. The gap is a
+     number beside the total now. Nothing here invents the missing range. */
+  it("counts the cartons that will not reach the invoice",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "PI generation");
+    await user.click(screen.getByText(/AI read not working here/));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the JSON reply here/),{target:{value:JSON.stringify({
+      date:"2026-09-17",orders:[{party:"Star Flw Manglore",category:"Rex Gola (V)",color:"Black",
+        stated_cartons:3,lines:[{sizes:["1","3"],cartons:1},{sizes:["4","5"],cartons:1},
+                                {sizes:["6","9"],cartons:1}]}],
+    })}});
+    await user.click(screen.getByRole("button",{name:"Use pasted result"}));
+
+    // The line that cannot be costed is flagged where it sits…
+    expect(screen.getByText("Not matched to a range")).toBeInTheDocument();
+    // …the pair count is the SHORT figure, and looks entirely reasonable…
+    expect(screen.getByText("36 pr")).toBeInTheDocument();
+    // …so the carton it is missing is stated beside it.
+    expect(screen.getByText("1 ctn not on the PI")).toBeInTheDocument();
+  });
+
   /* The sheet's customer is asked ONCE and stamped onto every article, because
      one slip is one customer far more often than not. */
   it("asks for the customer once for the whole sheet",async()=>{

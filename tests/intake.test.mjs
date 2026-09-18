@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { readQuantity, CARTON_LIMIT } from "../shared/intake.js";
+import { readQuantity, CARTON_LIMIT, uncostedCartons } from "../shared/intake.js";
 import { buildPhotoCards } from "../shared/intake.js";
 import { buildMultiPI } from "../shared/pi.js";
 import { INPUTS } from "../shared/inputs.js";
-import { readPrompt, setReference } from "../shared/bridge.js";
+import { matchArticle, readPrompt, setReference } from "../shared/bridge.js";
 
 setReference(INPUTS);
 console.log("\nhandwritten intake — exact sizes survive through PI");
@@ -72,6 +72,35 @@ assert.deepEqual(Object.keys(ambiguous.cards[0].lines[0].sizes),["11s"],
 assert.ok(readPrompt().includes("A free-standing L, or L beside a size, always means Large"));
 assert.ok(readPrompt().includes("LEGACY ARTICLE-CODE EXCEPTION"),
   "an official catalogue suffix such as REX GOLA (L) remains the legacy Lace article");
+
+/* A BRACKETED (V) IS A CLOSURE, AND THERE IS NO "V" SIZE RUN.
+   The rule told the reader what an attached (L) meant and said nothing at all
+   about (V), so a sheet writing "Gola (L)" on one row and "Gola (V)" on the
+   next had the V dropped: both rows came back as plain "Gola" and both landed
+   on the LACE article — the wrong shoe, with the wrong BOM, priced and planned
+   as if it were the other one. The matcher itself was never at fault; it
+   resolves the suffix correctly the moment it is given one. */
+assert.ok(readPrompt().includes('THERE IS NO "V" SIZE RUN'),
+  "the reader is told a bracketed V is the Velcro closure, never a run marker");
+assert.ok(readPrompt().includes('"category":"Gola (V)"'),
+  "the worked example shows an attached (V) kept on the category");
+assert.equal(matchArticle("Gola (V)","Black"),"REX GOLA (V)",
+  "an attached (V) selects the Velcro article");
+assert.equal(matchArticle("Gola (L)","Black"),"REX GOLA (L)",
+  "and an attached (L) still selects the Lace one");
+/* Dropping it is what the prompt now prevents — this is what it cost. */
+assert.equal(matchArticle("Gola","Black"),"REX GOLA (V)",
+  "with no closure at all the bare name cannot say which of the two it is");
+
+const twoClosures=buildPhotoCards({orders:[
+  {party:"Dhanani Shoe Guwahati",category:"Gola (L)",color:"Black",lines:[{sizes:["3"],cartons:3}]},
+  {party:"Star Flw Manglore",category:"Gola (V)",color:"Black",lines:[{sizes:["1","3"],cartons:1}]},
+]},INPUTS);
+assert.deepEqual(twoClosures.cards.map(c=>c.article),["REX GOLA (L)","REX GOLA (V)"],
+  "two rows of one sheet, two closures, two different articles");
+assert.deepEqual(twoClosures.cards.map(c=>c.party),
+  ["Dhanani Shoe Guwahati","Star Flw Manglore"],
+  "and each keeps its own customer — a party belongs to the order, not the sheet");
 
 /* THE TWO FAMILIES BEHAVE OPPOSITELY, and the intake has to get both right.
 
@@ -318,3 +347,63 @@ assert.equal(readQuantity(10, 24).basis, "cartons", "ten is cartons");
 assert.equal(readQuantity(11, 24).basis, "pairs", "eleven is pairs");
 assert.equal(readQuantity(36, 18).cartons, 2, "pairs carry a derived carton count for the packer");
 assert.equal(readQuantity(0, 24).basis, null, "nothing written is nothing at all");
+
+
+/* CARTONS THAT NEVER REACH THE INVOICE.
+ *
+ * The Dhanani row off the 17-Sep slip: 3/3, 4/5, 5/3, 6/4 = 15 CTN. On the
+ * live article master no size range covers the adult 6 and no packing rate is
+ * on file for it, so that line prices to zero pairs — and a zero-pair line
+ * emits NO ROW on the PI. The invoice therefore goes out carrying 11 of the
+ * 15 cartons, and every row that IS on it is perfectly correct, which is what
+ * makes the loss so hard to see.
+ *
+ * The slip's own checksum does NOT catch this: `cartons` is recorded on the
+ * uncosted line exactly as written, so the read adds up to 15 and passes. It
+ * answers "did the reader see every row" — a different question from "will
+ * every row be invoiced".
+ *
+ * Nothing below invents a range or a rate. The range is REMOVED from a copy of
+ * the reference to reproduce the live state, and the app is asked to say how
+ * big the hole is.
+ */
+{
+  const live = structuredClone(INPUTS);
+  const gola = live.articles["REX GOLA (L)"];
+  gola.combo_order = gola.combo_order.filter(c => c !== "6X7B");
+  delete gola.combos["6X7B"];
+  delete live.packing_singles_by_article["REX GOLA (L)"];
+  setReference(live);
+
+  const built = buildPhotoCards({orders:[{
+    party:"Dhanani Shoe Guwahati", category:"Rex Gola (L)", color:"Black", stated_cartons:15,
+    lines:[{sizes:["3"],cartons:3},{sizes:["4"],cartons:5},{sizes:["5"],cartons:3},{sizes:["6"],cartons:4}],
+  }]}, live);
+
+  const card = built.cards[0];
+  const priced = card.lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
+  assert.equal(priced, 198, "the three costed lines carry 198 pairs — the figure the screen showed");
+
+  const lost = uncostedCartons(card.lines);
+  assert.equal(lost.cartons, 4, "and four cartons price to nothing at all");
+  assert.deepEqual(lost.sizes, ["6"], "named by the size the slip actually wrote");
+
+  // The read-completeness checksum is silent, because the read WAS complete.
+  assert.ok(!built.issues.some(i => /only .* were read/.test(i)),
+    "the stated-carton check passes: 15 cartons were read, all 15 of them");
+  // The invoice-completeness report is not.
+  assert.ok(built.issues.some(i => /will NOT appear on the invoice/.test(i) && /4 cartons/.test(i)),
+    "the shortfall against the invoice is stated once per article, with its size");
+
+  /* IT CLEARS WHEN THE GAP IS CLOSED. A warning that survives its own fix
+     teaches people to scroll past every warning. */
+  const fixed = card.lines.map(l => Number(l.qty) > 0 ? l : {...l, qty:72, cartons:4});
+  assert.equal(uncostedCartons(fixed).cartons, 0, "priced lines are not reported as lost");
+
+  setReference(INPUTS);                                   // leave the module as we found it
+}
+
+/* A line nobody ordered anything on is not a shortfall — it is an empty row. */
+assert.deepEqual(uncostedCartons([{cartons:0, qty:0, raw:"9"}]), {cartons:0, sizes:[]},
+  "zero cartons written is nothing missing");
+assert.deepEqual(uncostedCartons([]), {cartons:0, sizes:[]}, "and no lines is nothing missing");

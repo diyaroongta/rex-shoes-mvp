@@ -6,7 +6,7 @@ import { neededBy, buyingList, urgencyOf, daysBetween } from "../shared/procurem
 import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
-import { buildPhotoCards, sizesNotWritten } from "../shared/intake.js";
+import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
@@ -1566,6 +1566,21 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   style={{background:"#eef2ff",color:"#4338ca"}}>{vlSummary(c)}</span>}
                 <span className="mono text-xs ml-auto" style={{color:SOLE_COLOR[sole]}}>{sole||""}</span>
                 <span className="mono text-xs text-slate-400">{fmt(pairs)} pr</span>
+                {/* WHAT WILL NOT BE ON THE INVOICE, as a number, beside what
+                    will. A line with no range or no packing rate prices to
+                    zero pairs and emits NO ROW, so the pair count beside it is
+                    already the short figure and looks perfectly reasonable —
+                    the Dhanani row read 198 pr when the slip said 15 cartons.
+                    Recomputed from the lines every render, so it disappears
+                    the moment the clerk picks a range. */}
+                {(()=>{ const lost=uncostedCartons(c.lines);
+                  if(!(lost.cartons>0)) return null;
+                  return <span className="text-[11px] font-semibold rounded-full px-2 py-0.5"
+                    title={`Sizes ${lost.sizes.join(", ")} have no size range or no packing rate, so they price `
+                      +`to zero pairs and are dropped from the invoice entirely. Pick a range and a rate below, `
+                      +`or remove the line deliberately.`}
+                    style={{background:"#fef3c7",color:"#92400e"}}>
+                    {fmt(lost.cartons)} ctn not on the PI</span>; })()}
                 <button onClick={()=>delCard(i)} title="Remove this article" className="text-rose-500 px-1.5 text-lg leading-none">×</button>
               </div>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
@@ -1615,12 +1630,24 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                         landed in is the correction most often needed after a
                         handwritten read. It is spelled out rather than left to
                         be inferred from the size chips below. */}
-                    {(()=>{ const sz=l.size_order||[];
+                    {(()=>{
+                      /* THE SIZES THIS LINE ACTUALLY CARRIES, not the first
+                         size of the range it was mapped to. Several ranges
+                         STRADDLE the roll — ARMOUR's 11X1 is 11s, 12s, 13s and
+                         then the adult 1 — so reading size_order[0] labelled a
+                         lone adult "1" as "SMALL run", which is the exact
+                         reading the badge exists to let the clerk check. A
+                         line that genuinely spans both says so rather than
+                         picking one of them. */
+                      const ordered=l.sizes ? Object.keys(l.sizes).filter(k=>Number(l.sizes[k])>0) : [];
+                      const sz=(ordered.length?ordered:(l.size_order||[])).map(String);
                       if(!sz.length) return null;
-                      const small=/[0-9]s$/i.test(String(sz[0]));
+                      const isSmall=v=>/[0-9]s$/i.test(v);
+                      const small=sz.every(isSmall), large=sz.every(v=>!isSmall(v));
+                      const text=small?"SMALL run":large?"LARGE run":"SMALL + LARGE run";
                       return <span className="font-semibold rounded px-1.5 py-0.5" style={{fontSize:9.5,
                         background:small?"#ecfeff":"#fef3c7",color:small?"#0e7490":"#92400e"}}>
-                        {small?"SMALL run":"LARGE run"}</span>; })()}
+                        {text}</span>; })()}
                     {/* HOW THE WRITTEN FIGURE WAS READ. Above ten it is taken
                         as pairs, at or below ten as cartons — a rule that is
                         right nearly always and wrong occasionally, so it has to
