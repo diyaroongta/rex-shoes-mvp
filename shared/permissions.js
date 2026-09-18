@@ -22,7 +22,7 @@
  */
 
 const ALL_WRITES = ["orders","pis","dispatches","reference","catalogue","parties",
-                    "settings","read-order-photo","read-pi","copilot"];
+                    "settings","read-order-photo","read-pi","copilot","production_logs"];
 
 /* Reference data carries two very different things behind one endpoint. Stock
    figures are a daily clerical job; the BOM is master data whose every error
@@ -40,7 +40,7 @@ const MATERIAL_KEYS = ["new_material"];
 const PLAN_KEYS = ["plan_override","priority"];
 
 const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","repair","dispatch","schedule",
-                   "plan","machines","procurement","stock","parties","fabricators",
+                   "production","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
 export const ROLE_DEFS = {
@@ -86,8 +86,8 @@ export const ROLE_DEFS = {
     summary:"Builds the production schedule, balances machine load and tracks plan "
       +"against output. Re-sequences work; cannot raise a PI, record a dispatch, "
       +"or change what was ordered.",
-    tabs:["mis","orders","schedule","plan","machines"],
-    writes:[], orders:"plan", reference:null,
+    tabs:["mis","orders","production","schedule","plan","machines"],
+    writes:["production_logs"], orders:"plan", reference:null,
   },
   procurement: {
     label:"Procurement Officer",
@@ -165,6 +165,20 @@ export function can(role, method, url, body){
   if(READ_METHODS.has(verb)) return { allowed:true };
   if(def.writes === "all") return { allowed:true };
 
+  /* Several daily movement ledgers share /api/dispatches to stay under the
+     serverless-function cap. Production actuals are still their own permission:
+     entering output must not silently grant the right to ship an order. */
+  let resource = body && body.resource;
+  if(!resource){
+    try { resource = new URL(String(url || ""), "http://factory.local").searchParams.get("resource"); }
+    catch(_){ resource = null; }
+  }
+  if(endpoint === "dispatches" && resource === "production_logs"){
+    if(def.writes.includes("production_logs")) return { allowed:true };
+    return { allowed:false,
+      reason:`${def.label} cannot change the daily production log. Ask an administrator if you need to.` };
+  }
+
   if(endpoint === "reference"){
     if(def.reference === "all") return { allowed:true };
     const keys = Object.keys(body || {});
@@ -201,6 +215,7 @@ const LABEL = {
   catalogue:"the article master", parties:"customers and their terms",
   settings:"machine capacities and delivery targets", reference:"the BOM and reference data",
   "read-order-photo":"the order-slip reader", "read-pi":"the PI reader", copilot:"the copilot",
+  production_logs:"the daily production log",
 };
 
 /* The first screen a role is actually allowed to open, so nobody is dropped

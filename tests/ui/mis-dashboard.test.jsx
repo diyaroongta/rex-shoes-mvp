@@ -22,7 +22,10 @@ describe("Executive MIS dashboard",()=>{
   it("shows management KPIs, dispatch completion and planned machine output",async()=>{
     const user=userEvent.setup();
     const refresh=vi.fn();
-    render(<MISDashboard state={state} dispatches={dispatches} onRefresh={refresh} today="2026-08-26"/>);
+    const productionLogs=[{production_on:"2026-08-26",work_center:"CUTTING",stage:"CUTTING",
+      good_pairs:480,rejected_pairs:5,downtime_minutes:30}];
+    render(<MISDashboard state={state} dispatches={dispatches} productionLogs={productionLogs}
+      onRefresh={refresh} today="2026-08-26"/>);
     expect(screen.getByTestId("kpi-total-orders")).toHaveTextContent("3");
     expect(screen.getByTestId("kpi-on-time")).toHaveTextContent("1");
     expect(screen.getByTestId("kpi-at-risk")).toHaveTextContent("1");
@@ -33,6 +36,8 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getByTestId("kpi-dispatch-shortage-pct")).toHaveTextContent("16.7%");
     expect(screen.getByTestId("kpi-average-dispatch-days")).toHaveTextContent("12.5");
     expect(screen.getByText("Cutting hall")).toBeInTheDocument();
+    expect(screen.getByTestId("actual-production-today")).toHaveTextContent("480");
+    expect(screen.getByTestId("actual-production-today")).toHaveTextContent("30m");
     expect(screen.getByText(/scheduled—not actual/i)).toBeInTheDocument();
     expect(screen.getByRole("img",{name:/six five-day periods/i})).toBeInTheDocument();
     await user.click(screen.getByText("Show MIS calculation logic"));

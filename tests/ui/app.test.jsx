@@ -578,6 +578,56 @@ describe("critical UI contracts",()=>{
     expect(rangeCartons).toHaveValue(3);
   });
 
+  /* A MULTI-PARTY SHEET SHOWS ITS PARTIES.
+     The reset that clears the previous reading used to run at the END of the
+     read, inside ingest() — after the customers had already been taken off the
+     sheet — so it blanked the customer, the city and the "different customers"
+     switch on the way past. The cards kept their own party, so the INVOICE
+     named all four customers correctly while Match & Check showed none: the
+     one place the clerk checks the order before it is filed. */
+  it("shows every customer on a multi-party sheet in Match & check",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "PI generation");
+    await user.click(screen.getByText(/AI read not working here/));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the JSON reply here/),{target:{value:JSON.stringify({
+      date:"2026-09-17",orders:[
+        {party:"Bansal Banmala",category:"Smart Boy (L) White",color:"White",stated_cartons:25,
+         lines:[{sizes:["6"],cartons:5},{sizes:["7"],cartons:5},{sizes:["8"],cartons:5},
+                {sizes:["9"],cartons:5},{sizes:["10"],cartons:5}]},
+        {party:"Dhanani Shoe Guwahati",category:"Rex Gola (L)",color:"Black",stated_cartons:15,
+         lines:[{sizes:["3"],cartons:3},{sizes:["4"],cartons:5},{sizes:["5"],cartons:3},{sizes:["6"],cartons:4}]},
+        {party:"Star Flw Manglore",category:"Rex Gola (V)",color:"Black",stated_cartons:3,
+         lines:[{sizes:["1","3"],cartons:1},{sizes:["4","5"],cartons:1}]},
+        {party:"Paras Indore",category:"Armour",color:"Black",stated_cartons:3,
+         lines:[{sizes:["1"],cartons:1},{sizes:["2"],cartons:1},{sizes:["3"],cartons:1}]},
+      ],
+    })}});
+    await user.click(screen.getByRole("button",{name:"Use pasted result"}));
+
+    // The reader found four names, so the sheet is a multi-party one and says so.
+    expect(screen.getByLabelText("Different customers on this sheet")).toBeChecked();
+    for(const who of ["Bansal Banmala","Dhanani Shoe Guwahati","Star Flw Manglore","Paras Indore"])
+      expect(screen.getAllByDisplayValue(who).length).toBeGreaterThan(0);
+  });
+
+  /* One name on the sheet fills the header field instead, and is not wiped by
+     the reset either. */
+  it("fills the sheet customer when the reader found one name",async()=>{
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "PI generation");
+    await user.click(screen.getByText(/AI read not working here/));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the JSON reply here/),{target:{value:JSON.stringify({
+      date:"2026-09-17",orders:[{party:"Bansal Banmala",category:"Rex Gola (L)",color:"Black",
+        lines:[{sizes:["3"],cartons:3}]}],
+    })}});
+    await user.click(screen.getByRole("button",{name:"Use pasted result"}));
+
+    expect(screen.getByLabelText("Different customers on this sheet")).not.toBeChecked();
+    expect(screen.getByLabelText("Customer *")).toHaveValue("Bansal Banmala");
+  });
+
   /* The sheet's customer is asked ONCE and stamped onto every article, because
      one slip is one customer far more often than not. */
   it("asks for the customer once for the whole sheet",async()=>{

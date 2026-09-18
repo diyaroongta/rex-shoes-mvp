@@ -23,6 +23,7 @@ import FabricatorsTab from "./FabricatorsTab.jsx";
 import JobCardTab from "./JobCardTab.jsx";
 import RepairTab from "./RepairTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
+import ProductionInputTab from "./ProductionInputTab.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -53,6 +54,9 @@ export default function App({ user=null, onSignOut=null }={}){
   const [dispatches, setDispatches] = useState([]);
   const [dispatchLoading, setDispatchLoading] = useState(true);
   const [dispatchErr, setDispatchErr] = useState("");
+  const [productionLogs, setProductionLogs] = useState([]);
+  const [productionLoading, setProductionLoading] = useState(true);
+  const [productionErr, setProductionErr] = useState("");
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
   /* A role must never land on a screen it cannot open. The server is the only
      thing that actually enforces permissions; this just keeps the app honest
@@ -97,13 +101,21 @@ export default function App({ user=null, onSignOut=null }={}){
     finally{ setDispatchLoading(false); }
   })(); },[]);
 
+  useEffect(()=>{ (async()=>{
+    try{ setProductionLogs(await api.listProductionLogs()); setProductionErr(""); }
+    catch(e){ setProductionErr(e.message||String(e)); }
+    finally{ setProductionLoading(false); }
+  })(); },[]);
+
   // The executive view is intended to stay open on a management screen. Pull
   // fresh orders and dispatch events once a minute so another clerk's update
   // appears without requiring a full browser reload.
   useEffect(()=>{
     const timer=setInterval(()=>{
-      Promise.all([api.listOrders(), api.listDispatchesWithHidden()])
-        .then(([o,d])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
+      Promise.all([api.listOrders(), api.listDispatchesWithHidden(),
+        api.listProductionLogs().catch(e=>{ setProductionErr(e.message||String(e)); return null; })])
+        .then(([o,d,p])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
+                         if(p){ setProductionLogs(p); setProductionErr(""); }
                          setSyncedAt(new Date()); setSyncFailed(false); })
         .catch(()=>setSyncFailed(true));   // shown in the header, not as a banner every minute
     },60000);
@@ -117,11 +129,16 @@ export default function App({ user=null, onSignOut=null }={}){
     catch(e){ setDispatchErr(e.message||String(e)); }
     finally{ setDispatchLoading(false); }
   };
+  const refreshProduction = async ()=>{
+    try{ setProductionLoading(true); setProductionLogs(await api.listProductionLogs()); setProductionErr(""); }
+    catch(e){ setProductionErr(e.message||String(e)); }
+    finally{ setProductionLoading(false); }
+  };
   /* ONE refresh for every screen. Orders, dispatches and the PI master are
      three views of the same rows, so a change made on any tab has to reload
      all of them — editing an order from the PI database used to leave the
      schedule, dispatch and MIS showing the figures from before the edit. */
-  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches()]); };
+  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProduction()]); };
 
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
@@ -301,6 +318,7 @@ export default function App({ user=null, onSignOut=null }={}){
       ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
+      ["production","Daily production"],
       ["schedule","Schedule"],
       ["plan","Production plan"],
       ["machines","Machine load"],
@@ -486,6 +504,7 @@ export default function App({ user=null, onSignOut=null }={}){
             <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
         </div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
+          productionLogs={productionLogs} productionLoading={productionLoading} productionError={productionErr}
           onRefresh={syncAll} />}
         {tab==="pis" && <PiDatabaseTab orders={orders} shortfall={state?state.procurement_by_pi:null}
                             onGoToJobs={()=>setTab("jobs")}
@@ -512,6 +531,8 @@ export default function App({ user=null, onSignOut=null }={}){
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
+        {tab==="production" && <ProductionInputTab orders={state.orders||[]} logs={productionLogs}
+          loading={productionLoading} loadError={productionErr} onChanged={refreshProduction} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
@@ -803,8 +824,22 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     let text=String(raw||"").trim().replace(/```json/gi,"").replace(/```/g,"").trim();
     const a=text.indexOf("{"),b=text.lastIndexOf("}");
     if(a>-1&&b>-1) text=text.slice(a,b+1);
+    /* Parse BEFORE anything is cleared, so a reply that is not JSON leaves the
+       previous reading intact and does not burn a PI number. The raw text is
+       still kept for diagnosis on the way out. */
+    let parsed;
+    try{ parsed=JSON.parse(text); }
+    catch(e){ setRawRead(text); throw e; }
+    /* CLEAR FIRST, THEN APPLY. This used to happen at the END, inside
+       ingest() — so every field this function had just read off the sheet was
+       overwritten by the reset a moment later: the customer, the city, the
+       "different customers on this sheet" switch and the bad-date warning all
+       came back blank. The cards kept their own per-order party, which is why
+       the invoice named the customers correctly while Match & Check showed no
+       customer at all. A reset that runs after the values it is meant to
+       precede is indistinguishable from not reading them. */
+    resetReadState();
     setRawRead(text);
-    const parsed=JSON.parse(text);
     setDiscountOverrides({});
     // A sheet routinely lists several customers. Each order carries its own
     // party; the header field is only a fallback for a genuinely single-party
@@ -985,16 +1020,23 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
     if(freshPiNumber){ setPiNo(""); allocatePiNo(); }
   }
 
+  /* NO resetReadState() here. Its only caller is applyReadText, which resets
+     before it reads the sheet — resetting again at this point wiped what that
+     had just found. */
   function ingest(parsed){
-    resetReadState();
     const built=buildPhotoCards(parsed,INPUTS);
     const out=built.cards.map(card=>withArticleDetails(card,{
       order_date:parsed.date||orderDate,
       priority:Number(card.priority)||Number(priority)||2,
     }));
     setCards(out.length?out:null);
-    if(built.issues.length) setErr(built.issues.join(" "));
-    if(!out.length) setErr("Nothing readable found — try a clearer photo or enter by hand.");
+    /* APPEND. A bad sheet date and a bad line are two different complaints
+       about the same read, and overwriting one with the other hid whichever
+       came first. */
+    const note=!out.length
+      ? "Nothing readable found — try a clearer photo or enter by hand."
+      : built.issues.join(" ");
+    if(note) setErr(prev=>[prev,note].filter(Boolean).join(" "));
   }
 
   function blankCard(){ const art=ARTS[0]; const type=articleTypes(art)[0]; const c=articleTypeCombos(art)[0];
@@ -2024,6 +2066,7 @@ const VIEWS = {
   jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
+  production:  {title:"Daily production",  sub:"Actual output, rejects and downtime from every machine and shift"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},

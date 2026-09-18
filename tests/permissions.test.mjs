@@ -75,7 +75,10 @@ test("a plan change cannot carry an order change in beside it", () => {
   assert.equal(allow("planner","PATCH","/api/orders/JO1",{}), false, "and an empty body is not a free pass");
 });
 
-test("a planner raises no invoice and records no dispatch", () => {
+test("a planner records production actuals but raises no invoice or dispatch", () => {
+  assert.equal(allow("planner","POST","/api/dispatches?resource=production_logs",
+    {resource:"production_logs"}), true);
+  assert.equal(allow("planner","DELETE","/api/dispatches?resource=production_logs&id=1"), true);
   for(const [method, url] of [["POST","/api/pis"],["POST","/api/dispatches"],
                               ["POST","/api/read-order-photo"],["POST","/api/copilot"]])
     assert.equal(allow("planner", method, url), false, `planner must not ${method} ${url}`);
@@ -180,7 +183,7 @@ test("a viewer is not offered screens whose every button would be refused", () =
 });
 
 test("a planner sees the production screens and the order book, nothing else", () => {
-  for(const tab of ["mis","orders","schedule","plan","machines"])
+  for(const tab of ["mis","orders","production","schedule","plan","machines"])
     assert.equal(canSeeTab("planner", tab), true, `planner should see ${tab}`);
   /* Scheduling needs the order book to schedule FROM; raising the paperwork
      does not belong to this role. */
@@ -190,7 +193,7 @@ test("a planner sees the production screens and the order book, nothing else", (
 });
 
 test("an admin sees everything", () => {
-  for(const tab of ["mis","intake","jobs","orders","dispatch","schedule","plan","machines",
+  for(const tab of ["mis","intake","jobs","orders","dispatch","production","schedule","plan","machines",
                     "procurement","stock","jobwork","parties","fabricators","catalogue","rules","data","copilot"])
     assert.equal(canSeeTab("admin", tab), true);
 });
@@ -214,6 +217,8 @@ console.log("\nH — the narrower roles from the factory's own access list");
    shipment but must not raise an invoice or touch an order. */
 test("a Dispatch Executive can record a dispatch and nothing else", () => {
   assert.equal(allow("dispatch","POST","/api/dispatches"), true);
+  assert.equal(allow("dispatch","POST","/api/dispatches?resource=production_logs",
+    {resource:"production_logs"}), false);
   for(const [m,u] of [["POST","/api/orders"],["PATCH","/api/orders/JO1"],["POST","/api/pis"],
                       ["PUT","/api/catalogue"],["PUT","/api/parties"],["PUT","/api/settings"],
                       ["PATCH","/api/reference"],["POST","/api/read-pi"]])
