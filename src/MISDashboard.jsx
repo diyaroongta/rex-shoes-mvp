@@ -1,5 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { buildMisSnapshot } from "../shared/mis.js";
+import { plannedProductionRows, productionActualSummary } from "../shared/production-actuals.js";
+import { fromDay } from "../shared/engine.js";
+import { REF as INPUTS } from "./lib/refdata.js";
 
 const STATUS = {
   on_track: { label:"On time", color:"#047857", pale:"#ECFDF5" },
@@ -120,8 +123,11 @@ function Progress({value,color="#0B6BCB"}){
   </div>;
 }
 
-export default function MISDashboard({state,dispatches=[],dispatchLoading=false,dispatchError="",onRefresh,today}){
+export default function MISDashboard({state,dispatches=[],productionActuals=[],dispatchLoading=false,dispatchError="",onRefresh,today}){
   const snapshot=useMemo(()=>buildMisSnapshot(state,dispatches,{today}),[state,dispatches,today]);
+  const productionPlan=useMemo(()=>plannedProductionRows(state,INPUTS.origin,fromDay),[state]);
+  const production=useMemo(()=>productionActualSummary(productionPlan,productionActuals,today||snapshot.as_of),
+    [productionPlan,productionActuals,today,snapshot.as_of]);
   const [filter,setFilter]=useState("all");
   const [drill,setDrill]=useState(null);   // which figure is being taken apart
   const [search,setSearch]=useState("");
@@ -139,7 +145,8 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
       </div>
       <div className="ml-auto flex flex-wrap gap-2 text-xs">
         <span className="rounded-full px-2.5 py-1" style={{background:"#ECFDF5",color:"#047857"}}>Dispatch: recorded actual</span>
-        <span className="rounded-full px-2.5 py-1" style={{background:"#EFF6FF",color:"#1D4ED8"}}>Production: current schedule</span>
+        <span className="rounded-full px-2.5 py-1" style={{background:production.recorded_rows?"#ECFDF5":"#EFF6FF",color:production.recorded_rows?"#047857":"#1D4ED8"}}>
+          Production: {production.recorded_rows?"recorded actual":"current schedule"}</span>
         <span className="mono rounded-full bg-slate-100 text-slate-600 px-2.5 py-1">As of {niceDate(snapshot.as_of)}</span>
         {onRefresh && <button onClick={onRefresh} disabled={dispatchLoading} className="rounded-full border border-slate-300 bg-white text-slate-700 px-2.5 py-1 font-semibold disabled:opacity-50">
           {dispatchLoading?"Refreshing…":"Refresh live data"}
@@ -160,6 +167,13 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
     </section>
 
     <section className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <Kpi label="Today's production plan" value={fmt(production.planned_pairs)}
+        detail={`${production.planned_rows} scheduled line/order row${production.planned_rows===1?"":"s"}`}
+        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-production-plan" />
+      <Kpi label="Today's achievement" value={fmt(production.actual_pairs)}
+        detail={`${pct(production.achievement_pct)} · ${production.recorded_rows} of ${production.planned_rows} rows reported`}
+        tone={production.recorded_rows?"#047857":"#64748B"} pale={production.recorded_rows?"#ECFDF5":"#F8FAFC"}
+        testId="kpi-production-actual" />
       <Kpi label="Order vs dispatch %" value={pct(snapshot.order_vs_dispatch_pct)}
         detail={`${fmt(snapshot.dispatched_last_30_days)} dispatched ÷ ${fmt(snapshot.ordered_last_30_days)} ordered pairs · last 30 days`}
         tone="#0B6BCB" pale="#EFF6FF" testId="kpi-order-dispatch-pct" drill="coverage" onDrill={setDrill} open={drill==="coverage"} />
@@ -290,7 +304,8 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
     </section>
 
     <div className="rounded-lg border border-blue-200 bg-blue-50 text-blue-900 px-3 py-2 text-xs">
-      <b>Data boundary:</b> order dates, schedule health and machine utilisation update from the live Factory OS plan; dispatch updates from recorded packing reports. Shop-floor actual good pairs, rejection and downtime are not yet stored in Factory OS, so machine output is explicitly shown as scheduled—not actual.
+      <b>Data boundary:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement comes from the Daily plan vs achievement upload; dispatch comes from recorded packing reports. Factory OS does not ask for rejection or downtime figures because they are not part of the current operating model.
+      {production.recorded_rows===0&&<> Until achievement is uploaded, production output is <b>scheduled—not actual</b>.</>}
     </div>
   </div>;
 }

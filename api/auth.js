@@ -2,6 +2,7 @@ import { q } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { verifyPassword, hashPassword, signSession, sessionOf, authSecret,
          sessionCookie, clearedCookie, SESSION_SECONDS } from "./_lib/auth.js";
+import { ROLES } from "../shared/permissions.js";
 
 /* The only endpoint that is reachable without a session — everything else is
    guarded by wrap(). It is therefore also the only one an attacker can talk
@@ -16,6 +17,51 @@ const LOCK_MINUTES = 15;
 const BAD = "Incorrect username or password";
 
 export default wrap(async (req, res) => {
+  /* Account administration shares /api/auth so adding the profiles screen does
+     not create a thirteenth serverless function.  This endpoint is public for
+     sign-in, therefore this branch performs its own strict session + admin
+     check before it touches the users table. */
+  if(String((req.query||{}).resource||"")==="profiles"){
+    const me=sessionOf(req);
+    if(!me) return fail(res,401,"Sign in required");
+    if(me.role!=="admin") return fail(res,403,"Only Admin (IT) can manage profiles");
+    if(req.method==="GET"){
+      const {rows}=await q(`select username, display_name, role, active, last_login_at, created_at
+                              from users order by created_at, username`);
+      return res.status(200).json(rows);
+    }
+    if(req.method==="POST"){
+      const b=req.body||{},username=String(b.username||"").trim().toLowerCase();
+      const display_name=String(b.display_name||"").trim(),role=String(b.role||"").trim();
+      const password=String(b.password||"");
+      if(!/^[a-z0-9._-]{3,40}$/.test(username)) return fail(res,400,"Username must be 3–40 letters, numbers, dots, dashes or underscores");
+      if(!display_name) return fail(res,400,"Display name is required");
+      if(!ROLES.includes(role)) return fail(res,400,"Choose a recognised access role");
+      if(password.length<8) return fail(res,400,"Temporary password must be at least 8 characters");
+      try{
+        const {rows}=await q(`insert into users (username,password_hash,display_name,role)
+                              values ($1,$2,$3,$4)
+                              returning username,display_name,role,active,created_at`,
+          [username,hashPassword(password),display_name,role]);
+        return res.status(201).json(rows[0]);
+      }catch(error){
+        if(error&&error.code==="23505") return fail(res,409,`Username ${username} already exists`);
+        throw error;
+      }
+    }
+    if(req.method==="PATCH"){
+      const b=req.body||{},username=String(b.username||"").trim().toLowerCase();
+      if(!username) return fail(res,400,"username is required");
+      if(username===me.username&&b.active===false) return fail(res,400,"You cannot deactivate the profile you are signed in with");
+      if(typeof b.active!=="boolean") return fail(res,400,"active must be true or false");
+      const {rows}=await q(`update users set active=$2,updated_at=now() where username=$1
+                            returning username,display_name,role,active,last_login_at,created_at`,[username,b.active]);
+      if(!rows.length) return fail(res,404,"Profile not found");
+      return res.status(200).json(rows[0]);
+    }
+    return fail(res,405,`${req.method} not allowed`);
+  }
+
   /* Who am I? The browser calls this before the first render to decide
      between the login screen and the app. */
   if(req.method === "GET"){

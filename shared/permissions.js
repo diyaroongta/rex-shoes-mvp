@@ -40,7 +40,7 @@ const MATERIAL_KEYS = ["new_material"];
 const PLAN_KEYS = ["plan_override","priority"];
 
 const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","repair","dispatch","schedule",
-                   "plan","machines","procurement","stock","parties","fabricators",
+                   "production_input","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
 export const ROLE_DEFS = {
@@ -86,8 +86,8 @@ export const ROLE_DEFS = {
     summary:"Builds the production schedule and balances machine load. "
       +"Re-sequences work; cannot raise a PI, record a dispatch, "
       +"or change what was ordered.",
-    tabs:["mis","orders","schedule","plan","machines"],
-    writes:[], orders:"plan", reference:null,
+    tabs:["mis","orders","schedule","production_input","plan","machines"],
+    writes:[], orders:"plan", production_actuals:true, reference:null,
   },
   procurement: {
     label:"Procurement Officer",
@@ -145,6 +145,7 @@ const defOf = role => ROLE_DEFS[role] || null;
 export function canSeeTab(role, tab){
   const def = defOf(role);
   if(!def) return false;
+  if(tab === "profiles") return role === "admin";
   return def.tabs === "all" ? EVERY_TAB.includes(tab) : def.tabs.includes(tab);
 }
 
@@ -174,6 +175,11 @@ export function can(role, method, url, body){
     return { allowed:false, reason: def.reference === "stock"
       ? "You can update stock figures, but only a data manager or an administrator can change the BOM, packing or MRP."
       : `${def.label} cannot change the BOM or reference data.` };
+  }
+
+  if(endpoint === "dispatches" && /(?:\?|&)resource=production_actuals(?:&|$)/.test(String(url||""))){
+    if(def.production_actuals) return {allowed:true};
+    return {allowed:false,reason:`${def.label} cannot record production achievement.`};
   }
 
   /* Edit the plan, not the order. A production planner re-sequences work and
@@ -219,5 +225,5 @@ export function isReadOnly(role){
      change the PLAN, so calling them read-only would be wrong on screen and
      would hide the controls they are meant to use. */
   return def.writes !== "all" && def.writes.length === 0
-    && !def.reference && !def.orders;
+    && !def.reference && !def.orders && !def.production_actuals;
 }

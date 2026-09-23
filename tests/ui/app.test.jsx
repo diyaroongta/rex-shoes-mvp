@@ -30,6 +30,7 @@ const mocks=vi.hoisted(()=>({
   nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),setPlanOverride:vi.fn(),
   releasePiParts:vi.fn(),listFabricators:vi.fn(),listJobWork:vi.fn(),issueJobWork:vi.fn(),
+  listProductionActuals:vi.fn(),saveProductionActuals:vi.fn(),
 }));
 
 vi.mock("../../src/lib/client.js",()=>({
@@ -40,6 +41,7 @@ vi.mock("../../src/lib/client.js",()=>({
      history list but must never un-ship its pairs, so the ledger is built
      from every row. Both names resolve to one spy here. */
   listDispatchesWithHidden:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
+  listProductionActuals:mocks.listProductionActuals,saveProductionActuals:mocks.saveProductionActuals,
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
   readOrderPhoto:vi.fn(),readPi:mocks.readPi,askCopilot:vi.fn(),
 }));
@@ -56,6 +58,8 @@ beforeEach(()=>{
   mocks.putSettings.mockResolvedValue({});
   mocks.listPis.mockResolvedValue([]);
   mocks.listDispatches.mockResolvedValue([]);
+  mocks.listProductionActuals.mockResolvedValue([]);
+  mocks.saveProductionActuals.mockResolvedValue({saved:0,rows:[]});
   mocks.getCatalogue.mockResolvedValue({});
   mocks.listParties.mockResolvedValue([]);
   mocks.createOrders.mockResolvedValue([{order_no:"JO9001"}]);

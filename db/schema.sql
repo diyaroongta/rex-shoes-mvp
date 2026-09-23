@@ -319,3 +319,34 @@ create table if not exists repairs (
   created_at  timestamptz not null default now()
 );
 create index if not exists repairs_order_idx on repairs (order_no);
+
+-- Daily plan versus achievement.  Descriptive fields are snapshots from the
+-- automatic schedule; actual_pairs is the only new shop-floor measurement.
+create table if not exists production_actuals (
+  id             bigserial primary key,
+  production_on  date        not null,
+  work_center    text        not null,
+  stage          text        not null,
+  order_no       text        not null references orders(order_no) on delete restrict,
+  unit_key       text        not null,
+  job_card_no    text        not null default '',
+  article        text        not null default '',
+  party          text        not null default '',
+  size_ranges    text        not null default '',
+  planned_pairs  integer     not null check (planned_pairs >= 0),
+  actual_pairs   integer     not null check (actual_pairs >= 0),
+  note           text,
+  created_by     text,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (production_on, work_center, stage, unit_key)
+);
+alter table production_actuals add column if not exists unit_key text;
+alter table production_actuals add column if not exists job_card_no text not null default '';
+update production_actuals set unit_key=order_no where unit_key is null or unit_key='';
+alter table production_actuals alter column unit_key set not null;
+alter table production_actuals drop constraint if exists production_actuals_production_on_work_center_stage_order_no_key;
+create unique index if not exists production_actuals_row_key
+  on production_actuals (production_on, work_center, stage, unit_key);
+create index if not exists production_actuals_day_idx
+  on production_actuals (production_on desc, work_center);

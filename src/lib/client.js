@@ -40,6 +40,10 @@ export const signIn   = (username, password)=> post("/api/auth", { username, pas
 export const signOut  = ()                  => post("/api/auth", { action:"logout" });
 export const changePassword = (current_password, new_password) =>
   post("/api/auth", { action:"change_password", current_password, new_password });
+export const listProfiles = () => j("/api/auth?resource=profiles");
+export const createProfile = profile => post("/api/auth?resource=profiles",profile);
+export const setProfileActive = (username,active) => j("/api/auth?resource=profiles",{
+  method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,active})});
 
 /* ---- order sheet ---- */
 export const listOrders      = ()          => j("/api/orders");
@@ -108,6 +112,12 @@ export const addRepair     = m    => j("/api/dispatches?resource=repairs", {
   body:JSON.stringify({ ...m, resource:"repairs" }) });
 export const deleteRepair  = id   => j(`/api/dispatches?resource=repairs&id=${encodeURIComponent(id)}`,
   { method:"DELETE" });
+
+/* Daily production plan versus achievement.  Kept on the dispatch endpoint to
+   stay within the deployment's serverless-function limit. */
+export const listProductionActuals = () => j("/api/dispatches?resource=production_actuals");
+export const saveProductionActuals = rows => post("/api/dispatches?resource=production_actuals",
+  { resource:"production_actuals", rows });
 
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");

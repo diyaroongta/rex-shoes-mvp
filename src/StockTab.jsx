@@ -37,7 +37,8 @@ function guessCategory(name){
   return "";
 }
 
-export default function StockTab({ onChanged }){
+export default function StockTab({ state, onChanged }){
+  const [section,setSection]=useState("view");
   const [edits,setEdits]=useState({});
   const [busy,setBusy]=useState(false);
   const [msg,setMsg]=useState("");
@@ -138,6 +139,23 @@ export default function StockTab({ onChanged }){
   const TD={fontSize:11,padding:"3px 6px",border:"1px solid #e2e8f0"};
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+    <div className="flex gap-2 flex-wrap mb-4" role="tablist" aria-label="Stock functions">
+      {[["add","Add Stock"],["view","View Stock"],["mto","MTO Stock"],["material","Add New Material"]].map(([key,label])=><button
+        key={key} role="tab" aria-selected={section===key} onClick={()=>{setSection(key);if(key==="material"&&!adding)setAdding({name:"",uom:"",colour:"",opening:"",min:"",rate:""});}}
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg border"
+        style={{background:section===key?"#0B6BCB":"#fff",color:section===key?"#fff":"#334155",borderColor:section===key?"#0B6BCB":"#CBD5E1"}}>{label}</button>)}
+    </div>
+
+    {section==="add" ? <AddStock rows={rows} onChanged={async()=>{await reloadReference();if(onChanged)await onChanged();}} />
+    : section==="mto" ? <MtoStock state={state} />
+    : section==="material" ? <>
+      <div className="mb-3"><div className="text-sm font-semibold text-slate-700">Add New Material</div>
+        <div className="text-xs text-slate-500">Use this only when the material does not already exist in the BOM material master.</div></div>
+      <NewMaterial draft={adding||{name:"",uom:"",colour:"",opening:"",min:"",rate:""}} setDraft={setAdding} existing={INPUTS.materials}
+        onSaved={async()=>{setAdding({name:"",uom:"",colour:"",opening:"",min:"",rate:""});setMsg("Material added. It can now be stocked and used by BOMs.");if(onChanged)await onChanged();}}
+        onError={setErr}/>{msg&&<div className="text-xs text-emerald-700 mt-2">{msg}</div>}
+    </>
+    : <>
     <div className="flex items-center gap-3 flex-wrap mb-3">
       <div>
         <div className="text-sm font-semibold text-slate-700">Stock register</div>
@@ -157,18 +175,11 @@ export default function StockTab({ onChanged }){
         <option value="">All categories</option>
         {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
       </select>
-      <button onClick={()=>setAdding(adding?null:{name:"",uom:"",colour:"",opening:"",min:"",rate:""})}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white">
-        {adding?"Cancel":"+ Add material"}</button>
       <button onClick={exportSheet}
         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Export</button>
     </div>
 
     {err && <div role="alert" className="mb-3 text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2">{err}</div>}
-    {adding && <NewMaterial draft={adding} setDraft={setAdding} existing={INPUTS.materials}
-      onSaved={async()=>{ setAdding(null); setMsg("Material added. It can be stocked and will net against orders that use it."); if(onChanged) await onChanged(); }}
-      onError={setErr} />}
-
     <div className="flex gap-4 flex-wrap mb-3 text-xs">
       <span className="text-slate-500">Items <b className="mono text-slate-800">{shown.length}</b></span>
       <span className="text-slate-500">Total stock <b className="mono text-slate-800">{fmt(totals.stock)}</b></span>
@@ -235,6 +246,59 @@ export default function StockTab({ onChanged }){
     <button disabled={busy||!Object.keys(edits).length} onClick={save}
       className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
       {busy?"Saving…":`Save ${Object.keys(edits).length||""} change${Object.keys(edits).length===1?"":"s"}`}</button>
+    </>}
+  </div>;
+}
+
+function AddStock({rows,onChanged}){
+  const [key,setKey]=useState(""),[qty,setQty]=useState(""),[busy,setBusy]=useState(false),[message,setMessage]=useState("");
+  const selected=rows.find(row=>row.key===key);
+  async function save(){
+    const amount=Number(qty);
+    if(!selected||!Number.isFinite(amount)||amount<=0){setMessage("Choose a material and enter a quantity greater than zero.");return;}
+    setBusy(true);setMessage("");
+    try{
+      await api.patchReference({stock_meta:{[selected.key]:{rec:Number(selected.rec||0)+amount}}});
+      await onChanged();setQty("");setMessage(`${fmt(amount)} ${selected.uom} added to ${selected.name}.`);
+    }catch(e){setMessage(e.message||String(e));}finally{setBusy(false);}
+  }
+  return <div className="max-w-3xl">
+    <div className="text-sm font-semibold text-slate-700">Add received stock</div>
+    <div className="text-xs text-slate-500 mt-1 mb-4">Select an existing material and enter the received quantity. The stock register updates automatically.</div>
+    <div className="flex gap-3 flex-wrap items-end">
+      <label className="text-xs text-slate-600 flex-1 min-w-64">Material
+        <select value={key} onChange={e=>setKey(e.target.value)} className="block mt-1 w-full border border-slate-300 rounded-lg px-2 py-2 bg-white text-sm">
+          <option value="">Select material…</option>{rows.map(row=><option key={row.key} value={row.key}>{row.name} · {row.uom}</option>)}
+        </select></label>
+      <label className="text-xs text-slate-600">Quantity received
+        <input aria-label="Quantity received" type="number" min="0" step="0.01" value={qty} onChange={e=>setQty(e.target.value)}
+          className="block mt-1 w-36 border border-slate-300 rounded-lg px-2 py-2 mono text-right"/></label>
+      <button disabled={busy} onClick={save} className="text-xs font-semibold px-4 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50">{busy?"Saving…":"Add stock"}</button>
+    </div>
+    {selected&&<div className="mt-3 text-xs text-slate-600">Current stock: <b className="mono">{fmt(selected.stock)} {selected.uom}</b></div>}
+    {message&&<div className="mt-3 text-xs text-slate-700">{message}</div>}
+  </div>;
+}
+
+function MtoStock({state}){
+  const orders=(state&&state.orders||[]).filter(order=>/\bMTO\b/i.test(String(order.pi&&order.pi.order_nature||"")));
+  return <div className="overflow-x-auto">
+    <div className="text-sm font-semibold text-slate-700">MTO material availability</div>
+    <div className="text-xs text-slate-500 mt-1 mb-3">Only live orders whose Order Nature is MTO are shown. Requirements and shortfall come from their existing BOMs and the current stock register.</div>
+    <table className="w-full text-xs" style={{minWidth:820}}><thead><tr className="sign text-slate-500">
+      {['Order / PI','Party','Article','Material','Required','Covered','Shortfall','UOM'].map(h=><th key={h} className={`py-2 px-2 ${['Required','Covered','Shortfall'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
+    </tr></thead><tbody>{orders.flatMap(order=>{
+      const group=(state.procurement_by_order||{})[order.order_no];
+      const materials=group&&group.materials||[];
+      return materials.map((m,index)=><tr key={`${order.order_no}-${m.material_key}`} className="border-t border-slate-100" style={{background:m.shortfall>0?'#fff7ed':'#fff'}}>
+        <td className="py-2 px-2">{index===0&&<><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi&&order.pi.pi_no||'No PI'}</div></>}</td>
+        <td className="px-2">{index===0?order.party:''}</td><td className="px-2">{index===0?order.article:''}</td><td className="px-2">{m.name}</td>
+        <td className="px-2 mono text-right">{fmt(m.required)}</td><td className="px-2 mono text-right">{fmt(m.covered)}</td>
+        <td className={`px-2 mono text-right font-semibold ${m.shortfall>0?'text-amber-700':'text-emerald-700'}`}>{fmt(m.shortfall)}</td><td className="px-2">{m.uom}</td>
+      </tr>);
+    })}</tbody></table>
+    {!orders.length&&<div className="text-sm text-slate-500 text-center py-8">No live order is marked MTO.</div>}
+    {!!orders.length&&!orders.some(order=>((state.procurement_by_order||{})[order.order_no]||{}).materials?.length)&&<div className="text-sm text-amber-700 text-center py-8">These MTO orders do not yet have BOM material requirements.</div>}
   </div>;
 }
 

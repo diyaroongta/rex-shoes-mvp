@@ -81,6 +81,12 @@ test("a planner changes the plan but raises no invoice or dispatch", () => {
     assert.equal(allow("planner", method, url), false, `planner must not ${method} ${url}`);
 });
 
+test("a planner records production achievement without gaining dispatch rights", () => {
+  assert.equal(allow("planner","POST","/api/dispatches?resource=production_actuals",{rows:[{}]}),true);
+  assert.equal(allow("planner","POST","/api/dispatches",{}),false);
+  assert.equal(allow("viewer","POST","/api/dispatches?resource=production_actuals",{rows:[{}]}),false);
+});
+
 test("but the plan is still a change, so the screen is not read-only", () => {
   assert.equal(isReadOnly("planner"), false);
 });

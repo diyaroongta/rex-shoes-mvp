@@ -220,6 +220,80 @@ async function repairs(req, res){
   return fail(res, 405, `${req.method} not allowed`);
 }
 
+/* Shop-floor production input.  This deliberately records only the one fact
+   the plan cannot know: pairs achieved. Article, customer, sizes, stage and
+   planned quantity all come from the live schedule and are snapshotted here
+   so an uploaded weekly sheet remains auditable after the plan moves. */
+async function productionActuals(req, res){
+  if(req.method === "GET"){
+    const { rows }=await q(
+      `select id, production_on, work_center, stage, order_no, unit_key, job_card_no, article, party,
+              size_ranges, planned_pairs, actual_pairs, note, created_by, updated_at
+         from production_actuals order by production_on desc, work_center, order_no`);
+    return res.status(200).json(rows.map(row=>({...row,
+      production_on:row.production_on instanceof Date
+        ?row.production_on.toISOString().slice(0,10):String(row.production_on).slice(0,10),
+      planned_pairs:Number(row.planned_pairs),actual_pairs:Number(row.actual_pairs)})));
+  }
+
+  if(req.method === "POST"){
+    const input=Array.isArray(req.body&&req.body.rows)?req.body.rows:[];
+    if(!input.length) return fail(res,400,"rows is required");
+    if(input.length>1000) return fail(res,400,"Upload at most 1,000 production rows at a time");
+    const clean=[];
+    for(const [i,row] of input.entries()){
+      const line=i+1,production_on=String(row.production_on||"").slice(0,10);
+      const work_center=String(row.work_center||"").trim();
+      const stage=String(row.stage||"").trim();
+      const order_no=String(row.order_no||"").trim();
+      const unit_key=String(row.unit_key||order_no).trim();
+      const actual_pairs=Number(row.actual_pairs),planned_pairs=Number(row.planned_pairs);
+      if(!validDate(production_on)||!production_on) return fail(res,400,`Row ${line}: production date is invalid`);
+      if(!work_center||!stage||!order_no) return fail(res,400,`Row ${line}: work centre, stage and order number are required`);
+      if(!Number.isInteger(actual_pairs)||actual_pairs<0) return fail(res,400,`Row ${line}: achieved pairs must be a whole number`);
+      if(!Number.isInteger(planned_pairs)||planned_pairs<0) return fail(res,400,`Row ${line}: planned pairs must be a whole number`);
+      if(!unit_key) return fail(res,400,`Row ${line}: plan row ID is required`);
+      clean.push({production_on,work_center,stage,order_no,unit_key,
+        job_card_no:String(row.job_card_no||"").trim(),
+        article:String(row.article||"").trim(),party:String(row.party||"").trim(),
+        size_ranges:String(row.size_ranges||"").trim(),planned_pairs,actual_pairs,
+        note:String(row.note||"").trim().slice(0,500)});
+    }
+    const orderNos=[...new Set(clean.map(row=>row.order_no))];
+    const { rows:live }=await q("select order_no from orders where active and order_no = any($1::text[])",[orderNos]);
+    const liveSet=new Set(live.map(row=>String(row.order_no)));
+    const missing=orderNos.filter(no=>!liveSet.has(no));
+    if(missing.length) return fail(res,409,`These orders are no longer live: ${missing.join(", ")}`);
+
+    const client=await db().connect();
+    try{
+      await client.query("begin");
+      const saved=[];
+      for(const row of clean){
+        const { rows }=await client.query(
+          `insert into production_actuals
+             (production_on, work_center, stage, order_no, unit_key, job_card_no, article, party,
+              size_ranges, planned_pairs, actual_pairs, note, created_by)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           on conflict (production_on, work_center, stage, unit_key) do update set
+             order_no=excluded.order_no, job_card_no=excluded.job_card_no,
+             article=excluded.article, party=excluded.party, size_ranges=excluded.size_ranges,
+             planned_pairs=excluded.planned_pairs, actual_pairs=excluded.actual_pairs,
+             note=excluded.note, created_by=excluded.created_by, updated_at=now()
+           returning id, production_on, work_center, stage, order_no, unit_key, job_card_no, planned_pairs, actual_pairs, note`,
+          [row.production_on,row.work_center,row.stage,row.order_no,row.unit_key,row.job_card_no,row.article,row.party,
+           row.size_ranges,row.planned_pairs,row.actual_pairs,row.note,(req.user||{}).username||null]);
+        saved.push(rows[0]);
+      }
+      await client.query("commit");
+      return res.status(200).json({saved:saved.length,rows:saved});
+    }catch(error){ await client.query("rollback"); throw error; }
+    finally{ client.release(); }
+  }
+
+  return fail(res,405,`${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
   if(String((req.query||{}).resource||"") === "job_work"
      || (req.body && req.body.resource === "job_work"))
@@ -228,6 +302,10 @@ export default wrap(async (req, res) => {
   if(String((req.query||{}).resource||"") === "repairs"
      || (req.body && req.body.resource === "repairs"))
     return repairs(req, res);
+
+  if(String((req.query||{}).resource||"") === "production_actuals"
+     || (req.body && req.body.resource === "production_actuals"))
+    return productionActuals(req, res);
 
   if(req.method === "GET"){
     const { rows } = await q(
