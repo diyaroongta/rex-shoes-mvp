@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { todayIso } from "./lib/today.js";
 import * as api from "./lib/client.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import { pairsPerCarton, comboSizesForArticle } from "../shared/bridge.js";
@@ -6,7 +7,7 @@ import { repairLedger, repairTotals, repairProductionPlan, validateMovement, MOV
   from "../shared/repair.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
-const today = () => new Date().toISOString().slice(0,10);
+const today = () => todayIso();
 
 /* Repair, between production and dispatch.
  *

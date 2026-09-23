@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
+import { todayIso } from "./lib/today.js";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { labelFor, familyOf, parseCode } from "../shared/product-codes.js";
 import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
@@ -659,7 +660,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [rawRead,setRawRead]=useState("");   // exactly what the reader returned, for diagnosing bad reads      // [{article, lines:[{combo,cartons,ppc,exact}]}]
   const [party,setParty]=useState("");
   const [priority,setPriority]=useState(2);
-  const [orderDate,setOrderDate]=useState(new Date().toISOString().slice(0,10));
+  const [orderDate,setOrderDate]=useState(todayIso());
   const cataloguePrices=()=>Object.fromEntries(Object.entries(CATALOGUE||{})
     .filter(([,entry])=>entry&&entry.price!=null&&Number.isFinite(Number(entry.price)))
     .map(([article,entry])=>[article,Number(entry.price)]));
@@ -3227,7 +3228,7 @@ function ScheduleTab({state,setPlanOverride}){
   const minDay=Math.min(...rows.map(o=>Math.min(...o.stages.map(s=>s.start))),0);
   const span=maxDay-minDay+1;
   const days=Array.from({length:span},(_,i)=>minDay+i);
-  const todayIdx=dayIndex(new Date().toISOString().slice(0,10), INPUTS.origin);
+  const todayIdx=dayIndex(todayIso(), INPUTS.origin);
   const showToday=todayIdx>=minDay&&todayIdx<=maxDay;
   const tickEvery=span>90?14:7;
   const ticks=days.filter(d=>((d-minDay)%tickEvery)===0);
@@ -3434,7 +3435,7 @@ function ScheduleTab({state,setPlanOverride}){
 function ProcurementTab({state}){
   const [showAll,setShowAll]=useState(false);
   const [leadDays,setLeadDays]=useState(7);
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayIso();
 
   const timing=useMemo(
     ()=>neededBy(state.procurement_by_order||{}, state.orders||[], INPUTS.articles||{}),

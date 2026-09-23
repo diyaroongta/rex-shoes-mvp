@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { todayIso } from "./lib/today.js";
 import { statusBoard } from "../shared/stage-status.js";
 import { fyWeek } from "../shared/fy-calendar.js";
 
@@ -19,7 +20,7 @@ const SLA_COLOR = {on_track:"#047857",at_risk:"#b45309",breach:"#b91c1c"};
 export default function StatusTab({ state, jobs = [], dispatches = [] }){
   const [level, setLevel] = useState("units");     // job cards, or whole orders
   const [onlyBehind, setOnlyBehind] = useState(false);
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayIso();
   const week = fyWeek(today);
 
   const rows = level === "units" && (state.units||[]).length ? state.units : state.orders;

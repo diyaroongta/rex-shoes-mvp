@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
+import { todayIso } from "./lib/today.js";
 import * as XLSX from "xlsx";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { fromDay, workCentresInOrder } from "../shared/engine.js";
@@ -112,7 +113,7 @@ export function workbookFor(rows, weekStart){
 }
 
 export default function ProductionInputTab({state,actuals=[],onChanged}){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayIso();
   const [weekStart,setWeekStart]=useState(()=>mondayOf(today));
   const [busy,setBusy]=useState(false),[message,setMessage]=useState(""),[error,setError]=useState("");
   const fileRef=useRef(null);

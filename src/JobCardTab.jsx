@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { todayIso } from "./lib/today.js";
 import * as api from "./lib/client.js";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import JobCard from "./JobCard.jsx";
@@ -12,7 +13,7 @@ import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
 import { jobCardIssueRows, issuePatch } from "../shared/stock.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
-const today = () => new Date().toISOString().slice(0,10);
+const today = () => todayIso();
 const shortDate = iso => {
   const d=new Date(iso);
   return isNaN(d) ? String(iso).slice(0,10)
