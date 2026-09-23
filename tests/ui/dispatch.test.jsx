@@ -71,6 +71,26 @@ it("does not offer a packing list for a dispatch that never had one",async()=>{
   expect(screen.queryByRole("button",{name:"Packing list for JO1"})).toBeNull();
 });
 
+it("segregates packing reports inside their own order",async()=>{
+  const orders=[
+    {order_no:"JO1",party:"A2Z",article:"BOLT",lines:[{combo:"7X10S",qty:240}]},
+    {order_no:"JO2",party:"MTS",article:"GOLA",lines:[{combo:"7X10S",qty:240}]},
+  ];
+  const dispatches=[
+    {id:1,order_no:"JO1",dispatched:{"7X10S":20},cartons:{"7X10S":1},kind:"partial",dispatched_on:"2026-04-14"},
+    {id:2,order_no:"JO2",dispatched:{"7X10S":30},cartons:{"7X10S":2},kind:"partial",dispatched_on:"2026-04-15"},
+    {id:3,order_no:"JO1",dispatched:{"7X10S":40},cartons:{"7X10S":2},kind:"partial",dispatched_on:"2026-04-16"},
+  ];
+  render(<DispatchTab orders={orders} dispatches={dispatches} onChanged={()=>{}}/>);
+
+  const jo1=screen.getByRole("region",{name:"Packing reports for order JO1"});
+  const jo2=screen.getByRole("region",{name:"Packing reports for order JO2"});
+  expect(jo1).toHaveTextContent("2 reports");
+  expect(jo1).toHaveTextContent("60 pairs");
+  expect(jo2).toHaveTextContent("1 report");
+  expect(jo2).toHaveTextContent("30 pairs");
+});
+
 it("counts cartons per size on the packing list, and totals what was entered",async()=>{
   const user=userEvent.setup();
   const order={order_no:"JO1",party:"THE UNIFORM WORLD",article:"SPIKE",article_code:"SPIKE",

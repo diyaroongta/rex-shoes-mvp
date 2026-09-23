@@ -116,6 +116,24 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
 
   const list=Object.values(pending);
   const totals=ledgerTotals(pending);
+  const reportsByOrder=useMemo(()=>{
+    const groups=new Map();
+    for(const d of dispatches.filter(row=>!row.hidden)){
+      const key=String(d.order_no||"");
+      if(!groups.has(key)){
+        const order=(orders||[]).find(o=>String(o.order_no)===key)||{};
+        groups.set(key,{order_no:key,party:order.party||"",article:order.article_code||order.article||"",reports:[]});
+      }
+      groups.get(key).reports.push(d);
+    }
+    return [...groups.values()].map(group=>{
+      group.reports.sort((a,b)=>String(b.dispatched_on||"").localeCompare(String(a.dispatched_on||""))||Number(b.id||0)-Number(a.id||0));
+      group.pairs=group.reports.reduce((sum,d)=>sum+Object.values(d.dispatched||{}).reduce((a,b)=>a+(Number(b)||0),0),0);
+      group.cartons=group.reports.reduce((sum,d)=>sum+Object.values(d.cartons||{}).reduce((a,b)=>a+(Number(b)||0),0),0);
+      group.latest=group.reports[0]?.dispatched_on||"";
+      return group;
+    }).sort((a,b)=>String(b.latest).localeCompare(String(a.latest))||a.order_no.localeCompare(b.order_no));
+  },[dispatches,orders]);
 
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
@@ -425,33 +443,44 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
         <PackingList data={viewing.sheet} />
       </div>)}
 
-    {!!dispatches.length && (
+    {!!reportsByOrder.length && (
       <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm mt-4">
-        <div className="text-sm font-semibold text-slate-700 mb-2">Dispatch history</div>
+        <div className="text-sm font-semibold text-slate-700">Order packing reports</div>
+        <p className="text-xs text-slate-500 mt-0.5 mb-3">
+          Reports are kept inside their order so separate partial dispatches never get mixed with another order.
+        </p>
         {(err||msg) && <div ref={historyMsgRef}
           className={`text-xs rounded-lg border px-3 py-2 mb-2 ${err
             ?"border-rose-200 bg-rose-50 text-rose-800":"border-emerald-200 bg-emerald-50 text-emerald-900"}`}>
           {err||msg}</div>}
-        <table className="w-full text-xs">
-          <thead><tr className="text-slate-500">
-            <th className="text-left py-1">Date</th><th className="text-left">Order</th>
-            <th className="text-left">Type</th><th className="text-left">Sent</th>
-            <th className="text-left">Note</th><th></th></tr></thead>
-          <tbody>
-            {dispatches.filter(d=>!d.hidden).map(d=>(
-              <tr key={d.id} className="border-t border-slate-100">
-                <td className="py-1 mono">{d.dispatched_on}</td>
-                <td className="mono">{d.order_no}</td>
+        <div className="space-y-3">
+          {reportsByOrder.map(group=><section key={group.order_no}
+            aria-label={`Packing reports for order ${group.order_no}`}
+            className="rounded-xl border border-slate-200 overflow-hidden">
+            <div className="bg-slate-50 px-3 py-2 flex gap-3 items-center flex-wrap">
+              <div className="mono text-sm font-semibold text-slate-800">{group.order_no}</div>
+              <div className="text-xs text-slate-600">{group.article||"—"}{group.party?` · ${group.party}`:""}</div>
+              <div className="ml-auto text-xs text-slate-500">
+                <b>{group.reports.length}</b> report{group.reports.length===1?"":"s"} · <b className="mono">{fmt(group.pairs)}</b> pairs
+                {group.cartons>0&&<> · <b className="mono">{fmt(group.cartons)}</b> cartons</>}
+              </div>
+            </div>
+            <div className="overflow-x-auto"><table className="w-full text-xs" style={{minWidth:760}}>
+              <thead><tr className="text-slate-500">
+                <th className="text-left px-3 py-1.5">Report</th><th className="text-left">Date</th>
+                <th className="text-left">Type</th><th className="text-left">Sent</th>
+                <th className="text-left">Note</th><th></th></tr></thead>
+              <tbody>{group.reports.map((d,index)=><tr key={d.id} className="border-t border-slate-100">
+                <td className="px-3 py-1.5 font-semibold text-slate-600">Packing report {group.reports.length-index}</td>
+                <td className="mono">{d.dispatched_on}</td>
                 <td>{d.closes_order ? <span className="text-rose-700 font-semibold">closed short</span> : d.kind}</td>
                 <td className="mono">{Object.entries(d.dispatched).map(([c,v])=>`${c}:${fmt(v)}`).join("  ")}</td>
                 <td className="text-slate-500">{d.note||""}</td>
-                <td className="text-right whitespace-nowrap">
-                  {/* Only offered where a sheet was actually entered — an
-                      empty document would be worse than none. */}
+                <td className="text-right whitespace-nowrap pr-3">
                   {d.packing_list && <button
                     onClick={()=>setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}})}
                     aria-label={`Packing list for ${d.order_no}`}
-                    className="font-semibold text-indigo-700 hover:underline mr-2">Packing list</button>}
+                    className="font-semibold text-indigo-700 hover:underline mr-2">View report</button>}
                   {confirmDel===d.id
                     ? <span className="inline-flex gap-1.5 items-center flex-wrap justify-end">
                         <span className="text-slate-700">Which one?</span>
@@ -473,9 +502,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                         title="Undo the dispatch, or just take this row off the history"
                         className="text-slate-600 font-semibold hover:underline">Remove…</button>}
                 </td>
-              </tr>))}
-          </tbody>
-        </table>
+              </tr>)}</tbody>
+            </table></div>
+          </section>)}
+        </div>
       </div>
     )}
   </div>;

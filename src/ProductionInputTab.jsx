@@ -23,33 +23,65 @@ const mondayOf=value=>{
 const plusDays=(iso,n)=>{const d=new Date(`${iso}T00:00:00`);d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
 const fmt=n=>Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:0});
 
-function workbookFor(rows, weekStart){
+export function workbookFor(rows, weekStart){
   const wb=XLSX.utils.book_new();
   const end=plusDays(weekStart,5);
   const weekly=rows.filter(row=>row.production_on>=weekStart&&row.production_on<=end);
   const centres=workCentresInOrder(INPUTS.workcenters).filter(code=>weekly.some(row=>row.work_center===code));
   const matrix=[[`WEEKLY PRODUCTION PLAN · ${weekStart} to ${end}`]];
   const header=["DAY / DATE"];
-  for(const code of centres) header.push((INPUTS.workcenters[code]||{}).name||code,"PLAN / ACTUAL");
+  for(const code of centres) header.push((INPUTS.workcenters[code]||{}).name||code,"");
   matrix.push(header);
+  matrix.push(["",...centres.flatMap(()=>["JOB DETAILS","PROPOSED / ACTUAL QTY"])]);
+  const merges=[];
   for(let offset=0;offset<6;offset++){
     const date=plusDays(weekStart,offset),label=new Date(`${date}T00:00:00`).toLocaleDateString("en-IN",{weekday:"short"}).toUpperCase();
     const groups=centres.map(code=>weekly.filter(row=>row.production_on===date&&row.work_center===code));
     const height=Math.max(1,...groups.map(group=>group.length));
+    const firstRow=matrix.length;
     for(let i=0;i<height;i++){
       const line=[i===0?`${label}\n${date}`:""];
       for(const group of groups){
         const row=group[i];
-        line.push(row?`JC NO: ${row.job_card_no||"—"}\nORDER: ${row.order_no}\nARTICLE: ${row.article}\nSIZE: ${row.size_ranges||"—"}\nPARTY: ${row.party||"—"}\nSTAGE: ${row.stage}`:"");
-        line.push(row?`PLAN: ${row.planned_pairs}\nACTUAL: ${row.actual_pairs==null?"":row.actual_pairs}`:"");
+        line.push(row?`JC NO: ${row.job_card_no||"—"}\nARTICLE NAME: ${row.article}\nSIZE: ${row.size_ranges||"—"}\nORDER: ${row.order_no}\nPARTY NAME: ${row.party||"—"}\nSTAGE: ${row.stage}`:"");
+        line.push(row?`PROPOSED: ${row.planned_pairs}\nACTUAL: ${row.actual_pairs==null?"":row.actual_pairs}`:"");
       }
       matrix.push(line);
     }
+    if(height>1) merges.push({s:{r:firstRow,c:0},e:{r:firstRow+height-1,c:0}});
   }
+  const totalRow=matrix.length;
+  const totals=["WEEK TOTAL"];
+  for(const code of centres){
+    const centreRows=weekly.filter(row=>row.work_center===code);
+    const planned=centreRows.reduce((n,row)=>n+(Number(row.planned_pairs)||0),0);
+    const actual=centreRows.reduce((n,row)=>n+(Number(row.actual_pairs)||0),0);
+    totals.push("",`PROPOSED: ${planned}\nACTUAL: ${actual}`);
+  }
+  matrix.push(totals);
   const weeklySheet=XLSX.utils.aoa_to_sheet(matrix);
   weeklySheet["!cols"]=[{wch:15},...centres.flatMap(()=>[{wch:34},{wch:16}])];
-  weeklySheet["!rows"]=matrix.map((_,i)=>({hpt:i<2?24:62}));
-  weeklySheet["!merges"]=[{s:{r:0,c:0},e:{r:0,c:Math.max(0,header.length-1)}}];
+  weeklySheet["!rows"]=matrix.map((_,i)=>({hpt:i===0?28:i<3?24:i===totalRow?34:72}));
+  weeklySheet["!merges"]=[{s:{r:0,c:0},e:{r:0,c:Math.max(0,header.length-1)}},...merges];
+  for(let i=0;i<centres.length;i++) weeklySheet["!merges"].push({s:{r:1,c:1+i*2},e:{r:1,c:2+i*2}});
+  weeklySheet["!freeze"]={xSplit:1,ySplit:3,topLeftCell:"B4",activePane:"bottomRight",state:"frozen"};
+  weeklySheet["!autofilter"]={ref:`A3:${XLSX.utils.encode_col(Math.max(0,header.length-1))}${matrix.length}`};
+  weeklySheet["!margins"]={left:0.25,right:0.25,top:0.5,bottom:0.5,header:0.2,footer:0.2};
+  const border={top:{style:"thin",color:{rgb:"334155"}},bottom:{style:"thin",color:{rgb:"334155"}},left:{style:"thin",color:{rgb:"334155"}},right:{style:"thin",color:{rgb:"334155"}}};
+  for(let r=0;r<matrix.length;r++) for(let c=0;c<header.length;c++){
+    const addr=XLSX.utils.encode_cell({r,c});
+    if(!weeklySheet[addr]) weeklySheet[addr]={t:"s",v:""};
+    weeklySheet[addr].s={border,alignment:{vertical:"center",horizontal:c===0?"center":"left",wrapText:true},font:{name:"Arial",sz:9}};
+  }
+  weeklySheet.A1.s={...weeklySheet.A1.s,fill:{patternType:"solid",fgColor:{rgb:"FFF200"}},font:{name:"Arial",sz:14,bold:true},alignment:{horizontal:"center",vertical:"center"}};
+  for(let c=0;c<header.length;c++){
+    for(const r of [1,2]){
+      const cell=weeklySheet[XLSX.utils.encode_cell({r,c})];
+      cell.s={...cell.s,fill:{patternType:"solid",fgColor:{rgb:r===1?"F9B51B":"FFE7A3"}},font:{name:"Arial",sz:9,bold:true},alignment:{horizontal:"center",vertical:"center",wrapText:true}};
+    }
+    const cell=weeklySheet[XLSX.utils.encode_cell({r:totalRow,c})];
+    cell.s={...cell.s,fill:{patternType:"solid",fgColor:{rgb:"F9B51B"}},font:{name:"Arial",sz:9,bold:true},alignment:{horizontal:c===0?"center":"left",vertical:"center",wrapText:true}};
+  }
   XLSX.utils.book_append_sheet(wb,weeklySheet,"Weekly Planning Output");
 
   const input=[HEADERS,...weekly.map(row=>[
@@ -60,6 +92,12 @@ function workbookFor(rows, weekStart){
   const inputSheet=XLSX.utils.aoa_to_sheet(input);
   inputSheet["!cols"]=[{wch:16},{wch:20},{wch:26},{wch:16},{wch:15},{wch:15},{wch:24},{wch:18},{wch:22},{wch:16},{wch:17},{wch:30},{wch:24}];
   inputSheet["!autofilter"]={ref:`A1:M${Math.max(1,input.length)}`};
+  inputSheet["!freeze"]={xSplit:0,ySplit:1,topLeftCell:"A2",activePane:"bottomLeft",state:"frozen"};
+  for(let c=0;c<HEADERS.length;c++){
+    const cell=inputSheet[XLSX.utils.encode_cell({r:0,c})];
+    cell.s={fill:{patternType:"solid",fgColor:{rgb:"FFF200"}},font:{name:"Arial",sz:10,bold:true},
+      alignment:{horizontal:"center",vertical:"center",wrapText:true},border};
+  }
   XLSX.utils.book_append_sheet(wb,inputSheet,"Daily Input");
   return wb;
 }
@@ -76,7 +114,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged}){
   const visible=rows.filter(row=>row.production_on>=weekStart&&row.production_on<=weekEnd);
 
   function download(){
-    XLSX.writeFile(workbookFor(rows,weekStart),`production-plan-${weekStart}.xlsx`);
+    XLSX.writeFile(workbookFor(rows,weekStart),`weekly-production-plan-${weekStart}.xlsx`,{cellStyles:true});
     setMessage("Weekly plan downloaded. Fill only Achieved Pairs and Note on the Daily Input sheet, then upload the same file.");
   }
 

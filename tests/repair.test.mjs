@@ -1,6 +1,7 @@
 /* Repair, between production and dispatch. Run: npm test */
 import assert from "node:assert/strict";
-import { validateMovement, repairLedger, heldByRepair, heldByCombo, repairTotals, repairRate, MOVEMENTS }
+import { validateMovement, repairLedger, heldByRepair, heldByCombo, repairTotals, repairRate,
+         repairProductionPlan, MOVEMENTS }
   from "../shared/repair.js";
 
 let passed = 0, failed = 0;
@@ -194,6 +195,30 @@ test("a size on no line at all is held at order level", () => {
 test("an order with nothing in repair holds nothing", () => {
   assert.deepEqual(heldByCombo(repairLedger([]), ORDER), { by_combo:{}, unattributed:0, total:0 });
   assert.deepEqual(heldByCombo({}, undefined), { by_combo:{}, unattributed:0, total:0 });
+});
+
+console.log("\nG — repair production is planned against dispatch");
+
+test("the repair plan lists only quantities still on the bench", () => {
+  const rows = repairProductionPlan([
+    ev("JO1","8","sent",12), ev("JO1","8","returned",5),
+    ev("JO1","9","sent",3), ev("JO1","9","rejected",3),
+  ], [{order_no:"JO1",article:"BOLT",party:"A2Z",dispatch_date:"2026-09-25"}], "2026-09-22");
+  assert.deepEqual(rows, [{order_no:"JO1",article:"BOLT",party:"A2Z",size:"8",qty:7,
+    dispatch_on:"2026-09-25",status:"Before dispatch"}]);
+});
+
+test("overdue and today's dispatch repairs come first", () => {
+  const rows = repairProductionPlan([
+    ev("LATER","8","sent",2), ev("TODAY","8","sent",3), ev("LATE","8","sent",4),
+  ], [
+    {order_no:"LATER",dispatch_date:"2026-09-28"},
+    {order_no:"TODAY",dispatch_date:"2026-09-22"},
+    {order_no:"LATE",dispatch_date:"2026-09-20"},
+  ], "2026-09-22");
+  assert.deepEqual(rows.map(r=>[r.order_no,r.status]), [
+    ["LATE","Dispatch overdue"], ["TODAY","Dispatch today"], ["LATER","Before dispatch"],
+  ]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
