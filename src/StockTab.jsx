@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
+import { stockSheetRows, stockPatchFromRows } from "../shared/stock-upload.js";
 
 /* Stock register in the factory's own STOCK MASTER layout:
    S.N · Category · Item Description · Size · UOM · Opening · Rec. · Issue ·
@@ -53,6 +54,8 @@ export default function StockTab({ state, onChanged }){
   const [view,setView]=useState("all");
   const [adding,setAdding]=useState(null);
   const [err,setErr]=useState("");
+  const [pendingUpload,setPendingUpload]=useState(null);
+  const fileRef=useRef(null);
 
   const meta = INPUTS.stock_meta || {};
 
@@ -124,14 +127,49 @@ export default function StockTab({ state, onChanged }){
   }
 
   function exportSheet(){
-    const header=["S.N","CATEGORY","ITEM DESCRIPTION","SIZE","UOM","OPENING STOCK","REC.","ISSUE",
-      "STOCK","MIN. STOCK","ALERT","ORDER QUANTITY","RATE","STOCK VALUE"];
-    const body=shown.map(r=>[r.sn,r.category,r.name,r.size,r.uom,r.opening,r.rec,r.issue,
-      r.stock,r.min,r.alert?"LOW":"",r.order_qty,r.rate,r.value]);
-    const ws=XLSX.utils.aoa_to_sheet([header,...body]);
+    const ws=XLSX.utils.aoa_to_sheet(stockSheetRows(rows));
+    ws["!cols"]=[{wch:6},{hidden:true},{wch:18},{wch:38},{wch:12},{wch:10},{wch:15},{wch:16},{wch:14},{wch:14},{wch:13},{wch:10},{wch:16},{wch:12},{wch:16}];
+    ws["!autofilter"]={ref:`A1:O${rows.length+1}`};
+    ws["!freeze"]={xSplit:0,ySplit:1,topLeftCell:"A2",activePane:"bottomLeft",state:"frozen"};
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,"STOCK MASTER");
-    XLSX.writeFile(wb,"stock-master.xlsx");
+    const help=XLSX.utils.aoa_to_sheet([
+      ["HOW TO UPDATE STOCK"],
+      ["Edit only these columns on STOCK MASTER:"],
+      ["CATEGORY, SIZE, OPENING STOCK, TOTAL RECEIVED, TOTAL ISSUED, MIN. STOCK and RATE"],
+      ["Do not change ITEM DESCRIPTION or UOM. STOCK, ALERT, ORDER QUANTITY and STOCK VALUE are calculated after upload."],
+      ["TOTAL RECEIVED and TOTAL ISSUED are cumulative totals, not today's movement."],
+    ]);
+    help["!cols"]=[{wch:115}];
+    XLSX.utils.book_append_sheet(wb,help,"READ ME");
+    XLSX.writeFile(wb,"stock-master-input.xlsx");
+  }
+
+  async function readUpload(file){
+    setErr("");setMsg("");setPendingUpload(null);
+    try{
+      const wb=XLSX.read(await file.arrayBuffer(),{type:"array",cellDates:false});
+      const ws=wb.Sheets["STOCK MASTER"];
+      if(!ws) throw new Error('The workbook needs a sheet named "STOCK MASTER". Download a fresh input sheet first.');
+      const checked=stockPatchFromRows(XLSX.utils.sheet_to_json(ws,{defval:"",raw:true}),rows);
+      if(!checked.ok) throw new Error(checked.problems.slice(0,10).join("; "));
+      if(!checked.changes.length){setMsg("No stock values changed in this workbook.");return;}
+      setPendingUpload(checked);
+    }catch(e){setErr(e.message||String(e));}
+    finally{if(fileRef.current)fileRef.current.value="";}
+  }
+
+  async function applyUpload(){
+    if(!pendingUpload)return;
+    setBusy(true);setErr("");setMsg("");
+    try{
+      await api.patchReference({stock_meta:pendingUpload.patch});
+      await reloadReference();
+      const count=pendingUpload.changes.length;
+      setPendingUpload(null);setMsg(`${count} stock item${count===1?"":"s"} updated from the spreadsheet.`);
+      if(onChanged)await onChanged();
+    }catch(e){setErr(e.message||String(e));}
+    finally{setBusy(false);}
   }
 
   const TH={fontSize:10,fontWeight:700,padding:"5px 6px",background:"#1F3A5F",color:"#fff",
@@ -176,10 +214,33 @@ export default function StockTab({ state, onChanged }){
         {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
       </select>
       <button onClick={exportSheet}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Export</button>
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Download input sheet</button>
+      <label className={`text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white ${busy?"opacity-50":"cursor-pointer"}`}>
+        Upload completed sheet
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" disabled={busy} className="hidden"
+          onChange={e=>e.target.files[0]&&readUpload(e.target.files[0])}/>
+      </label>
     </div>
 
     {err && <div role="alert" className="mb-3 text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2">{err}</div>}
+    {pendingUpload&&<div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+      <div className="text-xs font-semibold text-amber-900">Check before updating</div>
+      <div className="text-xs text-amber-800 mt-1">
+        {pendingUpload.changes.length} material{pendingUpload.changes.length===1?"":"s"} will change. Calculated columns are ignored.
+      </div>
+      <div className="text-[11px] text-amber-800 mt-2">
+        {pendingUpload.changes.slice(0,8).map(change=><div key={change.key}>
+          {change.name}: {change.fields.join(", ")}</div>)}
+        {pendingUpload.changes.length>8&&<div>…and {pendingUpload.changes.length-8} more</div>}
+      </div>
+      <div className="flex gap-2 mt-3">
+        <button disabled={busy} onClick={applyUpload}
+          className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
+          {busy?"Updating…":"Apply spreadsheet changes"}</button>
+        <button disabled={busy} onClick={()=>setPendingUpload(null)}
+          className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Cancel</button>
+      </div>
+    </div>}
     <div className="flex gap-4 flex-wrap mb-3 text-xs">
       <span className="text-slate-500">Items <b className="mono text-slate-800">{shown.length}</b></span>
       <span className="text-slate-500">Total stock <b className="mono text-slate-800">{fmt(totals.stock)}</b></span>

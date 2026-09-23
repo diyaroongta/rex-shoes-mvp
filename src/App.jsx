@@ -29,6 +29,7 @@ import RepairTab from "./RepairTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import ProductionInputTab from "./ProductionInputTab.jsx";
 import ProfilesTab from "./ProfilesTab.jsx";
+import ChangePassword from "./ChangePassword.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { productionUnits } from "../shared/production-units.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
@@ -498,6 +499,7 @@ export default function App({ user=null, onSignOut=null }={}){
                       {ROLE_LABEL[user.role] || user.role}
                     </div>
                   </div>
+                  <ChangePassword />
                   {onSignOut && (
                     <button onClick={onSignOut} title="Sign out"
                       style={{padding:"5px 10px",fontSize:12,fontWeight:600,color:"#33465C",
