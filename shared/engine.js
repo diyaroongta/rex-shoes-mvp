@@ -303,7 +303,16 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
     if(ov.seq!=null)
       warnings.push({order_no:o.order_no,stage:null,kind:"sequence_forced",
         message:`Pinned to queue position ${ov.seq}, ahead of the priority-and-date order.`});
+    /* A BATCH is released on its own card date, but the delivery promise was
+       made on the ORDER's date and does not move because a batch went out
+       late — that slippage is the very thing the SLA exists to show. So the
+       target is measured from `target_base_date` when a unit carries one, and
+       from the release day otherwise, which is every order scheduled whole. */
+    const targetBase=o.target_base_date!=null?Math.max(0,dayIndex(o.target_base_date,origin)):r;
     res[o.order_no]={order_no:o.order_no,qty,priority:o.priority,release_day:r,stages,dispatch_day:prevEnd,
+      target_base:targetBase,
+      unit_key:o.unit_key||o.order_no,unit_kind:o.unit_kind||"order",
+      source_order_no:o.source_order_no||o.order_no,
       overridden:hasOverride(overrides[o.order_no])};
   }
   return {orders:res,load:used,forced_load:forcedLoad,warnings};
@@ -336,8 +345,9 @@ export function slaEval(sched, riskWindow=3, targets=TARGETS){
   const out={};
   for(const [no,o] of Object.entries(sched.orders)){
     let worst="on_track"; const rows=[];
+    const base=o.target_base==null?o.release_day:o.target_base;
     for(const s of o.stages){ const off=targets[s.stage]; if(off==null)continue;
-      const target=o.release_day+off, slip=s.end-target;
+      const target=base+off, slip=s.end-target;
       const status=slip<=0?"on_track":slip<=riskWindow?"at_risk":"breach";
       if(RANK[status]>RANK[worst])worst=status;
       rows.push({stage:s.stage,target_day:target,slip_days:slip,status}); }
@@ -408,6 +418,68 @@ export function shortfallByPi(byOrder){
   return out;
 }
 
+/* ------------- PLAN OVERRIDES WHEN AN ORDER RUNS AS BATCHES ---------------
+   An override was written against an ORDER, and the planner now schedules its
+   JOB CARDS. Two of the four fields survive that move unchanged and two do
+   not:
+
+     machine, days   a stage-level decision — "mould this article on the
+                     vertical", "cutting takes two days". True of every batch,
+                     so every batch inherits it.
+     seq, start_on   a decision about ONE piece of work in the queue. Applying
+                     "start on the 14th" to five batches would release all
+                     5 x 2,000 pairs on one day, which is the opposite of what
+                     splitting them was for.
+
+   So seq and start_on are NOT applied to a multi-batch order, and the planner
+   is told in as many words that the pin belongs on a card. Silently spreading
+   it — or silently dropping it — are both worse than saying so. */
+export function overridesForUnits(units, overrides={}){
+  const map={}, notes=[]; const told=new Set();
+  for(const u of units||[]){
+    const key=u.unit_key||u.order_no, parent=u.source_order_no||key;
+    if(overrides[key]){ map[key]=overrides[key]; continue; }
+    if(key===parent||!overrides[parent]) continue;
+    const n=normalizeOverride(overrides[parent]);
+    const machine=Object.keys(n.machine).length?n.machine:null;
+    const days=Object.keys(n.days).length?n.days:null;
+    if(machine||days) map[key]={...(machine?{machine}:{}),...(days?{days}:{})};
+    if((n.seq!=null||n.start_on!=null)&&!told.has(parent)){
+      told.add(parent);
+      const what=[n.seq!=null?"queue position":null,n.start_on!=null?`start date ${n.start_on}`:null]
+        .filter(Boolean).join(" and ");
+      notes.push({order_no:parent,stage:null,kind:"override_not_applied",
+        message:`${parent} runs as separate job cards, so the pinned ${what} was not applied to it. `
+          +`Pin the job card instead — each batch takes its own place in the queue.`});
+    }
+  }
+  return {overrides:map,notes};
+}
+
+/* One row of an order's own gantt, merged from the batches that make it up.
+   An order that runs as one unit keeps exactly the row it had before. */
+function mergeStageRows(rows, wcs, origin){
+  const first=rows[0];
+  const start=Math.min(...rows.map(r=>r.start));
+  const end=Math.max(...rows.map(r=>r.end));
+  const ready=Math.min(...rows.map(r=>r.start-(r.queue_wait_days||0)));
+  const alloc={};
+  for(const r of rows) for(const [d,v] of Object.entries(r.alloc||{})) alloc[d]=(alloc[d]||0)+v;
+  const centres=[...new Set(rows.map(r=>r.work_center).filter(Boolean))];
+  const worst=rows.reduce((w,r)=>RANK[r.status]>RANK[w]?r.status:w,"on_track");
+  return {...first, start, end, alloc,
+    /* Batches of one order can legitimately run on DIFFERENT machines — that
+       is what a machine override per card is for — so the merged row names
+       them all rather than picking one and being wrong on the others. */
+    work_center:centres.length===1?centres[0]:null, work_centers:centres,
+    capacity_per_day:centres.length===1?(wcs[centres[0]]||{}).capacity_per_day:null,
+    start_date:fromDay(start,origin), end_date:fromDay(end,origin),
+    ready_date:fromDay(ready,origin), queue_wait_days:Math.max(0,start-ready),
+    duration_days:end-start+1,
+    slip_days:Math.max(...rows.map(r=>r.slip_days==null?0:r.slip_days)),
+    status:worst, batch_count:rows.length};
+}
+
 export function compute(orders, articles, materials, wcs, origin, opts={}){
   const targets={...TARGETS, ...(opts.targets||{})};
   const riskWindow=opts.riskWindow==null?3:opts.riskWindow;
@@ -423,7 +495,30 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const planned=[], orphaned=[];
   for(const o of orders) (articles[o.article_code] ? planned : orphaned).push(o);
 
-  const sched=schedule(planned,articles,wcs,origin,1500,overrides);
+  /* ---------------- WHAT IS SCHEDULED: BATCHES, NOT ORDERS ----------------
+     A 10,000-pair order is a commercial fact; the floor releases it as five
+     job cards of 2,000 on five different days, and it is those cards that
+     occupy cutting and moulding. Scheduling the order instead put all 10,000
+     pairs on the machine board on day one and dated the dispatch from a
+     release that never happened.
+
+     Units come from shared/production-units.js (which the engine cannot
+     import — it is pure and import-free by design, so the caller builds them
+     and passes them in). An order with no job cards is ONE unit keyed by its
+     own order number, so everything below is unchanged for it, plan overrides
+     included. The units of an order always add up to the order, never more,
+     so material demand and the pair count do not move. */
+  const ownUnit=o=>({...o,unit_key:o.order_no,unit_kind:"order",source_order_no:o.order_no});
+  const live=new Set(planned.map(o=>o.order_no));
+  const supplied=(Array.isArray(opts.units)?opts.units:[])
+    .filter(u=>u&&articles[u.article_code]&&live.has(u.source_order_no||u.order_no));
+  const units=[...supplied];
+  const covered=new Set(units.map(u=>u.source_order_no||u.order_no));
+  for(const o of planned) if(!covered.has(o.order_no)) units.push(ownUnit(o));
+
+  const expanded=overridesForUnits(units, overrides);
+  const sched=schedule(units,articles,wcs,origin,1500,expanded.overrides);
+  sched.warnings.push(...expanded.notes);
   const problems=validateSchedule(sched,wcs);
   for(const o of orphaned)
     problems.push(`${o.order_no}: article ${o.article_code} no longer exists — `
@@ -470,13 +565,32 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const sla=slaEval(sched, riskWindow, targets);
   const netted=netting(rollup(planned,articles),materials);
   /* Attributed in the order the plan actually runs, so re-sequencing the queue
-     moves the shortfall onto whichever PI now waits for the stock. */
-  const byOrder=netByOrder(planned,articles,materials,queueOrder(planned,overrides).map(o=>o.order_no));
+     moves the shortfall onto whichever PI now waits for the stock. Batches are
+     walked in their own plan sequence: a card released in March takes the
+     stock before the card released in April, which is what happens on the
+     floor and is the whole point of attributing by consumption order. */
+  const byUnit=netByOrder(units,articles,materials,queueOrder(units,expanded.overrides).map(u=>u.order_no));
+  const unitOf=new Map(units.map(u=>[u.unit_key||u.order_no,u]));
+  const byOrder={};
+  for(const [key,row] of Object.entries(byUnit)){
+    const u=unitOf.get(key)||{}; const parent=u.source_order_no||key;
+    const g=byOrder[parent]||(byOrder[parent]={order_no:parent,pi_no:row.pi_no,materials:[],short:[],can_run:true});
+    const acc=new Map(g.materials.map(m=>[m.material_key,m]));
+    for(const m of row.materials){
+      const cur=acc.get(m.material_key);
+      if(!cur){ acc.set(m.material_key,{...m}); continue; }
+      cur.required=round2(cur.required+m.required,2);
+      cur.covered=round2(cur.covered+m.covered,2);
+      cur.shortfall=round2(cur.shortfall+m.shortfall,2);
+    }
+    g.materials=[...acc.values()].sort((a,b)=>b.shortfall-a.shortfall||a.name.localeCompare(b.name));
+    g.short=g.materials.filter(m=>m.shortfall>1e-6);
+    g.can_run=g.short.length===0;
+  }
   const procurement=netted.filter(n=>n.shortfall>1e-6).sort((a,b)=>b.shortfall-a.shortfall);
-  const orderViews=planned.map(o=>{
-    const sr=sched.orders[o.order_no], sl=sla[o.order_no];
-    /* Flagged per order as well as in schedule_problems, so the Order Book can
-       say it beside the row rather than only in a banner. */
+
+  /* One scheduled row — for a batch, or for an order that runs whole. */
+  const viewOf=(o,sr,sl)=>{
     const bomMissing = seenNoBom.has(o.article_code);
     const slBy={}; sl.stages.forEach(x=>slBy[x.stage]=x);
     const art=articles[o.article_code];
@@ -492,17 +606,62 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
               duration_days:st.end-st.start+1,
               slip_days:s.slip_days,status:s.status||"on_track"};
     });
-    const unknown=o.lines.filter(l=>!art.combos[l.combo]).map(l=>l.combo);
-    return {order_no:o.order_no,party:o.party,article:o.article_code,article_code:o.article_code,
+    const unknown=(o.lines||[]).filter(l=>!art.combos[l.combo]).map(l=>l.combo);
+    return {order_no:o.source_order_no||o.order_no,party:o.party,article:o.article_code,article_code:o.article_code,
       ...(bomMissing ? { bom_missing:true } : {}),
-      override:normalizeOverride(overrides[o.order_no]), overridden:!!sr.overridden,
-      plan_warnings:sched.warnings.filter(w=>w.order_no===o.order_no),
+      unit_key:sr.unit_key, unit_kind:sr.unit_kind,
+      card_no:o.card_no||null, fabricator:o.fabricator||null, job_id:o.job_id||null,
+      override:normalizeOverride(expanded.overrides[sr.unit_key]), overridden:!!sr.overridden,
+      plan_warnings:sched.warnings.filter(w=>w.order_no===sr.unit_key),
       sole_type:art.sole_type, pi:o.pi||{}, stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",
       printing:!!(o.printing||((o.pi||{}).printing)),
-      qty:sr.qty,priority:o.priority,order_date:o.order_date,lines:o.lines,unknown_combos:unknown,
+      qty:sr.qty,priority:o.priority,order_date:o.order_date,lines:o.lines||[],unknown_combos:unknown,
       release_date:fromDay(sr.release_day,origin), release_delay_days:sr.release_day-Math.max(0,dayIndex(o.order_date,origin)),
       dispatch_date:fromDay(sr.dispatch_day,origin),dispatch_day:sr.dispatch_day,
       lead_days:sr.dispatch_day-sr.release_day,sla:sl.overall,stages};
+  };
+
+  const unitViews=units.map(u=>{
+    const key=u.unit_key||u.order_no;
+    return viewOf(u, sched.orders[key], sla[key]);
+  });
+  const viewsByOrder=new Map();
+  for(const v of unitViews){
+    const list=viewsByOrder.get(v.order_no)||[]; list.push(v); viewsByOrder.set(v.order_no,list);
+  }
+
+  /* An order's own row: the batches it is made of, rolled back up. It dispatches
+     when its LAST batch dispatches and is released when its FIRST one is, and
+     its SLA is the worst of them — a customer with 2,000 of 10,000 pairs on
+     time has a late order, not a 20%-on-time one. */
+  const orderViews=planned.map(o=>{
+    const views=(viewsByOrder.get(o.order_no)||[]).sort((a,b)=>a.dispatch_day-b.dispatch_day);
+    const batches=views.map(v=>({unit_key:v.unit_key,unit_kind:v.unit_kind,card_no:v.card_no,
+      fabricator:v.fabricator,job_id:v.job_id,qty:v.qty,order_date:v.order_date,
+      release_date:v.release_date,dispatch_date:v.dispatch_date,dispatch_day:v.dispatch_day,
+      sla:v.sla,overridden:v.overridden,override:v.override}));
+    if(views.length===1 && views[0].unit_key===o.order_no)
+      return {...views[0], lines:o.lines, batches, batch_count:1};
+    const stageRows=new Map();
+    for(const v of views) for(const st of v.stages){
+      const list=stageRows.get(st.stage)||[]; list.push(st); stageRows.set(st.stage,list);
+    }
+    const stages=inStageOrder([...stageRows.keys()]).map(st=>mergeStageRows(stageRows.get(st),wcs,origin));
+    const worst=views.reduce((w,v)=>RANK[v.sla]>RANK[w]?v.sla:w,"on_track");
+    const releaseDay=Math.min(...views.map(v=>dayIndex(v.release_date,origin)));
+    const dispatchDay=Math.max(...views.map(v=>v.dispatch_day));
+    return {...views[0],
+      unit_key:o.order_no, unit_kind:"order", card_no:null, fabricator:null, job_id:null,
+      override:normalizeOverride(overrides[o.order_no]),
+      overridden:views.some(v=>v.overridden),
+      plan_warnings:[...views.flatMap(v=>v.plan_warnings),
+                     ...sched.warnings.filter(w=>w.order_no===o.order_no)],
+      qty:views.reduce((a,v)=>a+v.qty,0), lines:o.lines, order_date:o.order_date,
+      release_date:fromDay(releaseDay,origin),
+      release_delay_days:releaseDay-Math.max(0,dayIndex(o.order_date,origin)),
+      dispatch_date:fromDay(dispatchDay,origin), dispatch_day:dispatchDay,
+      lead_days:dispatchDay-releaseDay, sla:worst, stages,
+      batches, batch_count:views.length};
   }).sort((a,b)=>a.dispatch_day-b.dispatch_day);
 
   /* Orphans are put back at the TOP of the board, not dropped. An order that
@@ -521,6 +680,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     unknown_combos:o.lines.map(l=>l.combo),
     release_date:null,release_delay_days:null,
     dispatch_date:null,dispatch_day:null,lead_days:null,
+    batches:[], batch_count:0,
     sla:null,stages:[]}));
   const loadSummary=[];
   for(const [code,wc] of Object.entries(wcs)){
@@ -535,9 +695,14 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   loadSummary.sort((a,b)=>b.avg_util_pct-a.avg_util_pct);
   return {orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,data_gaps:dataGaps,daily_load:sched.load,
     plan_warnings:sched.warnings, forced_load:sched.forced_load,
-    procurement_by_order:byOrder, procurement_by_pi:shortfallByPi(byOrder),
+    /* Every batch as its own row, for the screens that plan work rather than
+       report on an order: the machine board, the status view, and the
+       schedule's own expandable rows. */
+    units:unitViews, batched:unitViews.length>planned.length,
+    procurement_by_order:byOrder, procurement_by_unit:byUnit, procurement_by_pi:shortfallByPi(byOrder),
     totals:{orders:orders.length,total_pairs:orders.reduce((s,o)=>s+o.lines.reduce((a,l)=>a+l.qty,0),0),
       last_dispatch:orderViews.length?fromDay(Math.max(...orderViews.map(o=>o.dispatch_day)),origin):null,
+      batches:unitViews.length,
       unplanned:orphanViews.length,
       sla:{on_track:orderViews.filter(o=>o.sla==="on_track").length,at_risk:orderViews.filter(o=>o.sla==="at_risk").length,breach:orderViews.filter(o=>o.sla==="breach").length}}};
 }
