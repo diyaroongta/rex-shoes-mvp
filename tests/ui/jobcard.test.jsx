@@ -63,3 +63,31 @@ it("still warns when a draft really does exceed the balance",async()=>{
   await user.clear(box); await user.type(box, "999");
   expect(await screen.findByText(/More than the unassigned balance/i)).toBeInTheDocument();
 });
+
+/* The factory issues three documents against one job order: the cutting card
+   already in use, and the PASTING and PACKING cards they sent formats for.
+   Switching must change the PRINTED document, not just a label — the card the
+   operator is looking at is the one `print()` picks up off `.job-card`. */
+it("prints the pasting and packing cards from the same job order",async()=>{
+  const user=userEvent.setup();
+  render(<JobCardTab orders={[ORDER]} />);
+
+  await user.selectOptions(await screen.findByLabelText("Send to"), "Rex Internal");
+  await user.selectOptions(await screen.findByLabelText("Current Order"), "JO1");
+  await user.click(await screen.findByRole("button",{name:/Preview Job Order/i}));
+
+  /* The cutting card leads, because that is what a job order is issued on. */
+  expect(document.querySelector('[data-stage-card]')).toBeNull();
+
+  await user.click(await screen.findByRole("button",{name:/^Pasting$/}));
+  await waitFor(()=>expect(document.querySelector('[data-stage-card="PASTING"]')).not.toBeNull());
+  expect(await screen.findByText(/PASTING MATERIAL ISSUED/)).toBeTruthy();
+
+  await user.click(await screen.findByRole("button",{name:/^Packing$/}));
+  await waitFor(()=>expect(document.querySelector('[data-stage-card="PACKING"]')).not.toBeNull());
+  /* Their packing format signs for three issues separately. */
+  expect(await screen.findByText("INSOLE ISSUE")).toBeTruthy();
+  expect(await screen.findByText("TEXTION ISSUE")).toBeTruthy();
+  /* 60 pairs on the order, and the card totals them. */
+  expect(screen.getAllByText("60").length).toBeGreaterThan(0);
+});

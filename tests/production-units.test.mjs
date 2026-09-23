@@ -54,6 +54,23 @@ test("a batch is released on its CARD's date, not the order's", () => {
      inventing a future date for it would be inventing factory data. */
   assert.equal(units[2].order_date, "2026-07-06");
 });
+test("a card written on Friday for a Monday run is planned for MONDAY", () => {
+  /* Both dates are kept: the plan schedules from the start date, the database
+     still files the card under the day it was written. */
+  const friday = { ...card(5,"2026-07-17",300) };
+  friday.card.start_on = "2026-07-20";
+  const [unit] = productionUnits([ORDER], [friday]);
+  assert.equal(unit.order_date, "2026-07-20", "the plan follows the start date");
+  assert.equal(unit.created_on, "2026-07-17", "the card is still filed under the day it was written");
+
+  const planned = plan([ORDER], [friday]);
+  assert.equal(planned.units[0].release_date, "2026-07-20");
+});
+test("a card with no start date is planned from the day it was written", () => {
+  const [unit] = productionUnits([ORDER], [card(6,"2026-07-17",300)]);
+  assert.equal(unit.order_date, "2026-07-17");
+  assert.equal(unit.created_on, "2026-07-17");
+});
 test("a Date object from Postgres is read in local time, not rolled back a day", () => {
   assert.equal(isoDate(new Date(2026, 6, 20)), "2026-07-20");
   assert.equal(isoDate("2026-07-20T00:00:00.000Z"), "2026-07-20");
@@ -166,6 +183,90 @@ test("an order scheduled whole is byte-for-byte what it was before batching exis
   const strip = o => { const { batches, batch_count, unit_key, unit_kind, card_no, fabricator, job_id, ...rest } = o; return rest; };
   assert.deepEqual(strip(after.orders[0]), strip(before.orders[0]));
   assert.equal(after.orders[0].batch_count, 1);
+});
+
+console.log("\nD — pairs nobody has put on a card are NOT on the plan");
+test("a card of 500 against a 1,000 order schedules 500 and lists the rest as waiting", () => {
+  const split = plan([ORDER], [card(1,"2026-07-06",500)]);
+  const o = split.orders[0];
+  assert.equal(o.qty, 500, "the plan carries the carded pairs only");
+  assert.equal(o.batch_count, 1);
+  assert.equal(o.pending_pairs, 500);
+  assert.equal(split.units.length, 1, "the unreleased balance is not a scheduled row");
+  assert.equal(split.pending_release.length, 1);
+  assert.deepEqual(split.pending_release[0],
+    { order_no:"JO9001", party:"Batch Test", article:"SMART BOY (L) BLACK",
+      article_code:"SMART BOY (L) BLACK", pairs:500,
+      lines:[{ combo:"6X8", label:"6X8", qty:500, sizes:null }],
+      order_date:"2026-07-06", priority:2, pi:{} });
+  assert.equal(split.totals.pending_pairs, 500);
+  assert.equal(split.totals.pending_orders, 1);
+});
+test("the machine board books only what is on a card", () => {
+  const split = plan([ORDER], [card(1,"2026-07-06",500)]);
+  const cutting = Object.values(split.daily_load.CUTTING||{}).reduce((a,b)=>a+b,0);
+  assert.equal(Math.round(cutting), 500,
+    "800 unreleased pairs must not occupy a machine nobody has committed");
+});
+test("the buyer still buys for the whole order — the material is not waiting for a card", () => {
+  const whole = compute([ORDER], articles, materials, wcs, origin, {});
+  const split = plan([ORDER], [card(1,"2026-07-06",500)]);
+  assert.deepEqual(split.netted, whole.netted);
+  const a = whole.procurement_by_order.JO9001, b = split.procurement_by_order.JO9001;
+  for(const m of b.materials){
+    const same = a.materials.find(x => x.material_key === m.material_key);
+    assert.ok(Math.round(Math.abs(m.required - same.required) * 100) <= 1,
+      `${m.material_key}: ${m.required} vs ${same.required}`);
+  }
+});
+test("an order with no cards at all is still planned whole, and owes nothing", () => {
+  const plain = plan([ORDER], []);
+  assert.equal(plain.orders[0].qty, 1000);
+  assert.equal(plain.orders[0].pending_pairs, 0);
+  assert.deepEqual(plain.pending_release, []);
+});
+
+console.log("\nE — how many cards a machine runs at once is its capacity");
+const MOULD = "MOLDING_PVC_ROTARY";           // 1,200 pairs a day, one mould fitted
+const sameArticle = (no, qty) => ({ order_no:no, order_date:"2026-07-06",
+  article_code:"SMART BOY (L) BLACK", priority:2, party:"P", lines:[{ combo:"6X8", qty }] });
+
+test("two cards of the SAME article share a moulding day, up to its capacity", () => {
+  const order = sameArticle("JO9100", 1000);
+  const jobs = [{ ...card(11,"2026-07-06",500), order_no:"JO9100" },
+                { ...card(12,"2026-07-06",500), order_no:"JO9100" }];
+  jobs.forEach(j => { j.card.lines = [{ combo:"6X8", qty:500, sizes:{} }]; });
+  const s = compute([order], articles, materials, wcs, origin,
+    { units: productionUnits([order], jobs) });
+  const moulds = s.units.map(u => u.stages.find(x => x.stage === "MOLDING"));
+  assert.equal(moulds.length, 2);
+  assert.equal(moulds[0].work_center, MOULD);
+  assert.equal(moulds[0].start, moulds[1].start,
+    "1,000 pairs of one article fit in one 1,200-pair day, so both cards run that day");
+  for(const [day, pairs] of Object.entries(s.daily_load[MOULD]||{}))
+    assert.ok(pairs <= wcs[MOULD].capacity_per_day + 1e-6,
+      `day ${day} booked ${pairs} against a capacity of ${wcs[MOULD].capacity_per_day}`);
+  assert.deepEqual(s.schedule_problems, []);
+});
+test("a DIFFERENT article waits for the machine — the mould has to be changed", () => {
+  const a = sameArticle("JO9200", 600);
+  const b = { ...sameArticle("JO9201", 600), article_code:"REX GOLA (V)",
+              lines:[{ combo:"8X10", qty:600 }] };
+  const s = compute([a,b], articles, materials, wcs, origin, {});
+  const rows = s.orders.map(o => ({ no:o.order_no, m:o.stages.find(x=>x.stage==="MOLDING") }))
+    .filter(r => r.m && r.m.work_center === MOULD);
+  assert.equal(rows.length, 2, "both articles mould on the rotary machine");
+  const [first, second] = rows.sort((x,z) => x.m.start - z.m.start);
+  assert.ok(second.m.start > first.m.end,
+    `${second.no} shares a day with ${first.no}; a machine carries one mould at a time`);
+});
+test("a card too big for one day still runs contiguously", () => {
+  const order = sameArticle("JO9300", 3000);
+  const s = compute([order], articles, materials, wcs, origin, {});
+  const m = s.orders[0].stages.find(x => x.stage === "MOLDING");
+  assert.equal(m.end - m.start + 1, 3, "3,000 pairs at 1,200 a day is three days");
+  const days = Object.keys(m.alloc).map(Number).sort((x,z)=>x-z);
+  assert.deepEqual(days, [m.start, m.start+1, m.start+2], "no gap in the middle of a run");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

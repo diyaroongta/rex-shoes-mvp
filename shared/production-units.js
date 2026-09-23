@@ -82,10 +82,19 @@ function jobUnit(order, job){
     card_no: String((job.card && job.card.card_no) || job.id || "").trim(),
     fabricator: job.fabricator || "",
     job_stage: job.stage || "",
-    /* The card's own date is the day the batch is released to the floor. A
-       card with no date falls back to the order's date rather than to today:
+    /* A CARD HAS TWO DATES AND THEY ARE NOT THE SAME DAY.
+         created_on   when the card was written. What the Job Orders Database
+                      lists it under, and what the paperwork is filed by.
+         order_date   when work is meant to START. This is what the plan
+                      schedules from, because a card written on Friday for a
+                      run beginning Monday occupies Monday's machines, not
+                      Friday's.
+       A card with no start date falls back to the day it was written, and one
+       with neither falls back to the ORDER's date — never to today, because
        the planner is pure and has no clock. */
-    order_date: isoDate(job.issued_on) || isoDate((job.card || {}).date) || isoDate(order.order_date),
+    created_on: isoDate(job.issued_on) || isoDate((job.card || {}).date),
+    order_date: isoDate((job.card || {}).start_on) || isoDate(job.start_on)
+      || isoDate(job.issued_on) || isoDate((job.card || {}).date) || isoDate(order.order_date),
     lines,
   });
 }

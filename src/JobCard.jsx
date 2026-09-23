@@ -1,4 +1,6 @@
 import React from "react";
+import { familyOf, prefixOf } from "../shared/product-codes.js";
+import { variantOf } from "../shared/catalogue-tree.js";
 import { jobCardIssue } from "../shared/bom-components.js";
 
 /* Two-page factory form, following ARMOUR 17004.pdf. Values still come from
@@ -72,7 +74,17 @@ function Header({card,logo}){return <table style={{width:"100%",borderCollapse:"
   <tr><td style={{...LABEL,borderBottom:BB,height:32}} colSpan={2}>NAME OF FABRICATOR: <span style={{fontSize:11}}>{String(card.fabricator||"").toUpperCase()}</span></td>
     <td style={{...HEAD,borderBottom:BB,fontSize:20,width:"24%"}}>CUTTING</td>
     <td style={{...LABEL,borderBottom:BB,lineHeight:1.6}}>JOB CARD NO :- {card.card_no||""}<br/>DATE:- {fmtDate(card.date)}</td></tr>
-  <tr><td style={{...LABEL,height:28,fontSize:11}} colSpan={3}>ARTICLE: {String(card.article||"").toUpperCase()}</td><td style={CELL}></td></tr>
+  {/* THE FACTORY'S TWO CODES, AND THEY ARE DIFFERENT THINGS.
+        ARTICLE is the shoe SERIES — AXEL, JACK — and its code is the series
+        code. SKU is one colour and closure of it, which is exactly what an
+        article row in our master already is, so its assigned product code is
+        the SKU code. Either prints BLANK until codes have been assigned:
+        an invented code on a job card is worse than none. */}
+  <tr><td style={{...LABEL,height:26,fontSize:11}} colSpan={2}>ARTICLE: {String(familyOf(card.article)||card.article||"").toUpperCase()}</td>
+    <td style={{...LABEL,height:26,fontSize:10}}>ARTICLE CODE: {card.series_code||""}</td>
+    <td style={{...LABEL,fontSize:10}}>SKU CODE: {card.sku_code||""}</td></tr>
+  <tr><td style={{...LABEL,height:24,fontSize:10}} colSpan={2}>COLOUR: {(variantOf(card.article||"").colour_label||"").toUpperCase()}</td>
+    <td style={{...LABEL,height:24,fontSize:10}} colSpan={2}>VELCRO/LACE: {(variantOf(card.article||"").closure_label||"").toUpperCase()}</td></tr>
 </tbody></table>}
 
 function SizeGrid({sizes,total}){const cells=sizes.length?sizes:[{size:"",qty:null}];return <table style={{width:"100%",borderCollapse:"collapse",borderLeft:BB,borderRight:BB,borderBottom:BB}}>

@@ -231,28 +231,72 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
       if(!used[wcCode]) used[wcCode]={};
 
       if(wc.exclusive){
-        // ONE machine, ONE order at a time. The order occupies a contiguous block
-        // of whole days; no other order may touch the machine during that block.
+        /* HOW MANY JOB CARDS A MACHINE CAN RUN AT ONCE IS ITS CAPACITY — and
+           WHICH cards those can be is the mould fitted to it.
+ 
+           The factory's own weekly plan sheet is the evidence for both: each
+           moulding machine carries ONE article on a given day ("GOLA BLK D.V,
+           ALL SIZES, 500" against Vertical M/C 1) at that machine's own daily
+           rate. So two cards of the same article share a machine-day up to
+           capacity — which is what makes batching an order into five cards
+           worth doing — and a different article waits for the machine, because
+           changing the mould is not something a plan can pretend away.
+ 
+           The block stays CONTIGUOUS. A card that stops for a day and resumes
+           is not how a moulding run works, so a day that is full or committed
+           to another article restarts the run rather than splitting it. */
         if(!busy[wcCode]) busy[wcCode]=[];
         const blocks=busy[wcCode];
-        const span=forcedDays||Math.max(1,Math.ceil(qty/cap - 1e-9));
-        // it can only start when free: either as soon as it's ready, or the day
-        // after some other order vacates the machine
-        const cands=[earliest,...blocks.map(b=>b.end+1)].filter(x=>x>=earliest).sort((a,b)=>a-b);
-        let s=null;
-        for(const c of cands){
-          const e=c+span-1;
-          if(!blocks.some(b=>c<=b.end && e>=b.start)){ s=c; break; }
+        const article=o.article_code;
+        const dayHolder=d=>{
+          const on=blocks.filter(b=>d>=b.start&&d<=b.end);
+          return on.length?on[0].article:null;
+        };
+        const free=d=>cap-(used[wcCode][d]||0);
+        let s=null, e=null;
+        if(forcedDays){
+          /* Told to take N days: it takes N days, from the first day the
+             machine is not holding a different article. */
+          let c=earliest;
+          while(c<=earliest+horizon){
+            let ok=true;
+            for(let d=c; d<c+forcedDays; d++){
+              const holder=dayHolder(d);
+              if(holder && holder!==article){ ok=false; c=d+1; break; }
+            }
+            if(ok){ s=c; e=c+forcedDays-1; break; }
+          }
+          if(s===null){ s=earliest; e=earliest+forcedDays-1; }
+        } else {
+          let c=earliest;
+          while(c<=earliest+horizon){
+            let remaining=qty, d=c, run=[];
+            while(remaining>1e-9 && d<=earliest+horizon){
+              const holder=dayHolder(d);
+              if((holder && holder!==article) || free(d)<=1e-9){ break; }
+              const take=Math.min(free(d),remaining);
+              run.push([d,take]); remaining-=take; d++;
+            }
+            if(remaining<=1e-9){ s=c; e=run[run.length-1][0]; break; }
+            /* The run was broken. Restart after whatever stopped it. */
+            c=(run.length?run[run.length-1][0]:c)+1;
+          }
+          if(s===null){ s=earliest; e=earliest+Math.max(1,Math.ceil(qty/cap-1e-9))-1; }
         }
-        if(s===null) s=blocks.length?Math.max(...blocks.map(b=>b.end))+1:earliest;
-        startDay=s; endDay=s+span-1;
-        blocks.push({start:startDay,end:endDay,order_no:o.order_no});
+        startDay=s; endDay=e;
+        blocks.push({start:startDay,end:endDay,order_no:o.order_no,article});
         // A forced span spreads the whole order evenly across those days, even
         // when that is more than the line can hold in a day. That is the point.
-        const perDay=forcedDays?qty/span:cap;
+        const span=endDay-startDay+1;
+        const perDay=forcedDays?qty/span:null;
         let remaining=qty;
         for(let d=startDay; d<=endDay; d++){
-          const take=forcedDays?(d===endDay?remaining:perDay):Math.min(cap,remaining);
+          /* Unforced, a day takes what is LEFT on the machine that day, not the
+             full capacity — another card of the same article may already hold
+             part of it. */
+          const take=forcedDays
+            ? (d===endDay?remaining:perDay)
+            : Math.min(Math.max(0,cap-(used[wcCode][d]||0)),remaining);
           used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; remaining-=take;
           if(forcedDays&&used[wcCode][d]>cap+1e-6){
             (forcedLoad[wcCode]=forcedLoad[wcCode]||{})[d]=true;
@@ -516,8 +560,21 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const covered=new Set(units.map(u=>u.source_order_no||u.order_no));
   for(const o of planned) if(!covered.has(o.order_no)) units.push(ownUnit(o));
 
-  const expanded=overridesForUnits(units, overrides);
-  const sched=schedule(units,articles,wcs,origin,1500,expanded.overrides);
+  /* PAIRS NOBODY HAS PUT ON A JOB CARD ARE NOT ON THE PLAN.
+     The factory's answer, and it is the right one: an order of 10,000 with one
+     card of 2,000 has 2,000 in production and 8,000 WAITING TO BE RELEASED.
+     Scheduling the other 8,000 books machines for work the floor has not
+     agreed to make and dates a dispatch nobody promised.
+
+     They are not dropped either — that would hide real customer demand. They
+     come back as `pending_release` for a list of orders still to be put on a
+     card, and they still count in PROCUREMENT (below), because the material
+     has to be bought long before a card is written. */
+  const scheduled=units.filter(u=>u.unit_kind!=="balance");
+  const pending=units.filter(u=>u.unit_kind==="balance");
+
+  const expanded=overridesForUnits(scheduled, overrides);
+  const sched=schedule(scheduled,articles,wcs,origin,1500,expanded.overrides);
   sched.warnings.push(...expanded.notes);
   const problems=validateSchedule(sched,wcs);
   for(const o of orphaned)
@@ -569,7 +626,12 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
      walked in their own plan sequence: a card released in March takes the
      stock before the card released in April, which is what happens on the
      floor and is the whole point of attributing by consumption order. */
-  const byUnit=netByOrder(units,articles,materials,queueOrder(units,expanded.overrides).map(u=>u.order_no));
+  /* Released work takes the stock first, in the sequence the plan runs it;
+     pairs still waiting for a card take what is left. That ordering is the
+     honest one — a card that exists is ahead of one that has not been written
+     — and it keeps the buying list covering the whole order book. */
+  const consumption=[...queueOrder(scheduled,expanded.overrides),...pending];
+  const byUnit=netByOrder(consumption,articles,materials,consumption.map(u=>u.order_no));
   const unitOf=new Map(units.map(u=>[u.unit_key||u.order_no,u]));
   const byOrder={};
   for(const [key,row] of Object.entries(byUnit)){
@@ -611,6 +673,8 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       ...(bomMissing ? { bom_missing:true } : {}),
       unit_key:sr.unit_key, unit_kind:sr.unit_kind,
       card_no:o.card_no||null, fabricator:o.fabricator||null, job_id:o.job_id||null,
+      /* The day the card was WRITTEN, beside the day its work starts. */
+      created_on:o.created_on||null,
       override:normalizeOverride(expanded.overrides[sr.unit_key]), overridden:!!sr.overridden,
       plan_warnings:sched.warnings.filter(w=>w.order_no===sr.unit_key),
       sole_type:art.sole_type, pi:o.pi||{}, stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",
@@ -621,10 +685,23 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       lead_days:sr.dispatch_day-sr.release_day,sla:sl.overall,stages};
   };
 
-  const unitViews=units.map(u=>{
+  const unitViews=scheduled.map(u=>{
     const key=u.unit_key||u.order_no;
     return viewOf(u, sched.orders[key], sla[key]);
   });
+  /* One row per order still owing a job card, with the sizes that are owed.
+     No dates: it has not been planned, and inventing one would be the very
+     thing this change removed. */
+  const pendingRelease=pending.map(u=>({
+    order_no:u.source_order_no||u.order_no, party:u.party,
+    article:u.article_code, article_code:u.article_code,
+    pairs:(u.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0),
+    lines:u.lines||[], order_date:u.order_date, priority:u.priority,
+    pi:u.pi||{},
+  })).filter(row=>row.pairs>0)
+    .sort((a,z)=>a.order_date<z.order_date?-1:a.order_date>z.order_date?1:
+                 a.order_no<z.order_no?-1:1);
+  const pendingByOrder=new Map(pendingRelease.map(r=>[r.order_no,r]));
   const viewsByOrder=new Map();
   for(const v of unitViews){
     const list=viewsByOrder.get(v.order_no)||[]; list.push(v); viewsByOrder.set(v.order_no,list);
@@ -640,8 +717,13 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       fabricator:v.fabricator,job_id:v.job_id,qty:v.qty,order_date:v.order_date,
       release_date:v.release_date,dispatch_date:v.dispatch_date,dispatch_day:v.dispatch_day,
       sla:v.sla,overridden:v.overridden,override:v.override}));
+    const waiting=pendingByOrder.get(o.order_no)||null;
+    const waitingFields={
+      pending_pairs: waiting?waiting.pairs:0,
+      pending_lines: waiting?waiting.lines:[],
+    };
     if(views.length===1 && views[0].unit_key===o.order_no)
-      return {...views[0], lines:o.lines, batches, batch_count:1};
+      return {...views[0], lines:o.lines, batches, batch_count:1, ...waitingFields};
     const stageRows=new Map();
     for(const v of views) for(const st of v.stages){
       const list=stageRows.get(st.stage)||[]; list.push(st); stageRows.set(st.stage,list);
@@ -661,7 +743,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       release_delay_days:releaseDay-Math.max(0,dayIndex(o.order_date,origin)),
       dispatch_date:fromDay(dispatchDay,origin), dispatch_day:dispatchDay,
       lead_days:dispatchDay-releaseDay, sla:worst, stages,
-      batches, batch_count:views.length};
+      batches, batch_count:views.length, ...waitingFields};
   }).sort((a,b)=>a.dispatch_day-b.dispatch_day);
 
   /* Orphans are put back at the TOP of the board, not dropped. An order that
@@ -699,10 +781,14 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
        report on an order: the machine board, the status view, and the
        schedule's own expandable rows. */
     units:unitViews, batched:unitViews.length>planned.length,
+    /* Orders still to be put on a job card — listed, never scheduled. */
+    pending_release:pendingRelease,
     procurement_by_order:byOrder, procurement_by_unit:byUnit, procurement_by_pi:shortfallByPi(byOrder),
     totals:{orders:orders.length,total_pairs:orders.reduce((s,o)=>s+o.lines.reduce((a,l)=>a+l.qty,0),0),
       last_dispatch:orderViews.length?fromDay(Math.max(...orderViews.map(o=>o.dispatch_day)),origin):null,
       batches:unitViews.length,
+      pending_pairs:pendingRelease.reduce((a,r)=>a+r.pairs,0),
+      pending_orders:pendingRelease.length,
       unplanned:orphanViews.length,
       sla:{on_track:orderViews.filter(o=>o.sla==="on_track").length,at_risk:orderViews.filter(o=>o.sla==="at_risk").length,breach:orderViews.filter(o=>o.sla==="breach").length}}};
 }

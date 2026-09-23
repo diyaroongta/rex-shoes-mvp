@@ -2,9 +2,12 @@ import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./lib/client.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 import JobCard from "./JobCard.jsx";
+import StageJobCard from "./StageJobCard.jsx";
+import { cardKinds } from "../shared/job-card-stages.js";
 import { slipFor } from "../shared/job-work.js";
 import { comboSizesForArticle } from "../shared/bridge.js";
 import { optionLabel, TYPES, TYPE_LABEL, TYPE_HELP, RULES, validateFabricator } from "../shared/fabricators.js";
+import { prefixOf } from "../shared/product-codes.js";
 import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
@@ -24,10 +27,22 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   const [orderNo,setOrderNo]=useState("");
   const [fabricator,setFabricator]=useState("");
   const [date,setDate]=useState(today);
+  /* TWO DATES, AND THEY ARE NOT THE SAME DAY. The card is WRITTEN today and
+     the run may begin on Monday. The plan schedules from the start date — a
+     card written on Friday must not book Friday's machines — while the Job
+     Orders Database still files the card under the day it was created.
+     Left alone, the start date follows the card date, which is the common
+     case and keeps simple entry simple. */
+  const [startOn,setStartOn]=useState(today);
+  const [startPinned,setStartPinned]=useState(false);
   const [qty,setQty]=useState({});
   const [sizes,setSizes]=useState({});
   const [card,setCard]=useState(null);
   const [stale,setStale]=useState(false);
+  /* WHICH of the factory's three cards is on screen. The cutting/stitching
+     card is the document a job order is issued against, so it leads; the
+     pasting and packing cards are the same job order one stage on. */
+  const [cardKind,setCardKind]=useState("CUTTING");
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   const [msg,setMsg]=useState("");
@@ -126,7 +141,14 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   function generate(){
     if(!ready)return;
     setCard({article:order.article_code,order_no:order.order_no,fabricator:who.name,
-      slip:`JOB CARD — ${slipFor(who)}`,stage:"CUTTING & STITCHING",date,card_no:"",lines});
+      slip:`JOB CARD — ${slipFor(who)}`,stage:"CUTTING & STITCHING",date,
+      start_on:startOn||date,card_no:"",
+      /* The SKU code is the article's own assigned product code (one colour,
+         one closure); the series code is its family prefix. Both are blank
+         until codes have been assigned on Data & BOM. */
+      sku_code:(INPUTS.articles[order.article_code]||{}).product_code||"",
+      series_code:prefixOf(order.article_code)||"",
+      lines});
     setStale(false); setMsg("");
   }
 
@@ -190,8 +212,18 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         <button type="button" onClick={()=>setAdding(adding?null:{name:"",type:"external",rate:"",contact_person:"",contact_phone:"",tat_days:""})}
           className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
           {adding?"Cancel":"+ Add a fabricator"}</button>
-        <label className="text-xs text-slate-600">Date
-          <input type="date" value={date} aria-label="Job card date" onChange={e=>{setDate(e.target.value);touched();}} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/>
+        <label className="text-xs text-slate-600">Card date
+          <input type="date" value={date} aria-label="Job card date"
+            onChange={e=>{const v=e.target.value;setDate(v);if(!startPinned)setStartOn(v);touched();}}
+            className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/>
+          <span className="block text-[10px] text-slate-400 mt-0.5">when the card is written</span>
+        </label>
+        <label className="text-xs text-slate-600">Work starts on
+          <input type="date" value={startOn} aria-label="Work starts on" min={undefined}
+            onChange={e=>{setStartOn(e.target.value);setStartPinned(true);touched();}}
+            className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/>
+          <span className="block text-[10px] text-slate-400 mt-0.5">
+            {startOn && startOn!==date ? "the plan schedules this batch from here" : "same as the card date"}</span>
         </label>
       </div>
       {adding&&<NewFabricator draft={adding} setDraft={setAdding}
@@ -260,7 +292,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 
-    {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><JobCard card={card} article={article}/></div>}
+    {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><CardSwitch value={cardKind} onChange={setCardKind}/>{cardKind==="CUTTING"?<JobCard card={card} article={article}/>:<StageJobCard card={card} article={article} kind={cardKind}/>}</div>}
   </div>;
 }
 
@@ -330,5 +362,18 @@ function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
     <button onClick={save} disabled={saving||!!problems.length||!draft.name.trim()}
       className="mt-2 text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-indigo-600 disabled:opacity-50">
       {saving?"Saving…":"Save fabricator"}</button>
+  </div>;
+}
+
+/* The three printable documents of one job order. The pasting and packing
+   cards follow the factory's own PASTING JC / PACKING JC formats; the cutting
+   card is the ARMOUR one already in use. Printing takes whichever is shown. */
+function CardSwitch({value,onChange}){
+  const kinds=[{kind:"CUTTING",title:"Cutting & stitching"},...cardKinds().map(k=>({kind:k.kind,title:k.title==="PACKING JC"?"Packing":"Pasting"}))];
+  return <div data-noprint className="flex items-center gap-1 mb-2">
+    <span className="text-[11px] text-slate-500 mr-1">Card:</span>
+    {kinds.map(k=><button key={k.kind} type="button" onClick={()=>onChange(k.kind)}
+      className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${value===k.kind?"bg-slate-800 text-white border-slate-800":"bg-white text-slate-700 border-slate-300"}`}>
+      {k.title}</button>)}
   </div>;
 }
