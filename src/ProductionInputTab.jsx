@@ -16,11 +16,20 @@ const isoDate=value=>{
   }
   return String(value||"").slice(0,10);
 };
-const mondayOf=value=>{
-  const date=new Date(`${value}T00:00:00`),day=(date.getDay()+6)%7;
-  date.setDate(date.getDate()-day); return date.toISOString().slice(0,10);
+/* DATES ARE FORMATTED LOCALLY, NEVER THROUGH toISOString().
+   `new Date("2026-09-21T00:00:00")` is LOCAL midnight, and in India that is
+   18:30 the previous day in UTC — so toISOString().slice(0,10) handed back the
+   day BEFORE. On the factory's own clock the week started on Sunday, ran
+   Sunday to Thursday, and every row in the weekly Excel was filed a day early.
+   It only looked right west of Greenwich, which is where it was written. */
+const isoLocal=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+export const mondayOf=value=>{
+  const date=new Date(`${value}T00:00:00`);
+  if(isNaN(date)) return "";
+  const day=(date.getDay()+6)%7;
+  date.setDate(date.getDate()-day); return isoLocal(date);
 };
-const plusDays=(iso,n)=>{const d=new Date(`${iso}T00:00:00`);d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
+export const plusDays=(iso,n)=>{const d=new Date(`${iso}T00:00:00`);if(isNaN(d))return "";d.setDate(d.getDate()+n);return isoLocal(d);};
 const fmt=n=>Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:0});
 
 export function workbookFor(rows, weekStart){

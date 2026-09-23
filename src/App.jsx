@@ -10,6 +10,7 @@ import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/int
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
+import StatusTab from "./StatusTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
 import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
@@ -357,6 +358,7 @@ export default function App({ user=null, onSignOut=null }={}){
       ["jobwork","Job Orders Database"],
       ["schedule","Schedule"],
       ["production_input","Daily plan vs achievement"],
+      ["status","Production status"],
       ["plan","Production plan"],
       ["machines","Machine load"],
     ]],
@@ -577,6 +579,7 @@ export default function App({ user=null, onSignOut=null }={}){
           <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} />
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
+        {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} onChanged={refreshProductionActuals} />}
@@ -2139,6 +2142,7 @@ const VIEWS = {
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
   jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
+  status:      {title:"Production status",   sub:"Where every job card actually is — recorded movements first, the plan where nothing is recorded"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
