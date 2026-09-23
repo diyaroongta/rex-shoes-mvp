@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from "react";
-import { catalogueTree, searchTree, filterTree, facetsOf } from "../shared/catalogue-tree.js";
+import { catalogueTree, searchTree, filterTree, facetsOf,
+         catalogueSheet, CATALOGUE_SHEET_COLUMNS } from "../shared/catalogue-tree.js";
+import * as XLSX from "xlsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 
 /* BROWSING the catalogue, as against editing it.
@@ -9,7 +11,7 @@ import { articlePhoto } from "../shared/catalogue-seed.js";
 
 const SECTION_SUGGESTIONS = ["Toddler","MTO","Regular"];
 
-export default function CatalogueBrowser({ articles, codes = {}, catalogue = {},
+export default function CatalogueBrowser({ articles, codes = {}, catalogue = {}, mrp = {},
                                            canEdit = false, onSetSection, onOpenArticle }){
   const [query, setQuery] = useState("");
   const [sole, setSole] = useState("");
@@ -25,6 +27,21 @@ export default function CatalogueBrowser({ articles, codes = {}, catalogue = {},
 
   const photoFor = v => (catalogue[v.article]||{}).image || articlePhoto(v.article) || null;
 
+  /* Downloads WHAT IS ON SCREEN — the search and both filters applied — so the
+     file matches the list the person was looking at when they pressed it.
+     INTERIM: the factory's own catalogue sheet format has not been supplied
+     (tracker T-089/T-103), so the columns are the fields Factory OS holds. */
+  function download(){
+    const rows = catalogueSheet(shown, { mrp });
+    const ws = XLSX.utils.aoa_to_sheet([
+      CATALOGUE_SHEET_COLUMNS.map(c => c[1]),
+      ...rows.map(r => CATALOGUE_SHEET_COLUMNS.map(c => r[c[0]] == null ? "" : r[c[0]])),
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "CATALOGUE");
+    XLSX.writeFile(wb, "rex-catalogue.xlsx");
+  }
+
   return <div>
     <div className="flex items-center gap-2 flex-wrap mb-3">
       <input value={query} onChange={e=>setQuery(e.target.value)}
@@ -32,6 +49,13 @@ export default function CatalogueBrowser({ articles, codes = {}, catalogue = {},
         aria-label="Search the catalogue"
         className="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2" style={{minWidth:260}} />
       {query && <button onClick={()=>setQuery("")} className="text-xs text-slate-500 underline">clear</button>}
+      <button type="button" onClick={download} disabled={!shown.length}
+        className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-2 disabled:opacity-40">
+        Download sheet</button>
+    </div>
+    <div className="text-[11px] text-slate-500 -mt-2 mb-3">
+      The sheet downloads the shoes shown below, with the columns Factory OS holds.
+      It will be re-cut to the factory&rsquo;s own catalogue format when that format is supplied.
     </div>
 
     {/* TWO filter rows, never one. The factory's own catalogue mixes them —

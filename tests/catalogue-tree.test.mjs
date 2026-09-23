@@ -1,7 +1,7 @@
 /* The catalogue as the factory talks about it: the shoe first, then which
    colour of it, then how it fastens. */
 import assert from "node:assert/strict";
-import { variantOf, catalogueTree, searchTree, filterTree, facetsOf } from "../shared/catalogue-tree.js";
+import { variantOf, catalogueTree, searchTree, filterTree, facetsOf, catalogueSheet, catalogueCsv } from "../shared/catalogue-tree.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -102,5 +102,43 @@ test("the tabs offered are the ones the data has, and unset sections are counted
   assert.equal(facets.total, 7);
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
+
+/* The downloadable catalogue sheet (T-089). Interim columns — the factory's
+   own format has not been supplied — but the FIGURES must be the ones the
+   master holds, and a price nobody recorded must not print as a zero. */
+test("the sheet lists one row per variant, grouped as the screen groups them", () => {
+  const tree = catalogueTree({
+    "JACK LACE BLACK": { sole_type:"EVA", section:"Toddler", combos:{ "7X10S":{ rates:{ CUTTING:{ "M||MTR":1 } } } } },
+    "JACK VELCRO BLACK": { sole_type:"EVA", combos:{} },
+    "GOLA LACE WHITE": { sole_type:"PVC", combos:{ "11X13":{ rates:{} } } },
+  }, { codes:{ "JACK LACE BLACK":"JACK01" } });
+  const rows = catalogueSheet(tree, { mrp: { "JACK LACE BLACK": { "7X10S::7S": 749, "7X10S::8S": 799 } } });
+
+  assert.deepEqual(rows.map(r => r.article),
+    ["GOLA LACE WHITE","JACK LACE BLACK","JACK VELCRO BLACK"]);
+  const jack = rows.find(r => r.article === "JACK LACE BLACK");
+  assert.equal(jack.code, "JACK01");
+  assert.equal(jack.closure, "Lace");
+  assert.equal(jack.sole_type, "EVA");
+  assert.equal(jack.section, "Toddler");
+  assert.equal(jack.bom, "yes");
+  assert.equal(jack.mrp_from, 749);
+  assert.equal(jack.mrp_to, 799);
+});
+
+test("an unpriced article leaves the price columns EMPTY, never zero", () => {
+  const tree = catalogueTree({ "SPADE VELCRO": { sole_type:"EVA", combos:{} } });
+  const [row] = catalogueSheet(tree, { mrp: {} });
+  assert.equal(row.mrp_from, null);
+  assert.equal(row.mrp_to, null);
+  assert.equal(row.bom, "no");
+});
+
+test("a colour with a comma in it cannot split a CSV row", () => {
+  const csv = catalogueCsv([{ family:"Jack", colour:"Black, Blue" }],
+    [["family","Shoe"],["colour","Colour"]]);
+  assert.equal(csv.split("\n")[1], '"Jack","Black, Blue"');
+});
+
+console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exitCode = failed ? 1 : 0;

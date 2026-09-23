@@ -150,7 +150,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
     </div>
 
     {mode==="browse" && <CatalogueBrowser
-      articles={INPUTS.articles} codes={codes} catalogue={cat}
+      articles={INPUTS.articles} codes={codes} catalogue={cat} mrp={INPUTS.mrp||{}}
       canEdit={true} onSetSection={setSection}
       onOpenArticle={code=>{ setFocus(code); setMode("edit"); }} />}
 

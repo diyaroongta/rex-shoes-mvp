@@ -195,3 +195,58 @@ export function facetsOf(tree){
   }
   return { soles:[...soles].sort(), sections:[...sections].sort(), unsectioned, total };
 }
+
+/* The catalogue as a SHEET: one row per variant, in the order the screen
+ * groups them — shoe, then colour, then closure.
+ *
+ * INTERIM. The factory's own catalogue sheet format has not been supplied
+ * (tracker T-103), so this exports what Factory OS actually holds rather than
+ * a layout nobody has seen. Every column here is a field on the article
+ * master; nothing is derived for presentation and nothing is invented. When
+ * their format arrives it changes the COLUMNS, not where the figures come
+ * from.
+ *
+ * `mrp` is the reference MRP map, keyed by article; a range with no price
+ * recorded prints empty, never a zero, because a zero is a price.
+ */
+export function catalogueSheet(tree, opts = {}){
+  const mrp = opts.mrp || {};
+  const rows = [];
+  for(const fam of tree || []){
+    for(const colour of fam.colours || []){
+      for(const v of colour.variants || []){
+        const prices = Object.values(mrp[v.article] || {})
+          .map(Number).filter(n => Number.isFinite(n) && n > 0);
+        rows.push({
+          family: fam.label,
+          code: v.code || "",
+          article: v.article,
+          colour: v.colour_label === "No colour on record" ? "" : v.colour_label,
+          closure: v.closure_label || "",
+          note: v.note || "",
+          sole_type: v.sole_type || "",
+          section: v.section || "",
+          size_ranges: v.ranges,
+          bom: v.has_bom ? "yes" : "no",
+          mrp_from: prices.length ? Math.min(...prices) : null,
+          mrp_to: prices.length ? Math.max(...prices) : null,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+export const CATALOGUE_SHEET_COLUMNS = [
+  ["family","Shoe"], ["code","Code"], ["article","Article"], ["colour","Colour"],
+  ["closure","Lace / Velcro"], ["note","Note"], ["sole_type","Sole material"],
+  ["section","Section"], ["size_ranges","Size ranges"], ["bom","BOM loaded"],
+  ["mrp_from","MRP from"], ["mrp_to","MRP to"],
+];
+
+/* CSV, quoted so a colour like "BLACK, BLUE" cannot split a row. */
+export function catalogueCsv(rows, columns = CATALOGUE_SHEET_COLUMNS){
+  const cell = v => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  return [columns.map(c => cell(c[1])).join(","),
+          ...(rows || []).map(r => columns.map(c => cell(r[c[0]])).join(","))].join("\n");
+}
