@@ -6,7 +6,9 @@ import * as api from "./lib/client.js";
 import PackingList from "./PackingList.jsx";
 import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
-import { comboSizes } from "../shared/pi.js";
+import { comboSizes, mrpForSize } from "../shared/pi.js";
+import GatePass from "./GatePass.jsx";
+import { buildGatePass } from "../shared/gate-pass.js";
 import { singlePackQty } from "../shared/bridge.js";
 import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary } from "../shared/mixed-carton.js";
 
@@ -42,6 +44,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      thing that travels with the lorry, so it has to be reprintable long after
      the dispatch was recorded — not only at the moment it was keyed in. */
   const [viewing,setViewing]=useState(null);
+  /* The gate pass is the SAME shipment as the packing list, so it is raised
+     from the same row rather than re-keyed. Three things are not in the
+     system and are typed here: the serial number off the pre-printed pad, the
+     transporter, and the destination city. */
+  const [showGate,setShowGate]=useState(false);
+  const [gate,setGate]=useState({serial_no:"",transporter:"",city:""});
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
@@ -204,14 +212,16 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      same way the invoice is. A print stylesheet has to anticipate every piece
      of chrome on the page; a clean document cannot get one wrong, and what is
      saved as a PDF is then exactly the sheet and nothing else. */
-  function printPackingList(){
-    const node=document.querySelector(".packing-list");
+  function printPackingList(){ printDocument(".packing-list","Packing list"); }
+  function printGatePass(){ printDocument(".gate-pass","Gate pass"); }
+  function printDocument(selector,label){
+    const node=document.querySelector(selector);
     if(!node) return;
     const w=window.open("","_blank","width=900,height=1000");
-    if(!w){ setErr("Popup blocked — allow popups to print the packing list."); return; }
+    if(!w){ setErr(`Popup blocked — allow popups to print the ${label.toLowerCase()}.`); return; }
     w.document.open();
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
-      + `<title>Packing list ${viewing?viewing.order_no:""}</title>`
+      + `<title>${label} ${viewing?viewing.order_no:""}</title>`
       + `<style>*{box-sizing:border-box}`
       + `body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}`
       + `table{width:100%;border-collapse:collapse}`
@@ -432,15 +442,51 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       <div className="mb-4 rounded-2xl border border-slate-300 bg-white p-3 shadow-sm">
         <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
           <div className="text-sm font-semibold text-slate-800">
-            Packing list · <span className="mono">{viewing.order_no}</span>
+            <span className="mono">{viewing.order_no}</span>
           </div>
-          <button onClick={printPackingList}
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+            {[["list","Packing list"],["gate","Gate pass"]].map(([key,label])=>(
+              <button key={key} onClick={()=>setShowGate(key==="gate")}
+                className={`px-2.5 py-1 font-semibold ${(key==="gate")===showGate?"bg-slate-800 text-white":"bg-white text-slate-600"}`}>
+                {label}</button>))}
+          </div>
+          <button onClick={showGate?printGatePass:printPackingList}
             className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">
             Print / Save PDF</button>
-          <button onClick={()=>setViewing(null)}
+          <button onClick={()=>{setViewing(null);setShowGate(false);}}
             className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
         </div>
-        <PackingList data={viewing.sheet} />
+        {showGate && <div data-noprint className="flex gap-2 flex-wrap mb-2">
+          <label className="text-xs text-slate-600">SR. No. from the book
+            <input value={gate.serial_no} aria-label="Gate pass serial number"
+              onChange={e=>setGate(g=>({...g,serial_no:e.target.value}))}
+              className="block mt-0.5 w-32 text-sm border border-slate-300 rounded px-2 py-1 mono" /></label>
+          <label className="text-xs text-slate-600">Transporter
+            <input value={gate.transporter} aria-label="Transporter"
+              onChange={e=>setGate(g=>({...g,transporter:e.target.value}))}
+              className="block mt-0.5 w-44 text-sm border border-slate-300 rounded px-2 py-1" /></label>
+          <label className="text-xs text-slate-600">City
+            <input value={gate.city} aria-label="Destination city"
+              onChange={e=>setGate(g=>({...g,city:e.target.value}))}
+              className="block mt-0.5 w-36 text-sm border border-slate-300 rounded px-2 py-1" /></label>
+        </div>}
+        {showGate
+          ? (()=>{
+              const built=buildPackingList(viewing.sheet||{});
+              const order=(orders||[]).find(o=>o.order_no===viewing.order_no)||{};
+              const article=order.article_code||order.article||"";
+              return <GatePass data={buildGatePass({
+                packing_list:built, ...gate,
+                order_no:viewing.order_no, date:viewing.dispatched_on||built.date,
+                party:built.customer||order.party,
+                order_qty:(order.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0)||null,
+                /* Per SIZE, off the article master — blank where there is no
+                   figure on record rather than a zero. */
+                mrpFor:size=>mrpForSize((INPUTS.mrp&&INPUTS.mrp[article])||{},"",size),
+                packFor:size=>singlePackQty(article,size,"",""),
+              })} />;
+            })()
+          : <PackingList data={viewing.sheet} />}
       </div>)}
 
     {!!reportsByOrder.length && (
