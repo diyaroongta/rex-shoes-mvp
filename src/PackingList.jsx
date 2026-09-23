@@ -117,7 +117,13 @@ export default function PackingList({ data, articleName, config = {} }){
                 {si === 0 && <>
                   <td style={{...CELL,textAlign:"center"}} rowSpan={rows}>{g.cartons || ""}</td>
                   <td style={{...CELL,textAlign:"center",fontWeight:700}} rowSpan={rows}>
-                    {cartonNumbers(g, total_cartons)}</td>
+                    {cartonNumbers(g, total_cartons)}
+                    {/* A box holding more than one size is called what it is.
+                        The gate counts pairs against this line, and "12 pairs"
+                        against two size rows reads as an error unless the
+                        sheet says the sizes travelled together. */}
+                    {(g.sizes||[]).length > 1 &&
+                      <div style={{fontWeight:400,fontSize:8,letterSpacing:.3}}>MIXED</div>}</td>
                 </>}
               </tr>;
             });

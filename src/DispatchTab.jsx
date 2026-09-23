@@ -7,6 +7,8 @@ import PackingList from "./PackingList.jsx";
 import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
 import { comboSizes } from "../shared/pi.js";
+import { singlePackQty } from "../shared/bridge.js";
+import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary } from "../shared/mixed-carton.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
 
@@ -486,12 +488,19 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
 function PackingListEditor({ sheet, setSheet, expectedPairs }){
   const built = buildPackingList({ ...sheet, dispatch_pairs: expectedPairs });
   const edit = fn => { const next = JSON.parse(JSON.stringify(sheet)); fn(next); setSheet(next); };
+  /* Per SIZE, never per range: SPIKE's 11X1 packs its 12s and 13s at 24 and
+     its size 1 at 18, so a rate taken from the range is wrong as often as it
+     is right. */
+  const rateForLine = line => size => singlePackQty(line.article, size, "", line.combo);
+  const summary = packingSummary(built, () => null);
 
   return <div className="rounded-xl border border-slate-300 bg-white p-3">
     <div className="flex items-baseline gap-3 flex-wrap mb-2">
       <div className="text-sm font-semibold text-slate-800">Packing list</div>
       <div className="text-xs text-slate-600">
         <b className="mono">{built.total_pairs}</b> pairs · <b className="mono">{built.total_cartons}</b> cartons
+        {summary.mixed_cartons > 0 && <> · <b className="mono">{summary.mixed_cartons}</b> mixed
+          {" "}(<b className="mono">{summary.mixed_pairs}</b> pairs)</>}
         {expectedPairs != null && <> · dispatching <b className="mono">{expectedPairs}</b></>}
       </div>
     </div>
@@ -507,6 +516,7 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
             <th className="text-left py-1">Size</th>
             <th className="text-right">Pairs</th>
             <th className="text-right">Cartons (counted)</th>
+            <th className="text-right">C/N</th>
             <th></th>
           </tr></thead>
           <tbody>
@@ -523,6 +533,12 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
                     aria-label={`Cartons for size ${g.sizes.map(x=>x.size).join(" and ")}`}
                     onChange={e=>edit(n=>{ n.lines[li].groups[gi].cartons = e.target.value; })}
                     className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>}
+                {si === 0 && <td className="text-right mono text-slate-500" rowSpan={g.sizes.length}>
+                  {(() => { const b = (built.lines[li]||{}).groups||[];
+                    const bg = b[gi];
+                    const cn = bg && bg.cn_from ? (bg.cn_from===bg.cn_to?`${bg.cn_from}`:`${bg.cn_from}-${bg.cn_to}`) : "—";
+                    return <>{cn}{g.sizes.length>1 && <div className="text-[10px] font-semibold text-indigo-700">mixed</div>}</>; })()}
+                </td>}
                 {si === 0 && <td className="text-right" rowSpan={g.sizes.length}>
                   {gi > 0 && <button type="button" title="Pack this size in the carton above"
                     onClick={()=>edit(n=>{ const gs=n.lines[li].groups;
@@ -533,11 +549,38 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
                       const split=gs[gi].sizes.map(x=>({sizes:[x],cartons:0}));
                       gs.splice(gi,1,...split); })}
                     className="ml-2 text-[11px] text-slate-600 underline">split</button>}
+                  {g.mixed && <button type="button" title="Remove this mixed carton"
+                    onClick={()=>edit(n=>{ n.lines[li].groups.splice(gi,1); })}
+                    className="ml-2 text-[11px] text-rose-700 underline">remove</button>}
                 </td>}
               </tr>
             )))}
           </tbody>
         </table>
+
+        {/* THE LAST BOX. 45 cartons of whole sizes and six pairs of 8 with six
+            of 9 left over: those twelve pairs travel together in carton 46,
+            and the gate has to be told which sizes are inside it. The leftover
+            pairs are SUGGESTED from the packing rates and then typed over —
+            what is in the box is counted, never derived. */}
+        {(() => {
+          const suggestion = suggestMixedCarton(line, rateForLine(line));
+          const sizes = (comboSizes(line.combo)||[]).length
+            ? comboSizes(line.combo) : line.groups.flatMap(g=>g.sizes.map(s=>s.size));
+          return <div className="flex items-center gap-2 flex-wrap mt-1">
+            <button type="button"
+              onClick={()=>setSheet(withMixedCarton(sheet, li,
+                suggestion || { sizes: sizes.slice(0,1).map(size=>({ size, pairs:0 })) }))}
+              className="text-[11px] font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-800 bg-indigo-50">
+              + Add a mixed carton</button>
+            <span className="text-[11px] text-slate-500">
+              {suggestion
+                ? <>{suggestion.pairs} pair{suggestion.pairs===1?"":"s"} will not fill a carton of their own
+                    {" "}({suggestion.sizes.map(x=>`${x.size} x ${x.pairs}`).join(", ")}).</>
+                : <>One box holding several sizes. Its pairs are counted, and it takes the next carton number.</>}
+            </span>
+          </div>;
+        })()}
       </div>
     ))}
 
