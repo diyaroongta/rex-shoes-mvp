@@ -61,6 +61,48 @@ describe("database API contracts",()=>{
     expect(res.body.pi_config.company_name).toBe("REX");
   });
 
+  /* LEAD TIMES — days an order is not being made. They lived only in the
+     bundled seed, so the factory could not correct a single one from the app:
+     permanent placeholders in a system whose rule is that nothing is assumed.
+     They are settings now, beside the capacities and delivery targets. */
+  it("saves lead times and leaves every other setting alone",async()=>{
+    const previous={capacities:{CUTTING:91},sla_targets:{CUTTING:12},
+                    lead_time_rules:{printing_days:1,stitching_outside_transport_days:2}};
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:previous}]}).mockResolvedValueOnce({rows:[]});
+    const res=response();
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",
+      body:{lead_time_rules:{stitching_outside_transport_days:4}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.lead_time_rules.stitching_outside_transport_days).toBe(4);
+    expect(res.body.lead_time_rules.printing_days).toBe(1);
+    expect(res.body.capacities.CUTTING).toBe(91);
+    expect(res.body.sla_targets.CUTTING).toBe(12);
+  });
+
+  it("stores a lead time of ZERO as zero — no wait is a real answer",async()=>{
+    dbMocks.q.mockResolvedValueOnce({rows:[{value:{lead_time_rules:{printing_days:3}}}]})
+      .mockResolvedValueOnce({rows:[]});
+    const res=response();
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",
+      body:{lead_time_rules:{printing_days:0}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.lead_time_rules.printing_days).toBe(0);
+  });
+
+  it("refuses a lead time that is not a number of days, and a typo",async()=>{
+    for(const [body,message] of [
+      [{lead_time_rules:{printing_days:-1}}, /0 or more days/],
+      [{lead_time_rules:{printing_days:900}}, /looks like a typo/],
+      [{lead_time_rules:{cutting_days:2}}, /unknown lead time/],
+    ]){
+      dbMocks.q.mockResolvedValueOnce({rows:[{value:{}}]}).mockResolvedValueOnce({rows:[]});
+      const res=response();
+      await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body},res);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error).toMatch(message);
+    }
+  });
+
   it("rejects an over-dispatch before writing it",async()=>{
     /* Matched on the SQL rather than on a call count: the handler also reads
        the repair bench now, and a test that pins the number of queries breaks

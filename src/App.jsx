@@ -66,6 +66,10 @@ export default function App({ user=null, onSignOut=null }={}){
   const [productionActuals,setProductionActuals]=useState([]);
   const [dispatchLoading, setDispatchLoading] = useState(true);
   const [dispatchErr, setDispatchErr] = useState("");
+  /* Days an order spends NOT being made. Editable on Machine load, because a
+     placeholder nobody can correct is the one kind of assumption this app is
+     not allowed to keep. */
+  const [leadTimes, setLeadTimes] = useState({});
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
   /* A role must never land on a screen it cannot open. The server is the only
      thing that actually enforces permissions; this just keeps the app honest
@@ -101,6 +105,7 @@ export default function App({ user=null, onSignOut=null }={}){
         ...Object.fromEntries(Object.entries(settings.capacities)
           .filter(([code])=>INPUTS.workcenters[code]))}));
       if(settings && settings.sla_targets) setTargets(settings.sla_targets);
+      if(settings && settings.lead_time_rules) setLeadTimes(settings.lead_time_rules);
     }catch(e){ setLoadErr(e.message||String(e)); setOrders([]); }
   })(); },[]);
 
@@ -250,10 +255,12 @@ export default function App({ user=null, onSignOut=null }={}){
   const wcs = useMemo(()=>{
     const w={};
     for(const[k,v]of Object.entries(INPUTS.workcenters)) w[k]={...v,capacity_per_day:caps[k]};
-    // carried alongside the centres so the engine can apply per-order lead time
-    Object.defineProperty(w,"_lead_time_rules",{value:INPUTS.lead_time_rules||null,enumerable:false});
+    /* Carried alongside the centres so the engine can apply per-order lead
+       time. The factory's own figures win over the seed's placeholders. */
+    Object.defineProperty(w,"_lead_time_rules",
+      {value:{...(INPUTS.lead_time_rules||{}), ...(leadTimes||{})},enumerable:false});
     return w;
-  },[caps,refTick]);
+  },[caps,leadTimes,refTick]);
   /* Manual planning overrides, one per order, straight off the order row. The
      plan stays fully recomputed from them, so procurement, machine load, SLA
      and the dashboard all move together when a planner reorders the queue —
@@ -594,7 +601,7 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} onChanged={refreshProductionActuals} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
-        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} />}
+        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="stock" && <StockTab state={state} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
@@ -3066,7 +3073,7 @@ function PlanTab({state,caps,actuals=[],setPlanOverride}){
         </tbody>
       </table>
     </div>
-    <p className="text-xs text-slate-400 mt-3"><span style={{background:"#fffbeb",padding:"1px 4px",borderRadius:3,color:"#b45309"}}>Amber</span> is a day booked past capacity because a stage was pinned to a shorter run in Schedule → Adjust. Each molding machine takes one order at a time, so a molding column never shows two orders on the same day — but the molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
+    <p className="text-xs text-slate-400 mt-3"><span style={{background:"#fffbeb",padding:"1px 4px",borderRadius:3,color:"#b45309"}}>Amber</span> is a day booked past capacity because a stage was pinned to a shorter run in Schedule → Adjust. A molding machine carries one MOULD at a time, so a molding column can show two cards of the same article on one day — up to that machine's capacity — while a different article waits for the changeover. The molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
   </div>;
 }
 
@@ -3543,7 +3550,7 @@ function ProcurementTab({state}){
   </div>;
 }
 
-function MachinesTab({state,caps,setCaps,targets,setTargets}){
+function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTimes}){
   // Derived from reference data, not hardcoded — add a work centre and it
   // appears here automatically. Ordered by production sequence so the strips
   // read the way the factory flows, and rows never re-order while editing.
@@ -3554,6 +3561,7 @@ function MachinesTab({state,caps,setCaps,targets,setTargets}){
     <p className="text-sm text-slate-500 mb-1">One strip per line, day by day: <b>how full that line is on each day</b>. Red = fully booked, amber = nearly full, blue = partly used, empty = free. The date on the right is when the line frees up.</p>
     <p className="text-xs text-slate-400 mb-4">Each molding machine runs one order at a time, but they run in parallel with each other. Capacities are placeholders until the factory confirms them.</p>
     <SlaTargets targets={targets} setTargets={setTargets} />
+    <LeadTimes leadTimes={leadTimes} setLeadTimes={setLeadTimes} />
     <MoldingAssignment />
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
@@ -3684,6 +3692,60 @@ function SlaTargets({targets,setTargets}){
     <button disabled={busy||!dirty} onClick={save}
       className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
       {busy?"Saving…":"Save targets"}</button>
+  </div>;
+}
+
+/* DAYS AN ORDER SPENDS NOT BEING MADE. Printing delays the release; outside
+   stitching adds a transit leg AFTER stitching, because work sent out has to
+   come back before it can be QC'd. Both were readable only from the bundled
+   seed — so they were placeholders the factory had no way to correct, in an
+   app whose whole rule is that nothing is assumed. */
+function LeadTimes({leadTimes,setLeadTimes}){
+  const FIELDS=[
+    ["printing_days","Printing",
+     "Days printing adds BEFORE cutting starts. Only orders marked for printing wait."],
+    ["stitching_outside_transport_days","Outside stitching transit",
+     "Days work sent outside spends travelling, out and back. It books no machine — nothing is being made — but the customer waits for it."],
+    ["stitching_inhouse_prep_days","In-house preparation",
+     "Preparation is already a stage in every route, so this stays 0 unless the factory wants a further buffer."],
+  ];
+  const cur=Object.fromEntries(FIELDS.map(([k])=>[k,Number((leadTimes||{})[k])||0]));
+  const [draft,setDraft]=useState(cur);
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  useEffect(()=>{setDraft(cur);},[leadTimes]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty=FIELDS.some(([k])=>Number(draft[k])!==Number(cur[k]));
+
+  async function save(){
+    setBusy(true); setMsg("");
+    try{
+      const v=await api.putSettings({lead_time_rules:Object.fromEntries(
+        FIELDS.map(([k])=>[k,Math.max(0,Math.round(Number(draft[k])||0))]))});
+      setLeadTimes(v.lead_time_rules||{});
+      setMsg("Saved — every dispatch date has been recalculated.");
+    }catch(e){ setMsg(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  return <div className="mb-5 border border-slate-200 rounded-xl p-3.5">
+    <div className="text-sm font-semibold text-slate-700 mb-1">Lead times — days an order is not being made</div>
+    <p className="text-xs text-slate-500 mb-3">
+      These are elapsed days, not machine time, and every dispatch date on the board includes them.
+      <b> Zero is a real answer</b> — it means no wait, not "not set".
+    </p>
+    <div className="flex gap-3 flex-wrap">
+      {FIELDS.map(([k,label,help])=>(
+        <label key={k} className="text-xs text-slate-600" style={{maxWidth:230}}>{label}
+          <input type="number" min={0} max={60} value={draft[k]??0} aria-label={label}
+            onChange={e=>setDraft(d=>({...d,[k]:e.target.value}))}
+            className="block mt-0.5 w-20 text-sm border border-slate-300 rounded-lg px-2 py-1 mono" />
+          <span className="block text-[11px] text-slate-400 mt-0.5">{help}</span>
+        </label>))}
+    </div>
+    {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
+    <button disabled={busy||!dirty} onClick={save}
+      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      {busy?"Saving…":"Save lead times"}</button>
   </div>;
 }
 
