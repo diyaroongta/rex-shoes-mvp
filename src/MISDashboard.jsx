@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { buildMisSnapshot } from "../shared/mis.js";
 import { plannedProductionRows, productionActualSummary } from "../shared/production-actuals.js";
+import { planVsActual, biggestGaps } from "../shared/plan-vs-actual.js";
 import { fromDay } from "../shared/engine.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 
@@ -128,6 +129,9 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
   const productionPlan=useMemo(()=>plannedProductionRows(state,INPUTS.origin,fromDay),[state]);
   const production=useMemo(()=>productionActualSummary(productionPlan,productionActuals,today||snapshot.as_of),
     [productionPlan,productionActuals,today,snapshot.as_of]);
+  /* Planned against achieved over time, week by week. Measured on the rows
+     somebody REPORTED: an unreported row is missing, not a zero. */
+  const vs=useMemo(()=>planVsActual(productionPlan,productionActuals),[productionPlan,productionActuals]);
   const [filter,setFilter]=useState("all");
   const [drill,setDrill]=useState(null);   // which figure is being taken apart
   const [search,setSearch]=useState("");
@@ -303,9 +307,64 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
       {!visible.length && <div className="text-sm text-slate-500 text-center py-8">No orders match this dashboard filter.</div>}
     </section>
 
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-baseline gap-2 flex-wrap mb-1">
+        <h3 className="text-sm font-semibold text-slate-800">Planned against achieved</h3>
+        <span className="text-[11px] text-slate-500">
+          By the factory&rsquo;s own financial week. Percentages compare the rows that were reported,
+          like for like; a row nobody reported is counted as missing, never as zero achieved.
+        </span>
+      </div>
+      {!vs.reported
+        ? <div className="text-sm text-slate-500 py-6 text-center">
+            No achievement has been reported yet, so there is nothing to compare the plan against.
+          </div>
+        : <>
+          <div className="flex gap-4 flex-wrap text-xs mb-3">
+            <Figure label="Planned (reported rows)" value={fmt(vs.totals.planned_reported)} />
+            <Figure label="Achieved" value={fmt(vs.totals.actual)} />
+            <Figure label="Variance" value={`${vs.totals.variance>0?"+":""}${fmt(vs.totals.variance)}`}
+              tone={vs.totals.variance<0?"#B91C1C":"#047857"} />
+            <Figure label="Achievement" value={pct(vs.totals.pct)} />
+            <Figure label="Reported" value={`${pct(vs.totals.coverage)} of rows`}
+              detail={vs.totals.unreported_planned>0?`${fmt(vs.totals.unreported_planned)} planned pairs not reported`:""} />
+          </div>
+          <table className="w-full text-xs">
+            <thead><tr className="text-slate-500 text-left">
+              <th className="py-1">Week</th><th className="py-1">Dates</th>
+              <th className="py-1 text-right">Planned</th><th className="py-1 text-right">Achieved</th>
+              <th className="py-1 text-right">Variance</th><th className="py-1 text-right">%</th>
+              <th className="py-1 text-right">Reported</th></tr></thead>
+            <tbody>{vs.weeks.map(w=><tr key={w.key} className="border-t border-slate-100">
+              <td className="py-1 font-semibold text-slate-800">{w.short_label||w.label}</td>
+              <td className="py-1 text-slate-500">{w.from} — {w.to}</td>
+              <td className="py-1 mono text-right">{fmt(w.planned_reported)}</td>
+              <td className="py-1 mono text-right">{fmt(w.actual)}</td>
+              <td className={`py-1 mono text-right ${w.variance<0?"text-rose-700":"text-emerald-700"}`}>
+                {w.reported_rows?`${w.variance>0?"+":""}${fmt(w.variance)}`:"—"}</td>
+              <td className="py-1 mono text-right">{w.pct==null?"not reported":pct(w.pct)}</td>
+              <td className="py-1 mono text-right text-slate-500">{w.reported_rows}/{w.rows}</td>
+            </tr>)}</tbody>
+          </table>
+          {!!biggestGaps(vs,3).filter(d=>d.variance<0).length&&<div className="text-[11px] text-slate-600 mt-2">
+            <b>Furthest behind:</b> {biggestGaps(vs,3).filter(d=>d.variance<0)
+              .map(d=>`${d.date} (${fmt(d.variance)})`).join(" · ")}
+          </div>}
+        </>}
+    </section>
+
     <div className="rounded-lg border border-blue-200 bg-blue-50 text-blue-900 px-3 py-2 text-xs">
       <b>Data boundary:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement comes from the Daily plan vs achievement upload; dispatch comes from recorded packing reports. Factory OS does not ask for rejection or downtime figures because they are not part of the current operating model.
       {production.recorded_rows===0&&<> Until achievement is uploaded, production output is <b>scheduled—not actual</b>.</>}
     </div>
+  </div>;
+}
+
+/* A small labelled figure, for the planned-against-achieved band. */
+function Figure({label,value,detail="",tone="#0F2233"}){
+  return <div>
+    <div className="text-[11px] text-slate-500">{label}</div>
+    <div className="text-base font-semibold mono" style={{color:tone}}>{value}</div>
+    {detail&&<div className="text-[10px] text-slate-500">{detail}</div>}
   </div>;
 }

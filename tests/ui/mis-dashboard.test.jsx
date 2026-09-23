@@ -43,6 +43,15 @@ describe("Executive MIS dashboard",()=>{
     expect(refresh).toHaveBeenCalledOnce();
   });
 
+  /* Planned against achieved must not draw a board of zeros before anyone has
+     reported anything — an unfilled sheet is not a stopped factory. */
+  it("says nothing has been reported rather than scoring the plan at zero",()=>{
+    render(<MISDashboard state={state} dispatches={dispatches} productionActuals={[]} today="2026-08-26"/>);
+    expect(screen.getByText("Planned against achieved")).toBeInTheDocument();
+    expect(screen.getByText(/No achievement has been reported yet/i)).toBeInTheDocument();
+    expect(screen.queryByText("Furthest behind:")).toBeNull();
+  });
+
   it("filters the complete order-health table without changing KPI totals",async()=>{
     const user=userEvent.setup();
     render(<MISDashboard state={state} dispatches={dispatches} today="2026-08-26"/>);
