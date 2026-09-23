@@ -22,9 +22,7 @@ describe("Executive MIS dashboard",()=>{
   it("shows management KPIs, dispatch completion and planned machine output",async()=>{
     const user=userEvent.setup();
     const refresh=vi.fn();
-    const productionLogs=[{production_on:"2026-08-26",work_center:"CUTTING",stage:"CUTTING",
-      good_pairs:480,rejected_pairs:5,downtime_minutes:30}];
-    render(<MISDashboard state={state} dispatches={dispatches} productionLogs={productionLogs}
+    render(<MISDashboard state={state} dispatches={dispatches}
       onRefresh={refresh} today="2026-08-26"/>);
     expect(screen.getByTestId("kpi-total-orders")).toHaveTextContent("3");
     expect(screen.getByTestId("kpi-on-time")).toHaveTextContent("1");
@@ -36,8 +34,6 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getByTestId("kpi-dispatch-shortage-pct")).toHaveTextContent("16.7%");
     expect(screen.getByTestId("kpi-average-dispatch-days")).toHaveTextContent("12.5");
     expect(screen.getByText("Cutting hall")).toBeInTheDocument();
-    expect(screen.getByTestId("actual-production-today")).toHaveTextContent("480");
-    expect(screen.getByTestId("actual-production-today")).toHaveTextContent("30m");
     expect(screen.getByText(/scheduled—not actual/i)).toBeInTheDocument();
     expect(screen.getByRole("img",{name:/six five-day periods/i})).toBeInTheDocument();
     await user.click(screen.getByText("Show MIS calculation logic"));
@@ -45,6 +41,15 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getByText(/50 ÷ 300 × 100/)).toBeInTheDocument();
     await user.click(screen.getByRole("button",{name:"Refresh live data"}));
     expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  /* Planned against achieved must not draw a board of zeros before anyone has
+     reported anything — an unfilled sheet is not a stopped factory. */
+  it("says nothing has been reported rather than scoring the plan at zero",()=>{
+    render(<MISDashboard state={state} dispatches={dispatches} productionActuals={[]} today="2026-08-26"/>);
+    expect(screen.getByText("Planned against achieved")).toBeInTheDocument();
+    expect(screen.getByText(/No achievement has been reported yet/i)).toBeInTheDocument();
+    expect(screen.queryByText("Furthest behind:")).toBeNull();
   });
 
   it("filters the complete order-health table without changing KPI totals",async()=>{

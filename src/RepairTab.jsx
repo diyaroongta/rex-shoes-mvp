@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { todayIso } from "./lib/today.js";
 import * as api from "./lib/client.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import { pairsPerCarton, comboSizesForArticle } from "../shared/bridge.js";
-import { repairLedger, repairTotals, validateMovement, MOVEMENTS, MOVEMENT_LABEL }
+import { repairLedger, repairTotals, repairProductionPlan, validateMovement, MOVEMENTS, MOVEMENT_LABEL }
   from "../shared/repair.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
-const today = () => new Date().toISOString().slice(0,10);
+const today = () => todayIso();
 
 /* Repair, between production and dispatch.
  *
@@ -40,6 +41,7 @@ export default function RepairTab({ orders = [], dispatches = [], onChanged }){
 
   const ledger = useMemo(()=>repairLedger(entries||[]),[entries]);
   const totals = useMemo(()=>repairTotals(ledger),[ledger]);
+  const plan = useMemo(()=>repairProductionPlan(entries||[],orders,today()),[entries,orders]);
 
   /* Only orders that still have pairs to ship. A repair on something already
      gone is not a repair, it is a return — a different thing the factory
@@ -162,6 +164,40 @@ export default function RepairTab({ orders = [], dispatches = [], onChanged }){
       </div>}
       {!!qty && !check.ok && <ul className="text-[11px] text-rose-700 mt-2 list-disc pl-4">
         {check.problems.map(p=><li key={p}>{p}</li>)}</ul>}
+    </div>
+
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3 overflow-x-auto">
+      <div className="flex items-start gap-3 flex-wrap mb-2">
+        <div>
+          <div className="text-sm font-semibold text-slate-700">Repair production plan before dispatch</div>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Every size still on the repair bench, ordered by the dispatch date already in Factory OS.
+            Receiving or rejecting pairs updates this plan automatically.
+          </p>
+        </div>
+        <div className="ml-auto text-xs text-slate-500">
+          To return <b className="mono text-amber-700">{fmt(plan.reduce((n,r)=>n+r.qty,0))}</b> pairs
+        </div>
+      </div>
+      {!plan.length
+        ? <div className="text-xs text-emerald-700 rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2">
+            No pairs are waiting for repair production.
+          </div>
+        : <table className="w-full text-xs" style={{minWidth:760}}>
+            <thead><tr className="text-slate-500">
+              <th className="text-left py-1">Dispatch by</th><th className="text-left">Order</th>
+              <th className="text-left">Article</th><th className="text-left">Party</th>
+              <th className="text-left">Size</th><th className="text-right">Repair qty</th>
+              <th className="text-left pl-3">Priority</th></tr></thead>
+            <tbody>{plan.map((row,i)=><tr key={`${row.order_no}-${row.size}-${i}`} className="border-t border-slate-100">
+              <td className="py-1.5 mono">{row.dispatch_on||"Not planned"}</td>
+              <td className="mono font-semibold">{row.order_no}</td>
+              <td>{row.article||"—"}</td><td className="text-slate-600">{row.party||"—"}</td>
+              <td className="mono">{row.size}</td><td className="text-right mono font-semibold">{fmt(row.qty)}</td>
+              <td className={`pl-3 font-semibold ${row.status==="Dispatch overdue"?"text-rose-700":row.status==="Dispatch today"?"text-amber-700":"text-slate-600"}`}>
+                {row.status}</td>
+            </tr>)}</tbody>
+          </table>}
     </div>
 
     {!!Object.keys(ledger).length && <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">

@@ -15,10 +15,25 @@ const DEFAULT_PI_TERMS = {
 
 const DEFAULT_TARGETS = { CUTTING:8, PREPARATION:11, STITCHING:15, UPPER_QC:18, PRINTING:18, MOLDING:22, ASSEMBLY:22, PACKING:28, DISPATCH:30 };
 
+/* LEAD TIMES — days an order spends NOT being made.
+   Printing pushes the release later; outside stitching adds a transit leg
+   AFTER stitching, because work sent out has to come back before it can be
+   QC'd. Both were readable only from the bundled seed, so the factory could
+   not correct a single one of them from the app — which made them permanent
+   placeholders in a system whose whole point is that nothing is assumed.
+   Zero is a legitimate answer and is stored as one; it means "no wait", not
+   "not set". */
+const LEAD_TIME_KEYS = {
+  printing_days: "Days printing adds before cutting can start",
+  stitching_outside_transport_days: "Days work sent outside spends in transit, out and back",
+  stitching_inhouse_prep_days: "Days of preparation before in-house stitching",
+};
+
 const DEFAULTS = () => {
   const capacities = {};
   for(const [k, w] of Object.entries(INPUTS.workcenters)) capacities[k] = w.capacity_per_day;
-  return { capacities, sla_targets: DEFAULT_TARGETS, pi_terms: DEFAULT_PI_TERMS };
+  return { capacities, sla_targets: DEFAULT_TARGETS, pi_terms: DEFAULT_PI_TERMS,
+           lead_time_rules: { ...(INPUTS.lead_time_rules || {}) } };
 };
 
 /* Work centres come from the reference document in the database, not from the
@@ -66,6 +81,14 @@ export default wrap(async (req, res) => {
       if(!Number.isFinite(n) || n < 0) return fail(res, 400, `target for ${k} must be 0 or more`);
       targets[k] = n;
     }
+    const leadTimes = {};
+    for(const [k, v] of Object.entries(patch.lead_time_rules || {})){
+      if(!(k in LEAD_TIME_KEYS)) return fail(res, 400, `unknown lead time: ${k}`);
+      const n = Math.round(Number(v));
+      if(!Number.isFinite(n) || n < 0) return fail(res, 400, `${k} must be 0 or more days`);
+      if(n > 60) return fail(res, 400, `${k} of ${n} days looks like a typo — the cap is 60`);
+      leadTimes[k] = n;
+    }
     // Forget the stale keys rather than carrying them forward for ever.
     for(const k of dropped) delete (prev.capacities||{})[k];
     const base = DEFAULTS();
@@ -74,7 +97,8 @@ export default wrap(async (req, res) => {
     // different screen; dropping `prev` here reset every untouched setting.
     const value = { ...base, ...prev,
       capacities:  { ...base.capacities,  ...(prev.capacities||{}),  ...clean },
-      sla_targets: { ...base.sla_targets, ...(prev.sla_targets||{}), ...targets } };
+      sla_targets: { ...base.sla_targets, ...(prev.sla_targets||{}), ...targets },
+      lead_time_rules: { ...base.lead_time_rules, ...(prev.lead_time_rules||{}), ...leadTimes } };
 
     // Proforma Invoice terms and letterhead. Percentages are validated; the
     // deduction ladder is stored in order, since each step applies to the

@@ -5,6 +5,10 @@
 -- can never be handed the same number.
 create sequence if not exists order_no_seq start 2001;
 create sequence if not exists pi_no_seq start 1;
+-- Quotations have their OWN series. A quotation that borrowed a PI number
+-- would consume a number the invoice ledger expects to issue, and most
+-- quotations never become invoices.
+create sequence if not exists quotation_no_seq start 1;
 
 create table if not exists orders (
   order_no     text primary key,
@@ -71,6 +75,25 @@ create index if not exists proforma_invoices_archived_idx on proforma_invoices (
 
 -- Shared config: machine capacities. One row, id = 1.
 -- These are shared factory settings, not per-browser preferences.
+-- A priced offer, before there is an order. It releases nothing: no order, no
+-- PI number, no material demand and no machine time, until it is converted.
+create table if not exists quotations (
+  quote_no        text primary key,
+  quote_date      date,
+  party           text,
+  city            text,
+  status          text        not null default 'draft',
+  valid_days      integer,
+  pairs           integer     not null default 0,
+  total           numeric     not null default 0,
+  converted_pi_no text,
+  note            text,
+  snapshot        jsonb       not null default '{}'::jsonb,
+  created_by      text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
 create table if not exists settings (
   id         integer primary key,
   value      jsonb       not null,
@@ -320,37 +343,33 @@ create table if not exists repairs (
 );
 create index if not exists repairs_order_idx on repairs (order_no);
 
--- ---------------------------------------------------------------------------
--- Daily shop-floor actuals. One row is one machine/work centre, shift and
--- order/article event. The plan remains computed from the Order Book; this is
--- the actual feed used to compare the factory with that plan.
---
--- Corrections are voids, not overwrites. A supervisor can therefore correct a
--- mis-keyed row without destroying the fact that it was originally recorded.
-create table if not exists production_logs (
-  id                bigserial primary key,
-  production_on     date        not null,
-  shift             text        not null,
-  work_center       text        not null,
-  order_no          text        not null,
-  article           text        not null,
-  stage             text        not null,
-  good_pairs        integer     not null default 0 check (good_pairs >= 0),
-  rejected_pairs    integer     not null default 0 check (rejected_pairs >= 0),
-  downtime_minutes  integer     not null default 0 check (downtime_minutes between 0 and 1440),
-  downtime_reason   text,
-  supervisor        text,
-  note              text,
-  import_key        text,
-  created_by        text,
-  created_at        timestamptz not null default now(),
-  voided_by         text,
-  voided_at         timestamptz
+-- Daily plan versus achievement.  Descriptive fields are snapshots from the
+-- automatic schedule; actual_pairs is the only new shop-floor measurement.
+create table if not exists production_actuals (
+  id             bigserial primary key,
+  production_on  date        not null,
+  work_center    text        not null,
+  stage          text        not null,
+  order_no       text        not null references orders(order_no) on delete restrict,
+  unit_key       text        not null,
+  job_card_no    text        not null default '',
+  article        text        not null default '',
+  party          text        not null default '',
+  size_ranges    text        not null default '',
+  planned_pairs  integer     not null check (planned_pairs >= 0),
+  actual_pairs   integer     not null check (actual_pairs >= 0),
+  note           text,
+  created_by     text,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (production_on, work_center, stage, unit_key)
 );
-alter table production_logs add column if not exists import_key text;
-create index if not exists production_logs_day_idx
-  on production_logs (production_on desc, work_center, shift);
-create index if not exists production_logs_order_idx
-  on production_logs (order_no, production_on desc);
-create unique index if not exists production_logs_import_key_idx
-  on production_logs (import_key) where import_key is not null;
+alter table production_actuals add column if not exists unit_key text;
+alter table production_actuals add column if not exists job_card_no text not null default '';
+update production_actuals set unit_key=order_no where unit_key is null or unit_key='';
+alter table production_actuals alter column unit_key set not null;
+alter table production_actuals drop constraint if exists production_actuals_production_on_work_center_stage_order_no_key;
+create unique index if not exists production_actuals_row_key
+  on production_actuals (production_on, work_center, stage, unit_key);
+create index if not exists production_actuals_day_idx
+  on production_actuals (production_on desc, work_center);

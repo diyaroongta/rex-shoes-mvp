@@ -615,6 +615,20 @@ export default wrap(async (req, res) => {
         ref.articles[art].molding_machine = machine;
       }
     }
+    /* WHICH PART OF THE CATALOGUE an article belongs in — the client's own
+       "Toddler / MTO / Regular" tabs. Free text, and deliberately so: their
+       printed catalogue names its own sections differently again
+       (Kindergarten, PVC, EVA, Rubber, Regular), so a fixed list here would
+       either refuse the factory's real words or invent a taxonomy nobody
+       uses. Blank clears it, and an article with no section is counted as
+       unassigned on screen rather than being dropped into a default. */
+    if(body.section && typeof body.section === "object"){
+      for(const [art, value] of Object.entries(body.section)){
+        if(!ref.articles[art]) reject(`unknown article: ${art}`);
+        const name = value == null ? "" : String(value).trim().slice(0,40);
+        ref.articles[art].section = name || null;
+      }
+    }
     if(sole_type && typeof sole_type === "object"){
       for(const [art, st] of Object.entries(sole_type)){
         if(!ref.articles[art]) reject(`unknown article: ${art}`);

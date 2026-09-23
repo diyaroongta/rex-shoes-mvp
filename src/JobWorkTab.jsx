@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./lib/client.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { selectableFor, optionLabel } from "../shared/fabricators.js";
+import { lineBoard } from "../shared/line-load.js";
 import { validateIssue, summarise, withFabricators, slipFor,
          SAMPLE_STATUS, SAMPLE_LABEL } from "../shared/job-work.js";
 
@@ -51,6 +52,11 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   const everyone = (fabricators||[]).filter(f => f.active);
   const check = validateIssue(form, chosen);
   const bucket = useMemo(()=>withFabricators(jobs), [jobs]);
+  /* The LINE LAYOUT: every line the factory has set up, loaded or idle,
+     and the outside fabricators beside them. Built from the master rather
+     than from the jobs, because an idle line is the one that can take the
+     next card and a jobs-only board leaves it out entirely. */
+  const board = useMemo(()=>lineBoard(fabricators||[], jobs), [fabricators, jobs]);
   const rows = useMemo(()=>jobs.map(j => summarise(j, (fabricators||[]).find(f=>f.name===j.fabricator))),
                        [jobs, fabricators]);
   const open = rows.filter(r => r.status !== "closed");
@@ -119,16 +125,35 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
       <div className="text-xs text-slate-600 mt-1">Live database of created job orders. Receive work here and record any final shortage or external payment.</div>
     </div>
 
-    {/* What is physically out, per the note's "with fabricator/line" bucket. */}
-    {!!bucket.length && <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm mb-3">
-      <div className="text-sm font-semibold text-slate-800 mb-2">Out with lines and fabricators</div>
-      <div className="flex gap-4 flex-wrap">
-        {bucket.map(b => <div key={b.fabricator} className="text-xs">
-          <div className="font-semibold text-slate-800">{b.fabricator}</div>
-          <div className="mono text-slate-600">{fmt(b.with_them)} out · {b.open_jobs} open</div>
-          {b.shortage > 0 && <div className="text-rose-700 font-semibold">{fmt(b.shortage)} short</div>}
+    {/* The line layout: the factory's own lines first, outside work beside
+        them. Every active line has a row whether or not it is carrying work. */}
+    {!!board.rows.length && <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm mb-3">
+      <div className="flex items-baseline gap-2 flex-wrap mb-2">
+        <div className="text-sm font-semibold text-slate-800">Stitching lines and fabricators</div>
+        <span className="text-[11px] text-slate-500">
+          {board.internal_lines} internal line{board.internal_lines===1?"":"s"} set up
+          {board.idle_lines>0 && ` · ${board.idle_lines} idle`}
+          {" · "}{fmt(board.totals.with_them)} pairs out in total
+        </span>
+      </div>
+      <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))"}}>
+        {board.rows.map(r => <div key={r.fabricator}
+          className={`rounded-lg border px-2.5 py-2 ${r.idle?"border-slate-200 bg-slate-50":"border-slate-300 bg-white"}`}>
+          <div className="flex items-baseline gap-1.5">
+            <div className="text-xs font-semibold text-slate-800">{r.fabricator}</div>
+            {r.idle && <span className="text-[10px] font-semibold text-emerald-700">IDLE</span>}
+          </div>
+          <div className="text-[10px] text-slate-500">{r.type_label}
+            {r.not_in_master && <span className="text-amber-700"> · no longer in the master</span>}</div>
+          <div className="mono text-xs text-slate-700 mt-1">{fmt(r.with_them)} out · {r.open_jobs} open</div>
+          <div className="mono text-[10px] text-slate-500">{fmt(r.issued)} issued · {fmt(r.received)} back</div>
+          {r.shortage > 0 && <div className="text-[11px] text-rose-700 font-semibold">{fmt(r.shortage)} short</div>}
         </div>)}
       </div>
+      {board.internal_lines<=1 && <div className="text-[11px] text-amber-800 mt-2">
+        Only {board.internal_lines} internal line is set up. Add the factory&rsquo;s other lines on
+        the Fabricators screen and each one gets its own row here.
+      </div>}
     </div>}
 
     {allowDirectIssue && <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-4">

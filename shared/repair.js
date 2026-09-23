@@ -176,3 +176,44 @@ export function repairRate(ledger, producedPairs){
   if(!Number.isFinite(base) || base <= 0 || total.sent === 0) return null;
   return Math.round((total.sent / base) * 1000) / 10;
 }
+
+/* The repair production queue uses facts the system already has: quantities
+   currently on the bench and the order's planned dispatch date.  It does not
+   ask the team to maintain a second, parallel schedule.  One row per size is
+   deliberate — repair is captured per size, and that is the quantity the
+   repair operator has to return before dispatch. */
+export function repairProductionPlan(entries = [], orders = [], today = ""){
+  const ledger = repairLedger(entries);
+  const orderByNo = Object.fromEntries((orders || []).map(o => [clean(o.order_no), o]));
+  const asOf = clean(today).slice(0, 10);
+  const rows = [];
+
+  for(const rec of Object.values(ledger)){
+    const order = orderByNo[rec.order_no] || {};
+    const dispatchOn = clean(order.dispatch_date).slice(0, 10) || null;
+    for(const size of rec.size_order || Object.keys(rec.sizes || {})){
+      const qty = Math.max(0, Number((rec.sizes[size] || {}).in_repair) || 0);
+      if(qty <= 0) continue;
+      let status = "Before dispatch";
+      if(!dispatchOn) status = "No dispatch date";
+      else if(asOf && dispatchOn < asOf) status = "Dispatch overdue";
+      else if(asOf && dispatchOn === asOf) status = "Dispatch today";
+      rows.push({
+        order_no: rec.order_no,
+        article: clean(order.article_code || order.article) || null,
+        party: clean(order.party) || null,
+        size,
+        qty,
+        dispatch_on: dispatchOn,
+        status,
+      });
+    }
+  }
+
+  const rank = { "Dispatch overdue":0, "Dispatch today":1, "Before dispatch":2, "No dispatch date":3 };
+  return rows.sort((a, b) =>
+    (rank[a.status] - rank[b.status])
+    || String(a.dispatch_on || "9999-12-31").localeCompare(String(b.dispatch_on || "9999-12-31"))
+    || a.order_no.localeCompare(b.order_no)
+    || a.size.localeCompare(b.size, undefined, { numeric:true }));
+}

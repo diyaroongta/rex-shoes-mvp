@@ -4,6 +4,7 @@ import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
 import { INPUTS as SEED } from "../shared/inputs.js";
 import { remainingForOrder, releasedBySource, buildRunLines, nextRunNo } from "../shared/pi-split.js";
 import { ordersFromPiSnapshot } from "../shared/pi-schedule.js";
+import { quoteNo, canMoveTo, validateQuotation, STATUSES } from "../shared/quotation.js";
 
 async function reference(){
   const {rows}=await q("select value from reference_data where id = 1");
@@ -11,7 +12,107 @@ async function reference(){
   return SEED;
 }
 
+
+/* QUOTATIONS — a priced offer, before there is an order.
+ *
+ * Served from this file for the same reason job work is served from
+ * api/dispatches.js: Vercel's Hobby plan builds one function per file under
+ * api/ and allows 12, and the project is at exactly 12. The neighbour is the
+ * right one — a quotation is the same document as a PI, one step earlier, and
+ * the permission that governs invoices should govern the offer that becomes
+ * one.
+ *
+ * Nothing here releases work. A quotation holds its own snapshot and touches
+ * no order, no schedule and no material, until somebody converts it and files
+ * the PI through the existing flow.
+ */
+async function ensureQuotations(){
+  await q(`create table if not exists quotations (
+    quote_no text primary key, quote_date date, party text, city text,
+    status text not null default 'draft', valid_days integer,
+    pairs integer not null default 0, total numeric not null default 0,
+    converted_pi_no text, note text, snapshot jsonb not null default '{}'::jsonb,
+    created_by text, created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now())`);
+}
+const quotationRow = r => ({ ...r,
+  quote_date: r.quote_date instanceof Date ? r.quote_date.toISOString().slice(0,10) : String(r.quote_date||""),
+  pairs: Number(r.pairs), total: Number(r.total) });
+
+async function quotations(req,res){
+  await ensureQuotations();
+
+  if(req.method==="GET"){
+    const { rows } = await q(`select quote_no, quote_date, party, city, status, valid_days,
+      pairs, total, converted_pi_no, note, snapshot, created_by, created_at, updated_at
+      from quotations order by created_at desc, quote_no desc`);
+    return res.status(200).json(rows.map(quotationRow));
+  }
+
+  if(req.method==="POST"){
+    const b = req.body || {};
+    /* A number is issued when a quotation is SAVED, never when the screen is
+       opened: allocating on mount burned a PI number per page load once, and
+       the same sequence would burn a quotation number the same way. */
+    const quotation = {
+      party: String(b.party||"").trim(), city: String(b.city||"").trim(),
+      quote_date: String(b.quote_date||"").slice(0,10) || null,
+      valid_days: b.valid_days==null||b.valid_days==="" ? null : Number(b.valid_days),
+      discount_pct: b.discount_pct==null||b.discount_pct==="" ? null : Number(b.discount_pct),
+      items: Array.isArray(b.items) ? b.items : [],
+      note: String(b.note||"").trim(),
+    };
+    const check = validateQuotation(quotation);
+    if(!check.ok) return fail(res,400,check.problems.join(" "));
+
+    const { rows:[seq] } = await q("select nextval('quotation_no_seq') as n");
+    const no = quoteNo(seq.n);
+    const { rows } = await q(`insert into quotations
+      (quote_no, quote_date, party, city, status, valid_days, pairs, total, note, snapshot, created_by)
+      values ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10)
+      returning quote_no, quote_date, party, city, status, valid_days, pairs, total,
+                converted_pi_no, note, snapshot, created_by, created_at, updated_at`,
+      [no, quotation.quote_date, quotation.party, quotation.city, quotation.valid_days,
+       Math.round(check.pairs), Number(check.totals.total||0), quotation.note,
+       JSON.stringify(quotation), (req.user&&req.user.username)||null]);
+    return res.status(201).json(quotationRow(rows[0]));
+  }
+
+  if(req.method==="PATCH"){
+    const b = req.body || {};
+    const no = String(b.quote_no||"").trim();
+    if(!no) return fail(res,400,"quote_no is required");
+    const to = String(b.status||"").trim();
+    if(!STATUSES.includes(to)) return fail(res,400,`unknown quotation status: ${to}`);
+
+    const { rows:[current] } = await q("select status from quotations where quote_no=$1",[no]);
+    if(!current) return fail(res,404,`no such quotation: ${no}`);
+    if(current.status===to) return fail(res,400,`${no} is already ${to}.`);
+    if(!canMoveTo(current.status,to))
+      return fail(res,400, current.status==="converted"
+        ? `${no} has already been converted to a PI. Raise a new quotation rather than reopening this one.`
+        : `${no} cannot go from ${current.status} to ${to}.`);
+    /* Converted is recorded WITH the invoice it became, or the trail from the
+       offer to the order is lost. */
+    const piNo = String(b.converted_pi_no||"").trim();
+    if(to==="converted" && !piNo)
+      return fail(res,400,"Converting needs the PI number the quotation became.");
+
+    const { rows } = await q(`update quotations set status=$2,
+        converted_pi_no=case when $2='converted' then $3 else converted_pi_no end,
+        updated_at=now() where quote_no=$1
+      returning quote_no, quote_date, party, city, status, valid_days, pairs, total,
+                converted_pi_no, note, snapshot, created_by, created_at, updated_at`,
+      [no,to,piNo||null]);
+    return res.status(200).json(quotationRow(rows[0]));
+  }
+
+  return fail(res,405,`${req.method} not allowed for quotations`);
+}
+
 export default wrap(async (req,res)=>{
+  if(String(req.query?.resource||"")==="quotations") return quotations(req,res);
+
   if(req.method==="GET"){
     await syncPiMaster();
     if(req.query?.history){

@@ -22,7 +22,7 @@
  */
 
 const ALL_WRITES = ["orders","pis","dispatches","reference","catalogue","parties",
-                    "settings","read-order-photo","read-pi","copilot","production_logs"];
+                    "settings","read-order-photo","read-pi","copilot"];
 
 /* Reference data carries two very different things behind one endpoint. Stock
    figures are a daily clerical job; the BOM is master data whose every error
@@ -39,8 +39,8 @@ const MATERIAL_KEYS = ["new_material"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","repair","dispatch","schedule",
-                   "production","plan","machines","procurement","stock","parties","fabricators",
+const EVERY_TAB = ["mis","intake","pis","quotations","orders","jobs","jobwork","status","repair","dispatch","schedule",
+                   "production_input","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
 export const ROLE_DEFS = {
@@ -57,7 +57,7 @@ export const ROLE_DEFS = {
   sales: {
     label:"CRM / Sales",
     summary:"Raises PIs and bulk orders, and maintains customers and their terms.",
-    tabs:["mis","intake","pis","orders","parties","copilot"],
+    tabs:["mis","intake","pis","quotations","orders","parties","copilot"],
     writes:["orders","pis","parties","read-order-photo","read-pi","copilot"], reference:null,
   },
   dispatch: {
@@ -68,7 +68,7 @@ export const ROLE_DEFS = {
        confined to dispatch. */
     /* Repair is the last thing that happens to a shoe before it goes on the
        lorry, so it belongs to whoever is packing it. */
-    tabs:["mis","orders","pis","repair","dispatch","rules"],
+    tabs:["mis","orders","pis","status","repair","dispatch","rules"],
     writes:["dispatches"], reference:null,
   },
   /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
@@ -83,11 +83,11 @@ export const ROLE_DEFS = {
      instead, the same way `reference:"stock"` is. */
   planner: {
     label:"Production Planner",
-    summary:"Builds the production schedule, balances machine load and tracks plan "
-      +"against output. Re-sequences work; cannot raise a PI, record a dispatch, "
+    summary:"Builds the production schedule and balances machine load. "
+      +"Re-sequences work; cannot raise a PI, record a dispatch, "
       +"or change what was ordered.",
-    tabs:["mis","orders","production","schedule","plan","machines"],
-    writes:["production_logs"], orders:"plan", reference:null,
+    tabs:["mis","orders","status","schedule","production_input","plan","machines"],
+    writes:[], orders:"plan", production_actuals:true, reference:null,
   },
   procurement: {
     label:"Procurement Officer",
@@ -110,7 +110,7 @@ export const ROLE_DEFS = {
   auditor: {
     label:"Auditor / Consultant",
     summary:"Reads the dashboard and the change history. No edit rights at all.",
-    tabs:["mis","orders","pis","repair","dispatch","schedule","procurement","stock","data"],
+    tabs:["mis","orders","pis","status","repair","dispatch","schedule","procurement","stock","data"],
     writes:[], reference:null,
   },
   /* Kept because accounts already carry it, and because "sees everything,
@@ -125,6 +125,21 @@ export const ROLE_DEFS = {
 export const ROLES = Object.keys(ROLE_DEFS);
 export const ROLE_LABEL = Object.fromEntries(ROLES.map(r => [r, ROLE_DEFS[r].label]));
 export const ROLE_SUMMARY = Object.fromEntries(ROLES.map(r => [r, ROLE_DEFS[r].summary]));
+
+/* The factory's recommended eleven named users. These are seat targets, not
+   placeholder accounts: a login is only created after an administrator gives
+   it a real person's name, username and temporary password. */
+export const RECOMMENDED_USER_COUNTS = Object.freeze({
+  admin:1,
+  owner:3,
+  sales:1,
+  dispatch:1,
+  planner:1,
+  procurement:1,
+  store:1,
+  data:1,
+  auditor:1,
+});
 
 export const KNOWN_ENDPOINTS = new Set([...ALL_WRITES, "auth"]);
 
@@ -145,6 +160,7 @@ const defOf = role => ROLE_DEFS[role] || null;
 export function canSeeTab(role, tab){
   const def = defOf(role);
   if(!def) return false;
+  if(tab === "profiles") return role === "admin";
   return def.tabs === "all" ? EVERY_TAB.includes(tab) : def.tabs.includes(tab);
 }
 
@@ -165,20 +181,6 @@ export function can(role, method, url, body){
   if(READ_METHODS.has(verb)) return { allowed:true };
   if(def.writes === "all") return { allowed:true };
 
-  /* Several daily movement ledgers share /api/dispatches to stay under the
-     serverless-function cap. Production actuals are still their own permission:
-     entering output must not silently grant the right to ship an order. */
-  let resource = body && body.resource;
-  if(!resource){
-    try { resource = new URL(String(url || ""), "http://factory.local").searchParams.get("resource"); }
-    catch(_){ resource = null; }
-  }
-  if(endpoint === "dispatches" && resource === "production_logs"){
-    if(def.writes.includes("production_logs")) return { allowed:true };
-    return { allowed:false,
-      reason:`${def.label} cannot change the daily production log. Ask an administrator if you need to.` };
-  }
-
   if(endpoint === "reference"){
     if(def.reference === "all") return { allowed:true };
     const keys = Object.keys(body || {});
@@ -188,6 +190,11 @@ export function can(role, method, url, body){
     return { allowed:false, reason: def.reference === "stock"
       ? "You can update stock figures, but only a data manager or an administrator can change the BOM, packing or MRP."
       : `${def.label} cannot change the BOM or reference data.` };
+  }
+
+  if(endpoint === "dispatches" && /(?:\?|&)resource=production_actuals(?:&|$)/.test(String(url||""))){
+    if(def.production_actuals) return {allowed:true};
+    return {allowed:false,reason:`${def.label} cannot record production achievement.`};
   }
 
   /* Edit the plan, not the order. A production planner re-sequences work and
@@ -215,7 +222,6 @@ const LABEL = {
   catalogue:"the article master", parties:"customers and their terms",
   settings:"machine capacities and delivery targets", reference:"the BOM and reference data",
   "read-order-photo":"the order-slip reader", "read-pi":"the PI reader", copilot:"the copilot",
-  production_logs:"the daily production log",
 };
 
 /* The first screen a role is actually allowed to open, so nobody is dropped
@@ -234,5 +240,5 @@ export function isReadOnly(role){
      change the PLAN, so calling them read-only would be wrong on screen and
      would hide the controls they are meant to use. */
   return def.writes !== "all" && def.writes.length === 0
-    && !def.reference && !def.orders;
+    && !def.reference && !def.orders && !def.production_actuals;
 }

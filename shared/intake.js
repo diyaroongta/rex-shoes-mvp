@@ -345,7 +345,7 @@ export function buildPhotoCards(parsed, reference){
             + `price to no pairs and will NOT appear on the invoice at all — it goes out `
             + `${+uncosted.cartons.toFixed(2)} carton${uncosted.cartons === 1 ? "" : "s"} short of the slip. `
             + `Give ${uncosted.sizes.length > 1 ? "those sizes" : "that size"} a size range and a packing `
-            + `rate in Data & BOM, or drop the line deliberately.`);
+            + `rate in BOM Upload & Tracker, or drop the line deliberately.`);
         /* NOT stored on the card. The clerk fixes these by picking a range or
            typing a rate, and a snapshot taken at read time would go on saying
            "4 cartons short" after it was put right — the same fault as a label

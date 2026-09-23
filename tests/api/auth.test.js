@@ -404,6 +404,31 @@ describe("roles are enforced by the guard, not just described", ()=>{
   });
 });
 
+describe("profile administration",()=>{
+  const as=role=>cookieHeader(signSession({username:"someone",role}));
+  it("lists profiles only for Admin (IT)",async()=>{
+    dbMocks.q.mockResolvedValue({rows:[{username:"planner1",display_name:"Planner One",role:"planner",active:true}]});
+    const ok=response();
+    await authHandler({method:"GET",url:"/api/auth?resource=profiles",query:{resource:"profiles"},headers:as("admin")},ok);
+    expect(ok.statusCode).toBe(200);expect(ok.body[0].username).toBe("planner1");
+    dbMocks.q.mockClear();
+    const denied=response();
+    await authHandler({method:"GET",url:"/api/auth?resource=profiles",query:{resource:"profiles"},headers:as("owner")},denied);
+    expect(denied.statusCode).toBe(403);expect(dbMocks.q).not.toHaveBeenCalled();
+  });
+
+  it("creates a named profile with a password hash, never plaintext",async()=>{
+    dbMocks.q.mockResolvedValue({rows:[{username:"planner1",display_name:"Planner One",role:"planner",active:true}]});
+    const res=response();
+    await authHandler({method:"POST",url:"/api/auth?resource=profiles",query:{resource:"profiles"},headers:as("admin"),
+      body:{username:"Planner1",display_name:"Planner One",role:"planner",password:"temporary-2026"}},res);
+    expect(res.statusCode).toBe(201);
+    const params=dbMocks.q.mock.calls[0][1];
+    expect(params[0]).toBe("planner1");expect(params[1]).toMatch(/^scrypt\$/);
+    expect(params[1]).not.toContain("temporary-2026");
+  });
+});
+
 /* Shape, not example: the point of putting the guard in wrap() is that it
    cannot be forgotten. This is the test that says so. */
 describe("no endpoint ships unguarded", ()=>{

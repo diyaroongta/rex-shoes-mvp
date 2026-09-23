@@ -40,6 +40,10 @@ export const signIn   = (username, password)=> post("/api/auth", { username, pas
 export const signOut  = ()                  => post("/api/auth", { action:"logout" });
 export const changePassword = (current_password, new_password) =>
   post("/api/auth", { action:"change_password", current_password, new_password });
+export const listProfiles = () => j("/api/auth?resource=profiles");
+export const createProfile = profile => post("/api/auth?resource=profiles",profile);
+export const setProfileActive = (username,active) => j("/api/auth?resource=profiles",{
+  method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,active})});
 
 /* ---- order sheet ---- */
 export const listOrders      = ()          => j("/api/orders");
@@ -54,6 +58,14 @@ export const setPlanOverride = (no, ov)    => patchOrder(no, { plan_override:ov|
 export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponent(no)}`, { method:"DELETE" });
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
 export const listPis         = ()          => j("/api/pis");
+/* Quotations ride on /api/pis: Vercel's Hobby plan allows 12 functions and the
+   project is at 12. A quotation is a PI one step earlier in any case. */
+export const listQuotations  = ()          => j("/api/pis?resource=quotations");
+export const createQuotation = quotation   => post("/api/pis?resource=quotations", quotation);
+export const setQuotationStatus = (quote_no, status, converted_pi_no) =>
+  j("/api/pis?resource=quotations", { method:"PATCH",
+    headers:{ "content-type":"application/json" },
+    body: JSON.stringify({ quote_no, status, ...(converted_pi_no?{converted_pi_no}:{}) }) });
 /* Omit order_nos to release the whole PI; pass a subset to release only
    those orders and leave the rest of the PI unscheduled. */
 export const schedulePi      = (pi_no, order_nos) =>
@@ -109,6 +121,12 @@ export const addRepair     = m    => j("/api/dispatches?resource=repairs", {
 export const deleteRepair  = id   => j(`/api/dispatches?resource=repairs&id=${encodeURIComponent(id)}`,
   { method:"DELETE" });
 
+/* Daily production plan versus achievement.  Kept on the dispatch endpoint to
+   stay within the deployment's serverless-function limit. */
+export const listProductionActuals = () => j("/api/dispatches?resource=production_actuals");
+export const saveProductionActuals = rows => post("/api/dispatches?resource=production_actuals",
+  { resource:"production_actuals", rows });
+
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);
@@ -123,17 +141,6 @@ export const unhideDispatch  = id      => j(`/api/dispatches?id=${id}&mode=unhid
 export const listDispatchesWithHidden = () => j("/api/dispatches?include_hidden=1");
 /* Kept so nothing that already calls it changes meaning. */
 export const deleteDispatch  = undoDispatch;
-
-/* ---- daily production actuals ----
-   A distinct resource even though it shares the dispatches server function.
-   This lets a production planner enter output without gaining dispatch rights. */
-export const listProductionLogs = () => j("/api/dispatches?resource=production_logs");
-export const addProductionLog = entry => post("/api/dispatches?resource=production_logs",
-  { ...entry, resource:"production_logs" });
-export const importProductionLogs = entries => post("/api/dispatches?resource=production_logs",
-  { entries, resource:"production_logs" });
-export const voidProductionLog = id => j(
-  `/api/dispatches?resource=production_logs&id=${encodeURIComponent(id)}`, { method:"DELETE" });
 
 /* ---- job work: what is out with a line or a fabricator ----
    Served by /api/dispatches to stay within Vercel's 12-function limit — a job

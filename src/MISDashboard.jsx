@@ -1,6 +1,9 @@
 import React, { useMemo, useState } from "react";
 import { buildMisSnapshot } from "../shared/mis.js";
-import { productionSummary } from "../shared/production-log.js";
+import { plannedProductionRows, productionActualSummary } from "../shared/production-actuals.js";
+import { planVsActual, biggestGaps } from "../shared/plan-vs-actual.js";
+import { fromDay } from "../shared/engine.js";
+import { REF as INPUTS } from "./lib/refdata.js";
 
 const STATUS = {
   on_track: { label:"On time", color:"#047857", pale:"#ECFDF5" },
@@ -121,10 +124,14 @@ function Progress({value,color="#0B6BCB"}){
   </div>;
 }
 
-export default function MISDashboard({state,dispatches=[],dispatchLoading=false,dispatchError="",
-  productionLogs=[],productionLoading=false,productionError="",onRefresh,today}){
+export default function MISDashboard({state,dispatches=[],productionActuals=[],dispatchLoading=false,dispatchError="",onRefresh,today}){
   const snapshot=useMemo(()=>buildMisSnapshot(state,dispatches,{today}),[state,dispatches,today]);
-  const actual=useMemo(()=>productionSummary(productionLogs,snapshot.as_of),[productionLogs,snapshot.as_of]);
+  const productionPlan=useMemo(()=>plannedProductionRows(state,INPUTS.origin,fromDay),[state]);
+  const production=useMemo(()=>productionActualSummary(productionPlan,productionActuals,today||snapshot.as_of),
+    [productionPlan,productionActuals,today,snapshot.as_of]);
+  /* Planned against achieved over time, week by week. Measured on the rows
+     somebody REPORTED: an unreported row is missing, not a zero. */
+  const vs=useMemo(()=>planVsActual(productionPlan,productionActuals),[productionPlan,productionActuals]);
   const [filter,setFilter]=useState("all");
   const [drill,setDrill]=useState(null);   // which figure is being taken apart
   const [search,setSearch]=useState("");
@@ -142,8 +149,8 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
       </div>
       <div className="ml-auto flex flex-wrap gap-2 text-xs">
         <span className="rounded-full px-2.5 py-1" style={{background:"#ECFDF5",color:"#047857"}}>Dispatch: recorded actual</span>
-        <span className="rounded-full px-2.5 py-1" style={{background:"#EFF6FF",color:"#1D4ED8"}}>
-          Production: {actual.entries?"recorded actual + current schedule":"current schedule"}</span>
+        <span className="rounded-full px-2.5 py-1" style={{background:production.recorded_rows?"#ECFDF5":"#EFF6FF",color:production.recorded_rows?"#047857":"#1D4ED8"}}>
+          Production: {production.recorded_rows?"recorded actual":"current schedule"}</span>
         <span className="mono rounded-full bg-slate-100 text-slate-600 px-2.5 py-1">As of {niceDate(snapshot.as_of)}</span>
         {onRefresh && <button onClick={onRefresh} disabled={dispatchLoading} className="rounded-full border border-slate-300 bg-white text-slate-700 px-2.5 py-1 font-semibold disabled:opacity-50">
           {dispatchLoading?"Refreshing…":"Refresh live data"}
@@ -154,10 +161,6 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
     {dispatchError && <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
       Dispatch history could not be loaded. Order health is visible, but last-30-day dispatch KPIs are incomplete: {String(dispatchError).slice(0,160)}
     </div>}
-    {productionError && <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
-      Daily production could not be loaded. Planned production remains visible, but today&rsquo;s actual output is incomplete: {String(productionError).slice(0,160)}
-    </div>}
-
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
       <Kpi label="Total live orders" value={fmt(snapshot.total_orders)} detail={`${fmt(snapshot.total_pairs)} ordered pairs`} testId="kpi-total-orders" />
       <Kpi label="Orders on time" value={fmt(snapshot.status.on_track.count)} detail={dateRange(snapshot.status.on_track)} tone={STATUS.on_track.color} pale={STATUS.on_track.pale} testId="kpi-on-time" />
@@ -168,6 +171,13 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
     </section>
 
     <section className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <Kpi label="Today's production plan" value={fmt(production.planned_pairs)}
+        detail={`${production.planned_rows} scheduled line/order row${production.planned_rows===1?"":"s"}`}
+        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-production-plan" />
+      <Kpi label="Today's achievement" value={fmt(production.actual_pairs)}
+        detail={`${pct(production.achievement_pct)} · ${production.recorded_rows} of ${production.planned_rows} rows reported`}
+        tone={production.recorded_rows?"#047857":"#64748B"} pale={production.recorded_rows?"#ECFDF5":"#F8FAFC"}
+        testId="kpi-production-actual" />
       <Kpi label="Order vs dispatch %" value={pct(snapshot.order_vs_dispatch_pct)}
         detail={`${fmt(snapshot.dispatched_last_30_days)} dispatched ÷ ${fmt(snapshot.ordered_last_30_days)} ordered pairs · last 30 days`}
         tone="#0B6BCB" pale="#EFF6FF" testId="kpi-order-dispatch-pct" drill="coverage" onDrill={setDrill} open={drill==="coverage"} />
@@ -182,40 +192,6 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
       <Kpi label="Average dispatch days" value={fmt(snapshot.average_dispatch_days,1)}
         detail={`${fmt(snapshot.completed_orders_used_for_dispatch_days)} completed order${snapshot.completed_orders_used_for_dispatch_days===1?"":"s"} · order date to completed dispatch`}
         tone="#334155" pale="#F8FAFC" testId="kpi-average-dispatch-days" />
-    </section>
-
-    <section className="bg-white border border-slate-200 rounded-xl p-4" data-testid="actual-production-today">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div><h2 className="serif text-lg font-semibold">Actual shop-floor input — today</h2>
-          <p className="text-xs text-slate-500 mt-1">Entered by machine and shift in Daily production. These are recorded actuals, separate from the schedule.</p></div>
-        {productionLoading && <span className="text-xs text-slate-400">Refreshing production entries…</span>}
-      </div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
-        {[
-          ["Good pairs",fmt(actual.good_pairs),"#047857"],
-          ["Rejected pairs",fmt(actual.rejected_pairs),actual.rejected_pairs?"#BE123C":"#64748B"],
-          ["Rejection rate",pct(actual.rejection_pct),actual.rejected_pairs?"#BE123C":"#64748B"],
-          ["Downtime",`${Math.floor(actual.downtime_minutes/60)}h ${actual.downtime_minutes%60}m`,actual.downtime_minutes?"#B45309":"#64748B"],
-        ].map(([label,value,color])=><div key={label} className="rounded-lg bg-slate-50 p-3">
-          <div className="sign text-[10px] text-slate-500">{label}</div>
-          <div className="mono text-xl font-semibold mt-1" style={{color}}>{value}</div>
-        </div>)}
-      </div>
-      {!actual.entries ? <div className="text-xs text-slate-400 mt-3">No production entries have been saved for today.</div>
-      : <div className="overflow-x-auto mt-4"><table className="w-full text-xs" style={{minWidth:620}}>
-          <thead><tr className="sign text-[9px] text-slate-500">
-            <th className="text-left py-1">Work centre</th><th className="text-left">Stage</th>
-            <th className="text-right">Good</th><th className="text-right">Rejected</th>
-            <th className="text-right">Downtime</th><th className="text-right">Entries</th>
-          </tr></thead>
-          <tbody>{actual.centres.map(row=><tr key={row.work_center} className="border-t border-slate-100">
-            <td className="py-1.5 mono font-semibold">{row.work_center}</td><td>{row.stage||"—"}</td>
-            <td className="mono text-right text-emerald-700 font-semibold">{fmt(row.good_pairs)}</td>
-            <td className="mono text-right">{fmt(row.rejected_pairs)}</td>
-            <td className="mono text-right">{Math.floor(row.downtime_minutes/60)}h {row.downtime_minutes%60}m</td>
-            <td className="mono text-right">{fmt(row.entries)}</td>
-          </tr>)}</tbody>
-        </table></div>}
     </section>
 
     <Drill metric={drill} snapshot={snapshot} fmt={fmt} pct={pct} niceDate={niceDate} />
@@ -331,8 +307,64 @@ export default function MISDashboard({state,dispatches=[],dispatchLoading=false,
       {!visible.length && <div className="text-sm text-slate-500 text-center py-8">No orders match this dashboard filter.</div>}
     </section>
 
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-baseline gap-2 flex-wrap mb-1">
+        <h3 className="text-sm font-semibold text-slate-800">Planned against achieved</h3>
+        <span className="text-[11px] text-slate-500">
+          By the factory&rsquo;s own financial week. Percentages compare the rows that were reported,
+          like for like; a row nobody reported is counted as missing, never as zero achieved.
+        </span>
+      </div>
+      {!vs.reported
+        ? <div className="text-sm text-slate-500 py-6 text-center">
+            No achievement has been reported yet, so there is nothing to compare the plan against.
+          </div>
+        : <>
+          <div className="flex gap-4 flex-wrap text-xs mb-3">
+            <Figure label="Planned (reported rows)" value={fmt(vs.totals.planned_reported)} />
+            <Figure label="Achieved" value={fmt(vs.totals.actual)} />
+            <Figure label="Variance" value={`${vs.totals.variance>0?"+":""}${fmt(vs.totals.variance)}`}
+              tone={vs.totals.variance<0?"#B91C1C":"#047857"} />
+            <Figure label="Achievement" value={pct(vs.totals.pct)} />
+            <Figure label="Reported" value={`${pct(vs.totals.coverage)} of rows`}
+              detail={vs.totals.unreported_planned>0?`${fmt(vs.totals.unreported_planned)} planned pairs not reported`:""} />
+          </div>
+          <table className="w-full text-xs">
+            <thead><tr className="text-slate-500 text-left">
+              <th className="py-1">Week</th><th className="py-1">Dates</th>
+              <th className="py-1 text-right">Planned</th><th className="py-1 text-right">Achieved</th>
+              <th className="py-1 text-right">Variance</th><th className="py-1 text-right">%</th>
+              <th className="py-1 text-right">Reported</th></tr></thead>
+            <tbody>{vs.weeks.map(w=><tr key={w.key} className="border-t border-slate-100">
+              <td className="py-1 font-semibold text-slate-800">{w.short_label||w.label}</td>
+              <td className="py-1 text-slate-500">{w.from} — {w.to}</td>
+              <td className="py-1 mono text-right">{fmt(w.planned_reported)}</td>
+              <td className="py-1 mono text-right">{fmt(w.actual)}</td>
+              <td className={`py-1 mono text-right ${w.variance<0?"text-rose-700":"text-emerald-700"}`}>
+                {w.reported_rows?`${w.variance>0?"+":""}${fmt(w.variance)}`:"—"}</td>
+              <td className="py-1 mono text-right">{w.pct==null?"not reported":pct(w.pct)}</td>
+              <td className="py-1 mono text-right text-slate-500">{w.reported_rows}/{w.rows}</td>
+            </tr>)}</tbody>
+          </table>
+          {!!biggestGaps(vs,3).filter(d=>d.variance<0).length&&<div className="text-[11px] text-slate-600 mt-2">
+            <b>Furthest behind:</b> {biggestGaps(vs,3).filter(d=>d.variance<0)
+              .map(d=>`${d.date} (${fmt(d.variance)})`).join(" · ")}
+          </div>}
+        </>}
+    </section>
+
     <div className="rounded-lg border border-blue-200 bg-blue-50 text-blue-900 px-3 py-2 text-xs">
-      <b>Data boundary:</b> order dates, schedule health and machine utilisation update from the live Factory OS plan; dispatch updates from recorded packing reports. Shop-floor actual good pairs, rejection and downtime are not yet stored in Factory OS, so machine output is explicitly shown as scheduled—not actual.
+      <b>Data boundary:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement comes from the Daily plan vs achievement upload; dispatch comes from recorded packing reports. Factory OS does not ask for rejection or downtime figures because they are not part of the current operating model.
+      {production.recorded_rows===0&&<> Until achievement is uploaded, production output is <b>scheduled—not actual</b>.</>}
     </div>
+  </div>;
+}
+
+/* A small labelled figure, for the planned-against-achieved band. */
+function Figure({label,value,detail="",tone="#0F2233"}){
+  return <div>
+    <div className="text-[11px] text-slate-500">{label}</div>
+    <div className="text-base font-semibold mono" style={{color:tone}}>{value}</div>
+    {detail&&<div className="text-[10px] text-slate-500">{detail}</div>}
   </div>;
 }

@@ -74,7 +74,7 @@ it("downloads the supported template and discards a master preview without savin
   const bytes=XLSX.write(wb,{bookType:"xlsx",type:"array"});
   const file=new File([bytes],"new.xlsx");Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes});
   const {container}=render(<DataTab/>);
-  expect(screen.getByRole("link",{name:"Download upload template"})).toHaveAttribute("href","/Factory_OS_Reference_Upload_Template.xlsx");
+  expect(screen.getByRole("link",{name:"Download exact BOM template"})).toHaveAttribute("href","/Factory_OS_Reference_Upload_Template.xlsx");
   fireEvent.change(container.querySelector('input[type="file"]'),{target:{files:[file]}});
   expect(await screen.findByText("Will add")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button",{name:"Cancel"}));

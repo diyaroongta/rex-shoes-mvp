@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { can, canSeeTab, defaultTab, isReadOnly, endpointOf,
-         KNOWN_ENDPOINTS, ROLES, ROLE_LABEL, ROLE_SUMMARY } from "../shared/permissions.js";
+         KNOWN_ENDPOINTS, ROLES, ROLE_LABEL, ROLE_SUMMARY,
+         RECOMMENDED_USER_COUNTS } from "../shared/permissions.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -75,13 +76,16 @@ test("a plan change cannot carry an order change in beside it", () => {
   assert.equal(allow("planner","PATCH","/api/orders/JO1",{}), false, "and an empty body is not a free pass");
 });
 
-test("a planner records production actuals but raises no invoice or dispatch", () => {
-  assert.equal(allow("planner","POST","/api/dispatches?resource=production_logs",
-    {resource:"production_logs"}), true);
-  assert.equal(allow("planner","DELETE","/api/dispatches?resource=production_logs&id=1"), true);
+test("a planner changes the plan but raises no invoice or dispatch", () => {
   for(const [method, url] of [["POST","/api/pis"],["POST","/api/dispatches"],
                               ["POST","/api/read-order-photo"],["POST","/api/copilot"]])
     assert.equal(allow("planner", method, url), false, `planner must not ${method} ${url}`);
+});
+
+test("a planner records production achievement without gaining dispatch rights", () => {
+  assert.equal(allow("planner","POST","/api/dispatches?resource=production_actuals",{rows:[{}]}),true);
+  assert.equal(allow("planner","POST","/api/dispatches",{}),false);
+  assert.equal(allow("viewer","POST","/api/dispatches?resource=production_actuals",{rows:[{}]}),false);
 });
 
 test("but the plan is still a change, so the screen is not read-only", () => {
@@ -183,7 +187,7 @@ test("a viewer is not offered screens whose every button would be refused", () =
 });
 
 test("a planner sees the production screens and the order book, nothing else", () => {
-  for(const tab of ["mis","orders","production","schedule","plan","machines"])
+  for(const tab of ["mis","orders","schedule","plan","machines"])
     assert.equal(canSeeTab("planner", tab), true, `planner should see ${tab}`);
   /* Scheduling needs the order book to schedule FROM; raising the paperwork
      does not belong to this role. */
@@ -193,7 +197,7 @@ test("a planner sees the production screens and the order book, nothing else", (
 });
 
 test("an admin sees everything", () => {
-  for(const tab of ["mis","intake","jobs","orders","dispatch","production","schedule","plan","machines",
+  for(const tab of ["mis","intake","jobs","orders","dispatch","schedule","plan","machines",
                     "procurement","stock","jobwork","parties","fabricators","catalogue","rules","data","copilot"])
     assert.equal(canSeeTab("admin", tab), true);
 });
@@ -217,8 +221,6 @@ console.log("\nH — the narrower roles from the factory's own access list");
    shipment but must not raise an invoice or touch an order. */
 test("a Dispatch Executive can record a dispatch and nothing else", () => {
   assert.equal(allow("dispatch","POST","/api/dispatches"), true);
-  assert.equal(allow("dispatch","POST","/api/dispatches?resource=production_logs",
-    {resource:"production_logs"}), false);
   for(const [m,u] of [["POST","/api/orders"],["PATCH","/api/orders/JO1"],["POST","/api/pis"],
                       ["PUT","/api/catalogue"],["PUT","/api/parties"],["PUT","/api/settings"],
                       ["PATCH","/api/reference"],["POST","/api/read-pi"]])
@@ -276,6 +278,12 @@ test("every role is described for whoever hands out the account", () => {
     assert.ok(ROLE_LABEL[role], `${role} needs a label`);
     assert.ok(ROLE_SUMMARY[role] && ROLE_SUMMARY[role].length > 20, `${role} needs a summary`);
   }
+});
+
+test("the recommended profile allocation is exactly eleven recognised roles", () => {
+  assert.equal(Object.values(RECOMMENDED_USER_COUNTS).reduce((sum,count)=>sum+count,0),11);
+  assert.equal(RECOMMENDED_USER_COUNTS.owner,3);
+  for(const role of Object.keys(RECOMMENDED_USER_COUNTS)) assert.ok(ROLES.includes(role),role);
 });
 
 

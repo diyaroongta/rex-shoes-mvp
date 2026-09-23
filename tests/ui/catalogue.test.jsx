@@ -13,6 +13,14 @@ vi.mock("../../shared/catalogue-seed.js",()=>({articlePhoto:()=>null}));
 
 import CatalogueTab from "../../src/CatalogueTab.jsx";
 
+/* The catalogue now OPENS on the browse view — the shoe, then its colours,
+   then lace or velcro — which is what the factory asked for. Maintaining an
+   article is the other job and lives behind "Edit every article", so these
+   tests say which of the two they are about rather than assuming. */
+const editing = async () => {
+  await userEvent.click(screen.getByRole("button",{name:"Edit every article"}));
+};
+
 beforeEach(()=>{
   vi.clearAllMocks();
   apiMocks.getCatalogue.mockResolvedValue({});
@@ -24,6 +32,7 @@ beforeEach(()=>{
 it("deletes a catalogue-only item after an explicit confirmation",async()=>{
   const onChanged=vi.fn();
   render(<CatalogueTab onChanged={onChanged}/>);
+  await editing();
   // Every article can now be deleted; a stub goes without a BOM confirmation,
   // a finished article carries one.
   await userEvent.click(screen.getByRole("button",{name:"Delete EMPTY from catalogue"}));
@@ -35,6 +44,7 @@ it("deletes a catalogue-only item after an explicit confirmation",async()=>{
 
 it("sends the BOM confirmation when deleting a finished article",async()=>{
   render(<CatalogueTab/>);
+  await editing();
   await userEvent.click(screen.getByRole("button",{name:"Delete CUSTOM from catalogue"}));
   expect(screen.getByText(/material rates/)).toBeInTheDocument();   // names what goes with it
   await userEvent.click(screen.getByRole("button",{name:"Confirm delete CUSTOM"}));
@@ -43,6 +53,7 @@ it("sends the BOM confirmation when deleting a finished article",async()=>{
 
 it("edits MRP only size by size, without exposing a range-price editor",async()=>{
   render(<CatalogueTab/>);
+  await editing();
   await userEvent.click(screen.getByText("Edit MRP size by size"));
   expect(screen.queryByText("Range defaults")).not.toBeInTheDocument();
   const sizeOne=screen.getByLabelText("1X2 · 1");
@@ -55,6 +66,7 @@ it("edits MRP only size by size, without exposing a range-price editor",async()=
 it("adds a catalogue-only article, warns about its missing BOM and opens the master upload",async()=>{
   const onChanged=vi.fn(),onAddBom=vi.fn();
   render(<CatalogueTab onChanged={onChanged} onAddBom={onAddBom}/>);
+  await editing();
   await userEvent.click(screen.getByRole("button",{name:"Add new catalogue item"}));
   await userEvent.type(screen.getByLabelText("Article code or name"),"Thunder 27");
   await userEvent.type(screen.getByLabelText("Description"),"New model");

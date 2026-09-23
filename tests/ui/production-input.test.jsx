@@ -1,51 +1,29 @@
-import React from "react";
-import * as XLSX from "xlsx";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
+import { workbookFor } from "../../src/ProductionInputTab.jsx";
 
-const mocks=vi.hoisted(()=>({ importRows:vi.fn(), voidEntry:vi.fn() }));
-vi.mock("../../src/lib/client.js",()=>({
-  importProductionLogs:mocks.importRows,
-  voidProductionLog:mocks.voidEntry,
-}));
+it("downloads the supplied Monday-to-Saturday machine planning layout",()=>{
+  const rows=[
+    {production_on:"2026-09-21",work_center:"CUTTING",stage:"Cutting",job_card_no:"JC-1",
+      order_no:"JO1",article:"BOLT",size_ranges:"4X9",party:"A2Z",planned_pairs:100,actual_pairs:90,unit_key:"u1"},
+    {production_on:"2026-09-21",work_center:"CUTTING",stage:"Cutting",job_card_no:"JC-2",
+      order_no:"JO2",article:"GOLA",size_ranges:"7X12",party:"MTS",planned_pairs:50,actual_pairs:null,unit_key:"u2"},
+    {production_on:"2026-09-22",work_center:"STITCHING",stage:"Stitching",job_card_no:"JC-3",
+      order_no:"JO3",article:"JEM",size_ranges:"1X6",party:"RANGOLI",planned_pairs:72,actual_pairs:70,unit_key:"u3"},
+  ];
+  const wb=workbookFor(rows,"2026-09-21");
+  const weekly=wb.Sheets["Weekly Planning Output"];
+  const input=wb.Sheets["Daily Input"];
 
-import ProductionInputTab from "../../src/ProductionInputTab.jsx";
-import { REF } from "../../src/lib/refdata.js";
-
-const localToday=()=>{
-  const d=new Date(),p=n=>String(n).padStart(2,"0");
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-};
-
-describe("Daily production spreadsheet upload",()=>{
-  it("previews a complete sheet and imports all rows together",async()=>{
-    const user=userEvent.setup();
-    const changed=vi.fn().mockResolvedValue();
-    mocks.importRows.mockResolvedValue({imported:1});
-    const workCenter=Object.keys(REF.workcenters)[0];
-    const sheet=XLSX.utils.aoa_to_sheet([
-      ["Production Date","Shift","Work Centre Code","Order No","Good Pairs",
-       "Rejected Pairs","Downtime Minutes","Downtime Reason","Supervisor","Remarks"],
-      [localToday(),"A",workCenter,"JO2043",820,14,30,"Changeover / mould change","R. Kumar","Black compound arrived late"],
-    ]);
-    const book=XLSX.utils.book_new();XLSX.utils.book_append_sheet(book,sheet,"Daily production");
-    const bytes=XLSX.write(book,{type:"array",bookType:"xlsx"});
-    const file=new File([bytes],"daily-production.xlsx",{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-
-    render(<ProductionInputTab
-      orders={[{order_no:"JO2043",article_code:"SPIKE",party:"Alpha"}]}
-      logs={[]} onChanged={changed}/>);
-    await user.upload(screen.getByLabelText("Daily production spreadsheet"),file);
-    expect(await screen.findByText("Check before importing")).toBeInTheDocument();
-    expect(screen.getByText("Ready")).toBeInTheDocument();
-    await user.click(screen.getByRole("button",{name:"Import 1 row"}));
-
-    await waitFor(()=>expect(mocks.importRows).toHaveBeenCalledOnce());
-    expect(mocks.importRows.mock.calls[0][0][0]).toMatchObject({
-      order_no:"JO2043",article:"SPIKE",work_center:workCenter,
-      good_pairs:820,rejected_pairs:14,downtime_minutes:30,
-    });
-    expect(changed).toHaveBeenCalledOnce();
-  });
+  expect(weekly.A1.v).toContain("2026-09-21 to 2026-09-26");
+  expect(weekly.B3.v).toBe("JOB DETAILS");
+  expect(weekly.C3.v).toBe("PROPOSED / ACTUAL QTY");
+  expect(weekly.B4.v).toContain("JC NO: JC-1");
+  expect(weekly.B4.v).toContain("ARTICLE NAME: BOLT");
+  expect(weekly.C4.v).toContain("PROPOSED: 100");
+  expect(weekly.C4.v).toContain("ACTUAL: 90");
+  expect(Object.values(weekly).some(cell=>cell?.v==="SAT\n2026-09-26")).toBe(true);
+  expect(Object.values(weekly).some(cell=>String(cell?.v||"").includes("PROPOSED: 150"))).toBe(true);
+  expect(input.A1.v).toBe("Production Date");
+  expect(input.K1.v).toBe("Achieved Pairs");
+  expect(input["!autofilter"].ref).toBe("A1:M4");
 });

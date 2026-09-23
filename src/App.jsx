@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
+import { todayIso } from "./lib/today.js";
 import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, source as refSource } from "./lib/refdata.js";
 import { labelFor, familyOf, parseCode } from "../shared/product-codes.js";
 import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
@@ -8,9 +9,12 @@ import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
+import { withStockBalances } from "../shared/stock.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
+import StatusTab from "./StatusTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
+import QuotationsTab from "./QuotationsTab.jsx";
 import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
 import StockTab from "./StockTab.jsx";
@@ -24,9 +28,14 @@ import JobCardTab from "./JobCardTab.jsx";
 import RepairTab from "./RepairTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import ProductionInputTab from "./ProductionInputTab.jsx";
+import ProfilesTab from "./ProfilesTab.jsx";
+import ChangePassword from "./ChangePassword.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
+import { productionUnits } from "../shared/production-units.js";
+import { progressFrom } from "../shared/production-progress.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
+import { productionActualKey } from "../shared/production-actuals.js";
 
 /* ------------- UI helpers (shared) ------------- */
 const SOLE_COLOR = {PVC:"#4f46e5",PU:"#0f9d6b",EVA:"#c2410c","STUCK-ON":"#7c3aed"};
@@ -75,11 +84,17 @@ const niceDate = iso => iso ? new Date(String(iso).slice(0,10)+"T00:00:00").toLo
 export default function App({ user=null, onSignOut=null }={}){
   const [orders, setOrders] = useState(null);   // null = loading
   const [dispatches, setDispatches] = useState([]);
+  /* Issued job cards. The planner schedules BATCHES, not orders — see
+     shared/production-units.js — so the cards are loaded here, beside the
+     orders, and fed into compute(). */
+  const [jobs, setJobs] = useState([]);
+  const [productionActuals,setProductionActuals]=useState([]);
   const [dispatchLoading, setDispatchLoading] = useState(true);
   const [dispatchErr, setDispatchErr] = useState("");
-  const [productionLogs, setProductionLogs] = useState([]);
-  const [productionLoading, setProductionLoading] = useState(true);
-  const [productionErr, setProductionErr] = useState("");
+  /* Days an order spends NOT being made. Editable on Machine load, because a
+     placeholder nobody can correct is the one kind of assumption this app is
+     not allowed to keep. */
+  const [leadTimes, setLeadTimes] = useState({});
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
   /* A role must never land on a screen it cannot open. The server is the only
      thing that actually enforces permissions; this just keeps the app honest
@@ -115,8 +130,15 @@ export default function App({ user=null, onSignOut=null }={}){
         ...Object.fromEntries(Object.entries(settings.capacities)
           .filter(([code])=>INPUTS.workcenters[code]))}));
       if(settings && settings.sla_targets) setTargets(settings.sla_targets);
+      if(settings && settings.lead_time_rules) setLeadTimes(settings.lead_time_rules);
     }catch(e){ setLoadErr(e.message||String(e)); setOrders([]); }
   })(); },[]);
+
+  const refreshProductionActuals=async()=>{
+    try{setProductionActuals(await api.listProductionActuals());}
+    catch(e){setLoadErr(`Could not load production achievement: ${e.message||e}`);}
+  };
+  useEffect(()=>{refreshProductionActuals();},[]);
 
   useEffect(()=>{ (async()=>{
     try{ setDispatches(await api.listDispatchesWithHidden()); setDispatchErr(""); }
@@ -124,21 +146,23 @@ export default function App({ user=null, onSignOut=null }={}){
     finally{ setDispatchLoading(false); }
   })(); },[]);
 
-  useEffect(()=>{ (async()=>{
-    try{ setProductionLogs(await api.listProductionLogs()); setProductionErr(""); }
-    catch(e){ setProductionErr(e.message||String(e)); }
-    finally{ setProductionLoading(false); }
-  })(); },[]);
+  /* A failed refresh KEEPS the last good cards rather than blanking them: an
+     empty job list does not mean "nothing is batched", it means the request
+     did not arrive, and the difference is a plan that silently reverts to
+     scheduling whole orders. */
+  const refreshJobs=async()=>{
+    try{ setJobs(await api.listJobWork()); }
+    catch(e){ setLoadErr(`Could not load job cards, so the plan may be showing whole orders: ${e.message||e}`); }
+  };
+  useEffect(()=>{ refreshJobs(); },[]);
 
   // The executive view is intended to stay open on a management screen. Pull
   // fresh orders and dispatch events once a minute so another clerk's update
   // appears without requiring a full browser reload.
   useEffect(()=>{
     const timer=setInterval(()=>{
-      Promise.all([api.listOrders(), api.listDispatchesWithHidden(),
-        api.listProductionLogs().catch(e=>{ setProductionErr(e.message||String(e)); return null; })])
-        .then(([o,d,p])=>{ setOrders(o); setDispatches(d); setDispatchErr("");
-                         if(p){ setProductionLogs(p); setProductionErr(""); }
+      Promise.all([api.listOrders(), api.listDispatchesWithHidden(),api.listProductionActuals()])
+        .then(([o,d,a])=>{ setOrders(o); setDispatches(d); setProductionActuals(a); setDispatchErr("");
                          setSyncedAt(new Date()); setSyncFailed(false); })
         .catch(()=>setSyncFailed(true));   // shown in the header, not as a banner every minute
     },60000);
@@ -152,16 +176,11 @@ export default function App({ user=null, onSignOut=null }={}){
     catch(e){ setDispatchErr(e.message||String(e)); }
     finally{ setDispatchLoading(false); }
   };
-  const refreshProduction = async ()=>{
-    try{ setProductionLoading(true); setProductionLogs(await api.listProductionLogs()); setProductionErr(""); }
-    catch(e){ setProductionErr(e.message||String(e)); }
-    finally{ setProductionLoading(false); }
-  };
   /* ONE refresh for every screen. Orders, dispatches and the PI master are
      three views of the same rows, so a change made on any tab has to reload
      all of them — editing an order from the PI database used to leave the
      schedule, dispatch and MIS showing the figures from before the edit. */
-  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProduction()]); };
+  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProductionActuals(), refreshJobs()]); };
 
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
@@ -173,8 +192,22 @@ export default function App({ user=null, onSignOut=null }={}){
   /* Optimistic like bump(): the planner recomputes the whole board from the
      new override, so the gantt moves under the planner's hand instead of after
      a round trip. The server is still the source of truth on refresh. */
-  const setPlanOverride = async (no, ov) => {
-    const clean = ov && Object.keys(ov).length ? ov : {};
+  const setPlanOverride = async (no, ov, unitKey) => {
+    const cur = (orders||[]).find(o=>o.order_no===no) || {};
+    const blob = cur.plan_override || {};
+    let clean;
+    if(unitKey && unitKey !== no){
+      /* One card moved, the rest of the order left alone. An emptied card
+         override is DELETED rather than stored as {}, so a card handed back to
+         the automatic planner leaves no trace behind. */
+      const units = { ...(blob.units||{}) };
+      if(ov && Object.keys(ov).length) units[unitKey]=ov; else delete units[unitKey];
+      const { units:_drop, ...own } = blob;
+      clean = Object.keys(units).length ? { ...own, units } : own;
+    } else {
+      const keep = blob.units && Object.keys(blob.units).length ? { units:blob.units } : {};
+      clean = ov && Object.keys(ov).length ? { ...ov, ...keep } : keep;
+    }
     setOrders(os=>os.map(o=>o.order_no===no?{...o,plan_override:clean}:o));
     try{ await api.setPlanOverride(no, clean); }
     catch(e){ setLoadErr(e.message||String(e)); }
@@ -247,26 +280,73 @@ export default function App({ user=null, onSignOut=null }={}){
   const wcs = useMemo(()=>{
     const w={};
     for(const[k,v]of Object.entries(INPUTS.workcenters)) w[k]={...v,capacity_per_day:caps[k]};
-    // carried alongside the centres so the engine can apply per-order lead time
-    Object.defineProperty(w,"_lead_time_rules",{value:INPUTS.lead_time_rules||null,enumerable:false});
+    /* Carried alongside the centres so the engine can apply per-order lead
+       time. The factory's own figures win over the seed's placeholders. */
+    Object.defineProperty(w,"_lead_time_rules",
+      {value:{...(INPUTS.lead_time_rules||{}), ...(leadTimes||{})},enumerable:false});
     return w;
-  },[caps,refTick]);
+  },[caps,leadTimes,refTick]);
   /* Manual planning overrides, one per order, straight off the order row. The
      plan stays fully recomputed from them, so procurement, machine load, SLA
      and the dashboard all move together when a planner reorders the queue —
      nothing is patched onto a stale schedule. */
-  const planOverrides = useMemo(()=>Object.fromEntries(
-    (orders||[]).filter(o=>o.plan_override&&Object.keys(o.plan_override).length)
-                .map(o=>[o.order_no,o.plan_override])),[orders]);
+  /* An override can now be pinned to a BATCH as well as to an order. Both live
+     in the order's own `plan_override` blob — the order's own fields at the
+     top level, a card's under `units[<unit key>]` — so nothing new is stored
+     and one order still carries one row. The engine is handed them flat. */
+  const planOverrides = useMemo(()=>{
+    const out={};
+    for(const o of orders||[]){
+      const { units, ...own } = o.plan_override || {};
+      if(Object.keys(own).length) out[o.order_no]=own;
+      for(const [key,ov] of Object.entries(units||{}))
+        if(ov && Object.keys(ov).length) out[key]=ov;
+    }
+    return out;
+  },[orders]);
+  /* The same inputs the plan is built from, kept in one place so a screen can
+     ask "what would this change?" and get an answer from the SAME planner
+     rather than a second implementation of it. */
+  const planInputs = useMemo(()=>{
+    if(!orders) return null;
+    const mapped = orders.map(o=>({ ...o,
+      stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
+      printing:(o.pi&&o.pi.printing)||o.printing||false }));
+    return { orders:mapped, units:productionUnits(mapped, jobs) };
+  },[orders,jobs]);
+
+  /* Re-plan with extra achievement rows folded in, without saving anything.
+     This is what lets the daily input screen show the consequence of an entry
+     before and after — computed, never described. */
+  const replan = React.useCallback(extra => planInputs && compute(
+    planInputs.orders, INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
+    {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units,
+     progress:progressFrom([...(productionActuals||[]), ...(extra||[])])}),
+    [planInputs,wcs,targets,planOverrides,productionActuals]);
+
   const state = useMemo(()=> orders
     ? compute(
         // stitching/printing live on the pi blob; lift them so the engine sees them
         orders.map(o=>({ ...o,
           stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
           printing:(o.pi&&o.pi.printing)||o.printing||false })),
-        INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
-        {...(targets?{targets}:{}), overrides:planOverrides})
-    : null, [orders,wcs,refTick,targets,planOverrides]);
+        /* The stock sheet's own balance — opening + received - issued — not the
+           opening figure. The register has always shown that sum; the planner
+           netted against opening alone, so every receipt the store entered and
+           every issue booked against a job card was invisible to the buying list. */
+        INPUTS.articles, withStockBalances(INPUTS.materials, INPUTS.stock_meta), wcs, INPUTS.origin,
+        {...(targets?{targets}:{}), overrides:planOverrides,
+         /* Job cards are the unit of production. An order with no card is
+            still planned whole, so nothing changes until one is issued. */
+         units:productionUnits(orders.map(o=>({ ...o,
+           stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
+           printing:(o.pi&&o.pi.printing)||o.printing||false })), jobs),
+         /* What the floor reported it actually made. A finished stage books no
+            more capacity; a stage part done is re-planned for the balance from
+            the day after the entry — which is how a short day pushes the work
+            behind it rather than quietly disappearing. */
+         progress:progressFrom(productionActuals)})
+    : null, [orders,jobs,wcs,refTick,targets,planOverrides,productionActuals]);
 
   /* Ordered versus dispatched, from the same shared ledger the dispatch screen
      renders. An order that has shipped in full — or been closed short — is
@@ -332,23 +412,35 @@ export default function App({ user=null, onSignOut=null }={}){
          inside that screen rather than beside it. */
       ["intake","PI generation"],
       ["pis","PI database"],
+      ["quotations","Quotations"],
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
-      ["jobs","Create Job Order"],
-      ["jobwork","Job Orders Database"],
-      /* Before Dispatch Book, because that is when it happens: a finished shoe
-         fails inspection on the way to the lorry. */
-      ["repair","Repair"],
-      ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
-      ["production","Daily production"],
+      /* A job order is the release of an Order Book row to the floor, so both
+         job-order screens begin the production flow rather than ending the
+         commercial Orders menu. */
+      ["jobs","Create Job Order"],
+      ["jobwork","Job Orders Database"],
       ["schedule","Schedule"],
+      ["production_input","Daily plan vs achievement"],
+      ["status","Production status"],
       ["plan","Production plan"],
       ["machines","Machine load"],
+    ]],
+    ["Quality & Dispatch", [
+      /* Quality failures create repair movements. Dispatch stays a separate
+         book because repairing a pair is not the same event as shipping it. */
+      ["repair","Quality & Repair"],
+      ["dispatch","Dispatch Book"],
     ]],
     ["Materials", [
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
       ["stock","Stock"],
+    ]],
+    ["Inputs", [
+      /* This is the spreadsheet data Factory OS actually uses: article codes,
+         size ranges, BOM rates, packing rules and catalogue/MRP values. */
+      ["data","BOM Upload & Tracker"],
     ]],
     ["Setup", [
       ["parties","Parties & terms"],
@@ -356,7 +448,7 @@ export default function App({ user=null, onSignOut=null }={}){
       ["fabricators","Fabricators & lines"],
       ["catalogue","Catalogue"],
       ["rules","Packing & BOM rules"],
-      ["data","Data & BOM"],
+      ["profiles","Profiles & access"],
     ]],
   ].map(([group, items]) => [group, items.filter(([key]) => canSeeTab(role, key))])
    .filter(([, items]) => items.length);
@@ -456,6 +548,7 @@ export default function App({ user=null, onSignOut=null }={}){
                       {ROLE_LABEL[user.role] || user.role}
                     </div>
                   </div>
+                  <ChangePassword />
                   {onSignOut && (
                     <button onClick={onSignOut} title="Sign out"
                       style={{padding:"5px 10px",fontSize:12,fontWeight:600,color:"#33465C",
@@ -526,8 +619,7 @@ export default function App({ user=null, onSignOut=null }={}){
           {intakeMode==="sheet" &&
             <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
         </div>
-        {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
-          productionLogs={productionLogs} productionLoading={productionLoading} productionError={productionErr}
+        {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} productionActuals={productionActuals} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
           onRefresh={syncAll} />}
         {tab==="pis" && <PiDatabaseTab orders={orders} shortfall={state?state.procurement_by_pi:null}
                             onGoToJobs={()=>setTab("jobs")}
@@ -553,21 +645,24 @@ export default function App({ user=null, onSignOut=null }={}){
           <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} />
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
+        {tab==="quotations" && <QuotationsTab readOnly={readOnly} />}
+        {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
-        {tab==="production" && <ProductionInputTab orders={state.orders||[]} logs={productionLogs}
-          loading={productionLoading} loadError={productionErr} onChanged={refreshProduction} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
-        {tab==="plan" && <PlanTab state={state} caps={caps} setPlanOverride={setPlanOverride} />}
+        {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals}
+          replan={replan} onChanged={refreshProductionActuals} />}
+        {tab==="plan" && <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
-        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} />}
+        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
-        {tab==="stock" && <StockTab onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="stock" && <StockTab state={state} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
         {tab==="catalogue" && <CatalogueTab
           onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
           onAddBom={()=>setTab("data")} />}
         {tab==="rules" && <ArticleRulesTab onChanged={()=>setRefTick(t=>t+1)} onUploadBom={()=>setTab("data")} />}
+        {tab==="profiles" && <ProfilesTab />}
         {tab==="data" && <DataTab onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="copilot" && <CopilotTab q={aiQ} setQ={setAiQ} a={aiA} busy={aiBusy} ask={askAI} />}
           </div>
@@ -627,7 +722,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
   const [rawRead,setRawRead]=useState("");   // exactly what the reader returned, for diagnosing bad reads      // [{article, lines:[{combo,cartons,ppc,exact}]}]
   const [party,setParty]=useState("");
   const [priority,setPriority]=useState(2);
-  const [orderDate,setOrderDate]=useState(new Date().toISOString().slice(0,10));
+  const [orderDate,setOrderDate]=useState(todayIso());
   const cataloguePrices=()=>Object.fromEntries(Object.entries(CATALOGUE||{})
     .filter(([,entry])=>entry&&entry.price!=null&&Number.isFinite(Number(entry.price)))
     .map(([article,entry])=>[article,Number(entry.price)]));
@@ -2113,10 +2208,11 @@ const VIEWS = {
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
+  quotations:  {title:"Quotations",         sub:"What a customer has been offered, before there is an order"},
   jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
+  status:      {title:"Production status",   sub:"Where every job card actually is — recorded movements first, the plan where nothing is recorded"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
-  production:  {title:"Daily production",  sub:"Actual output, rejects and downtime from every machine and shift"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
@@ -2126,8 +2222,8 @@ const VIEWS = {
   fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
-  data:        {title:"Data & BOM",         sub:"Bills of materials, pricing and stock figures"},
-  repair:      {title:"Repair",             sub:"Shoes sent back before dispatch, what came back and what was rejected"},
+  data:        {title:"BOM Upload & Tracker",sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
+  repair:      {title:"Quality & Repair",   sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };
 
@@ -2930,13 +3026,14 @@ function EditOrder({o,onSave,onCancel}){
 
 /* Day-by-day production plan: what runs on which machine on which date.
    Built entirely from the computed stage allocations — nothing new is inferred. */
-function PlanTab({state,caps,setPlanOverride}){
+function PlanTab({state,caps,actuals=[],setPlanOverride}){
   // Same editor as the Schedule board. A planner looking at "Tuesday is
   // overloaded" wants to move THAT job, on the screen where they can see it.
   const [editing,setEditing]=React.useState(null);
-  const editOrder = state.orders.find(o=>o.order_no===editing);
-  const queue = queueOrder(state.orders,
-    Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]))).map(o=>o.order_no);
+  const productionRows=state.units&&state.units.length?state.units:state.orders;
+  const editUnit = productionRows.find(o=>(o.unit_key||o.order_no)===editing);
+  const queue = queueOrder(productionRows,
+    Object.fromEntries(productionRows.map(o=>[o.unit_key||o.order_no,o.override||{}]))).map(o=>o.unit_key||o.order_no);
   /* In the order a shoe passes through them. Reading the reference document's
      own key order put PACKING second and DISPATCH third — the columns were the
      storage order, not the production order. */
@@ -2944,15 +3041,20 @@ function PlanTab({state,caps,setPlanOverride}){
   // The schedule was built from the edited capacities; reading the seed here
   // made this screen disagree with Machine load the moment one was changed.
   const capacityOf = c => (caps && caps[c]) ?? INPUTS.workcenters[c].capacity_per_day;
+  const actualByKey=new Map(actuals.map(row=>[productionActualKey(row),row]));
   const byDay = {};
-  for(const o of state.orders){
+  for(const o of productionRows){
     for(const st of o.stages){
       if(st.instant || !st.alloc) continue;
       for(const [day,pairs] of Object.entries(st.alloc)){
         const d = Number(day);
         (byDay[d] = byDay[d] || {});
+        const production_on=fromDay(d,INPUTS.origin);
+        const actual=actualByKey.get(productionActualKey({production_on,work_center:st.work_center,stage:st.stage,order_no:o.order_no,unit_key:o.unit_key||o.order_no}));
         (byDay[d][st.work_center] = byDay[d][st.work_center] || []).push({
-          order_no:o.order_no, article:o.article, party:o.party, pairs, sla:o.sla });
+          order_no:o.order_no, unit_key:o.unit_key||o.order_no, card_no:o.card_no,
+          article:o.article, party:o.party, pairs, stage:st.stage,
+          actual_pairs:actual==null?null:Number(actual.actual_pairs), sla:o.sla });
       }
     }
   }
@@ -2973,9 +3075,9 @@ function PlanTab({state,caps,setPlanOverride}){
     {setPlanOverride && <p className="text-xs text-slate-500 -mt-2 mb-3">
       Click any order number below to overrule its plan — run it earlier or later, pin its start
       date, move a stage to another machine, or force a stage into a set number of days.</p>}
-    {editOrder && setPlanOverride && (
-      <PlanOverrideEditor order={editOrder} queue={queue}
-        onChange={ov=>setPlanOverride(editOrder.order_no,ov)}
+    {editUnit && setPlanOverride && (
+      <PlanOverrideEditor order={{...editUnit,order_no:editUnit.unit_key||editUnit.order_no}} queue={queue}
+        onChange={ov=>setPlanOverride(editUnit.order_no,ov,editUnit.unit_key)}
         onClose={()=>setEditing(null)} />)}
     <div className="overflow-x-auto">
       <table className="w-full text-sm border-collapse">
@@ -3005,13 +3107,15 @@ function PlanTab({state,caps,setPlanOverride}){
                     {jobs.map((j,i)=>(
                       <div key={i} className="text-xs mb-1">
                         {setPlanOverride
-                          ? <button onClick={()=>setEditing(editing===j.order_no?null:j.order_no)}
-                              aria-label={`Adjust the plan for ${j.order_no}`}
+                          ? <button onClick={()=>setEditing(editing===j.unit_key?null:j.unit_key)}
+                              aria-label={`Adjust the plan for ${j.card_no||j.order_no}`}
                               className="mono font-semibold text-indigo-800 underline decoration-dotted underline-offset-2">
-                              {j.order_no}</button>
-                          : <span className="mono font-semibold">{j.order_no}</span>}
+                              {j.card_no||j.order_no}</button>
+                          : <span className="mono font-semibold">{j.card_no||j.order_no}</span>}
+                        {j.card_no&&<span className="mono text-slate-400"> · {j.order_no}</span>}
                         <span className="text-slate-500"> · {fmt(Math.round(j.pairs))} pr</span>
-                        <div className="text-slate-400">{j.article}</div>
+                        {j.actual_pairs!=null&&<span className="text-emerald-700"> · {fmt(j.actual_pairs)} actual</span>}
+                        <div className="text-slate-400">{j.article} · {j.stage}</div>
                       </div>))}
                     <div className="text-xs mono" style={{color:forced?"#b45309":"#94a3b8"}}>
                       {Math.round(100*used/cap)}% of {fmt(cap)}{forced?" · forced":""}</div>
@@ -3021,7 +3125,7 @@ function PlanTab({state,caps,setPlanOverride}){
         </tbody>
       </table>
     </div>
-    <p className="text-xs text-slate-400 mt-3"><span style={{background:"#fffbeb",padding:"1px 4px",borderRadius:3,color:"#b45309"}}>Amber</span> is a day booked past capacity because a stage was pinned to a shorter run in Schedule → Adjust. Each molding machine takes one order at a time, so a molding column never shows two orders on the same day — but the molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
+    <p className="text-xs text-slate-400 mt-3"><span style={{background:"#fffbeb",padding:"1px 4px",borderRadius:3,color:"#b45309"}}>Amber</span> is a day booked past capacity because a stage was pinned to a shorter run in Schedule → Adjust. A molding machine carries one MOULD at a time, so a molding column can show two cards of the same article on one day — up to that machine's capacity — while a different article waits for the changeover. The molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
   </div>;
 }
 
@@ -3066,7 +3170,10 @@ function PlanningLogic({orders}){
    is printed underneath. */
 function PlanOverrideEditor({order, queue, onChange, onClose}){
   const ov = order.override || {seq:null,start_on:null,machine:{},days:{}};
-  const pos = Math.max(1, queue.indexOf(order.order_no)+1);
+  /* A batch is pinned by its own key, not its order's — five cards of one
+     order are five separate places in the queue. */
+  const key = order.unit_key || order.order_no;
+  const pos = Math.max(1, queue.indexOf(key)+1);
   const patch = next => onChange({...ov, machine:{...ov.machine}, days:{...ov.days}, ...next});
   const stages = order.stages.filter(s=>!s.instant);
   // Only the centres that serve this stage: a planner may choose between the
@@ -3081,7 +3188,7 @@ function PlanOverrideEditor({order, queue, onChange, onClose}){
   const BTN="text-xs font-semibold rounded-lg px-2.5 py-1 border border-slate-300 bg-white hover:bg-slate-50";
   return <div className="border border-indigo-200 bg-indigo-50/40 rounded-xl p-3 mb-2">
     <div className="flex items-center gap-2 flex-wrap mb-2">
-      <span className="text-sm font-semibold text-indigo-900">Adjust {order.order_no}</span>
+      <span className="text-sm font-semibold text-indigo-900">Adjust {order.plan_title || order.order_no}</span>
       <span className="text-xs text-slate-500">currently #{pos} in the queue · dispatch {niceDate(order.dispatch_date)}</span>
       <button onClick={onClose} className="ml-auto text-xs text-slate-500 px-1.5">close</button>
     </div>
@@ -3183,10 +3290,58 @@ function ScheduleTab({state,setPlanOverride}){
   const minDay=Math.min(...rows.map(o=>Math.min(...o.stages.map(s=>s.start))),0);
   const span=maxDay-minDay+1;
   const days=Array.from({length:span},(_,i)=>minDay+i);
-  const todayIdx=dayIndex(new Date().toISOString().slice(0,10), INPUTS.origin);
+  const todayIdx=dayIndex(todayIso(), INPUTS.origin);
   const showToday=todayIdx>=minDay&&todayIdx<=maxDay;
   const tickEvery=span>90?14:7;
   const ticks=days.filter(d=>((d-minDay)%tickEvery)===0);
+  /* THE PLANNER SCHEDULES JOB CARDS. An order with more than one card is
+     drawn as its own summary row with the cards beneath it, because "when is
+     JO2112 made" and "when is card JC14 made" are different questions and the
+     floor works to the second one. */
+  const unitsByOrder=React.useMemo(()=>{
+    const out={};
+    for(const u of state.units||[]) (out[u.order_no]=out[u.order_no]||[]).push(u);
+    return out;
+  },[state.units]);
+  const unitQueue=React.useMemo(()=>[...(state.units||[])]
+    .sort((a,b)=>a.priority-b.priority
+      ||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)
+      ||(a.unit_key<b.unit_key?-1:1))
+    .map(u=>u.unit_key),[state.units]);
+  const [showBatches,setShowBatches]=React.useState(true);
+  const batchedOrders=(state.orders||[]).filter(o=>(o.batch_count||1)>1).length;
+  const Bar = ({o, height=24}) => {
+    const rel=dayIndex(o.order_date, INPUTS.origin);
+    const byDay={};
+    let prevEnd=null;
+    o.stages.filter(s=>!s.instant).forEach(s=>{
+      if(prevEnd!==null) for(let d=prevEnd+1; d<s.start; d++) byDay[d]={stage:s.stage,working:false,first:false};
+      for(let d=s.start; d<=s.end; d++) byDay[d]={stage:s.stage,working:!!(s.alloc&&s.alloc[d]>0),first:d===s.start};
+      prevEnd=s.end;
+    });
+    return (
+          <div className="relative flex flex-1" style={{height,borderRadius:4,overflow:"hidden",background:"#f6f8fb"}}>
+            {days.map(d=>{
+              const cell=byDay[d];
+              if(!cell){
+                const pre = d<rel;
+                return <div key={d} title={pre?("before order date ("+niceDate(o.order_date)+")"):""}
+                  style={{flex:1,borderRight:"1px solid #fff",background:pre?"#e7e9f0":"transparent"}}/>;
+              }
+              const sc=STAGE_COLOR[cell.stage]||"#64748b";
+              return <div key={d} title={`${cell.stage} - ${niceDate(fromDay(d,INPUTS.origin))}${cell.working?"":" - waiting (machine busy with higher-priority rows)"}`}
+                style={{flex:1,
+                  borderLeft: cell.first ? "2px solid #ffffff" : "none",
+                  borderRight:"1px solid rgba(255,255,255,.45)",
+                  background: cell.working ? sc
+                    : `repeating-linear-gradient(45deg, ${sc}40, ${sc}40 2px, #f1f4f8 2px, #f1f4f8 5px)`}}/>;
+            })}
+            {o.stages.filter(s=>!s.instant && (s.end-s.start+1)/span>=0.028).map((s,i)=>(
+              <span key={i} className="mono absolute" style={{left:`${100*(s.start-minDay+0.15)/span}%`,top:5,fontSize:8,
+                color:"#fff",textShadow:"0 0 3px rgba(0,0,0,.6)",pointerEvents:"none"}}>{STAGE_ABBR[s.stage]||s.stage[0]}</span>))}
+            {showToday && <div className="absolute" style={{left:`${100*(todayIdx-minDay)/span}%`,top:0,bottom:0,width:2,background:"#0f766e",opacity:.45,pointerEvents:"none"}}/>}
+          </div>);
+  };
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     {!!(state.plan_warnings||[]).length && (
       <div className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 mb-3">
@@ -3197,6 +3352,47 @@ function ScheduleTab({state,setPlanOverride}){
           {state.plan_warnings.length>6 && <li>…and {state.plan_warnings.length-6} more.</li>}
         </ul>
       </div>)}
+    {/* WAITING FOR A JOB CARD. These pairs are ordered and not yet released,
+        so they are deliberately NOT on the board below — scheduling them would
+        book machines for work the floor has not agreed to make. They are listed
+        here instead, because an order that vanishes from every screen is worse
+        than one that is plainly waiting. */}
+    {!!(state.pending_release||[]).length && (()=>{
+      const rows=state.pending_release;
+      const pairs=rows.reduce((a,r)=>a+r.pairs,0);
+      return <details className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+        <summary className="text-xs text-amber-900 cursor-pointer">
+          <b>{fmt(pairs)} pairs across {rows.length} order{rows.length===1?"":"s"} are not on the plan yet</b>
+          {" "}— they are waiting for a job card. Create one and they join the board.
+        </summary>
+        <table className="text-xs mt-2 w-full" style={{borderCollapse:"collapse"}}>
+          <thead><tr className="text-amber-900/70">
+            <th className="text-left py-1">Order</th><th className="text-left">Article</th>
+            <th className="text-left">Customer</th><th className="text-right">Pairs waiting</th>
+            <th className="text-left pl-3">Sizes</th></tr></thead>
+          <tbody>
+            {rows.slice(0,12).map(r=>(
+              <tr key={r.order_no} style={{borderTop:"1px solid #fde68a"}}>
+                <td className="mono py-1">{r.order_no}</td>
+                <td className="text-amber-900">{r.article}</td>
+                <td className="text-amber-900">{r.party||"—"}</td>
+                <td className="mono text-right">{fmt(r.pairs)}</td>
+                <td className="mono text-amber-900/80 pl-3">
+                  {r.lines.map(l=>`${l.combo} ${fmt(l.qty)}`).join(" · ")}</td>
+              </tr>))}
+          </tbody>
+        </table>
+        {rows.length>12 && <div className="text-xs text-amber-900/70 mt-1">…and {rows.length-12} more.</div>}
+      </details>;
+    })()}
+    {batchedOrders>0 && <div className="flex items-center gap-2 flex-wrap mb-2 text-xs">
+      <span className="rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-900 px-2 py-1">
+        <b>{batchedOrders} order{batchedOrders===1?" is":"s are"} planned as job cards.</b>{" "}
+        Each card is scheduled from its own date; the order's own row is the span of all of them.</span>
+      <button onClick={()=>setShowBatches(v=>!v)}
+        className="font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white">
+        {showBatches?"Hide job cards":"Show job cards"}</button>
+    </div>}
     <p className="text-sm text-slate-500 mb-1"><b>Press Adjust on any row</b> to overrule the plan for that order — run it first or later, pin its start date, move a stage to another machine, or force a stage to finish in a set number of days. <b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
     <details className="mb-3">
       <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>
@@ -3220,15 +3416,8 @@ function ScheduleTab({state,setPlanOverride}){
         <div className="flex-none" style={{width:setPlanOverride?128:58}}/>
       </div>
       {rows.map(o=>{
-        const rel=dayIndex(o.order_date, INPUTS.origin);
-        const byDay={};
-        let prevEnd=null;
-        o.stages.filter(s=>!s.instant).forEach((s,si)=>{
-          if(prevEnd!==null) for(let d=prevEnd+1; d<s.start; d++) byDay[d]={stage:s.stage,working:false,first:false};
-          for(let d=s.start; d<=s.end; d++) byDay[d]={stage:s.stage,working:!!(s.alloc&&s.alloc[d]>0),first:d===s.start};
-          prevEnd=s.end;
-        });
         const pri=PRI_STYLE[o.priority]||PRI_STYLE[3];
+        const batches=(unitsByOrder[o.order_no]||[]).filter(u=>u.unit_key!==o.order_no);
         return (
         <React.Fragment key={o.order_no}>
         <div className="flex items-center gap-2 mb-2">
@@ -3237,27 +3426,7 @@ function ScheduleTab({state,setPlanOverride}){
             {o.overridden && <span className="font-semibold rounded px-1 ml-0.5" title="Planned by hand, not automatically"
               style={{fontSize:9,background:"#e0e7ff",color:"#3730a3"}}>manual</span>}<br/>
             <span className="text-slate-400" style={{fontSize:9}}>{o.article.length>15?o.article.slice(0,14)+"…":o.article}</span></div>
-          <div className="relative flex flex-1" style={{height:24,borderRadius:4,overflow:"hidden",background:"#f6f8fb"}}>
-            {days.map(d=>{
-              const cell=byDay[d];
-              if(!cell){
-                const pre = d<rel;
-                return <div key={d} title={pre?("before order date ("+niceDate(o.order_date)+")"):""}
-                  style={{flex:1,borderRight:"1px solid #fff",background:pre?"#e7e9f0":"transparent"}}/>;
-              }
-              const sc=STAGE_COLOR[cell.stage]||"#64748b";
-              return <div key={d} title={`${cell.stage} - ${niceDate(fromDay(d,INPUTS.origin))}${cell.working?"":" - waiting (machine busy with higher-priority rows)"}`}
-                style={{flex:1,
-                  borderLeft: cell.first ? "2px solid #ffffff" : "none",
-                  borderRight:"1px solid rgba(255,255,255,.45)",
-                  background: cell.working ? sc
-                    : `repeating-linear-gradient(45deg, ${sc}40, ${sc}40 2px, #f1f4f8 2px, #f1f4f8 5px)`}}/>;
-            })}
-            {o.stages.filter(s=>!s.instant && (s.end-s.start+1)/span>=0.028).map((s,i)=>(
-              <span key={i} className="mono absolute" style={{left:`${100*(s.start-minDay+0.15)/span}%`,top:5,fontSize:8,
-                color:"#fff",textShadow:"0 0 3px rgba(0,0,0,.6)",pointerEvents:"none"}}>{STAGE_ABBR[s.stage]||s.stage[0]}</span>))}
-            {showToday && <div className="absolute" style={{left:`${100*(todayIdx-minDay)/span}%`,top:0,bottom:0,width:2,background:"#0f766e",opacity:.45,pointerEvents:"none"}}/>}
-          </div>
+          <Bar o={o}/>
           {/* PINNED, like the order number on the left. The gantt scrolls
               sideways inside an 860px-minimum box, so an unpinned control at
               the end of the row is simply off the screen on a laptop — which
@@ -3277,6 +3446,34 @@ function ScheduleTab({state,setPlanOverride}){
           <PlanOverrideEditor order={o} queue={rows.map(r=>r.order_no)}
             onChange={ov=>setPlanOverride(o.order_no,ov)}
             onClose={()=>setEditing(null)} />)}
+        {showBatches && batches.map(u=>(
+          <React.Fragment key={u.unit_key}>
+          <div className="flex items-center gap-2 mb-2">
+            <div className="mono flex-none" style={{width:112,fontSize:10,position:"sticky",left:0,
+                 background:"#fff",zIndex:2,paddingLeft:12,lineHeight:1.3}}>
+              <span className={u.unit_kind==="balance"?"text-amber-700":"text-slate-600"}>
+                {u.unit_kind==="balance" ? "no card yet" : `card ${u.card_no||u.job_id}`}</span>
+              {u.overridden && <span className="font-semibold rounded px-1 ml-0.5"
+                style={{fontSize:8,background:"#e0e7ff",color:"#3730a3"}}>manual</span>}<br/>
+              <span className="text-slate-400" style={{fontSize:9}}>{fmt(u.qty)} pairs</span></div>
+            <Bar o={u} height={14}/>
+            <div className="flex-none flex items-center gap-1.5"
+              style={{position:"sticky",right:0,background:"#fff",zIndex:2,paddingLeft:6}}>
+              <div className="mono text-right" style={{width:58,fontSize:10,color:SLA_COLOR[u.sla]}}>{niceDate(u.dispatch_date)}</div>
+              {setPlanOverride && <button
+                onClick={()=>setEditing(editing===u.unit_key?null:u.unit_key)}
+                aria-label={`Adjust the plan for ${u.card_no?`card ${u.card_no}`:`the unreleased balance of ${o.order_no}`}`}
+                className="flex-none text-xs font-semibold rounded-lg px-2 py-0.5 border border-indigo-200 text-indigo-700 bg-white hover:bg-indigo-50">
+                {editing===u.unit_key?"Done":"Adjust"}</button>}
+            </div>
+          </div>
+          {editing===u.unit_key && setPlanOverride && (
+            <PlanOverrideEditor
+              order={{...u, plan_title:`${o.order_no} · ${u.unit_kind==="balance"?"pairs not yet on a card":`card ${u.card_no||u.job_id}`}`}}
+              queue={unitQueue}
+              onChange={ov=>setPlanOverride(o.order_no,ov,u.unit_key)}
+              onClose={()=>setEditing(null)} />)}
+          </React.Fragment>))}
         </React.Fragment>);
       })}
     </div>
@@ -3300,7 +3497,7 @@ function ScheduleTab({state,setPlanOverride}){
 function ProcurementTab({state}){
   const [showAll,setShowAll]=useState(false);
   const [leadDays,setLeadDays]=useState(7);
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayIso();
 
   const timing=useMemo(
     ()=>neededBy(state.procurement_by_order||{}, state.orders||[], INPUTS.articles||{}),
@@ -3404,7 +3601,7 @@ function ProcurementTab({state}){
   </div>;
 }
 
-function MachinesTab({state,caps,setCaps,targets,setTargets}){
+function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTimes}){
   // Derived from reference data, not hardcoded — add a work centre and it
   // appears here automatically. Ordered by production sequence so the strips
   // read the way the factory flows, and rows never re-order while editing.
@@ -3415,6 +3612,7 @@ function MachinesTab({state,caps,setCaps,targets,setTargets}){
     <p className="text-sm text-slate-500 mb-1">One strip per line, day by day: <b>how full that line is on each day</b>. Red = fully booked, amber = nearly full, blue = partly used, empty = free. The date on the right is when the line frees up.</p>
     <p className="text-xs text-slate-400 mb-4">Each molding machine runs one order at a time, but they run in parallel with each other. Capacities are placeholders until the factory confirms them.</p>
     <SlaTargets targets={targets} setTargets={setTargets} />
+    <LeadTimes leadTimes={leadTimes} setLeadTimes={setLeadTimes} />
     <MoldingAssignment />
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
@@ -3545,6 +3743,60 @@ function SlaTargets({targets,setTargets}){
     <button disabled={busy||!dirty} onClick={save}
       className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
       {busy?"Saving…":"Save targets"}</button>
+  </div>;
+}
+
+/* DAYS AN ORDER SPENDS NOT BEING MADE. Printing delays the release; outside
+   stitching adds a transit leg AFTER stitching, because work sent out has to
+   come back before it can be QC'd. Both were readable only from the bundled
+   seed — so they were placeholders the factory had no way to correct, in an
+   app whose whole rule is that nothing is assumed. */
+function LeadTimes({leadTimes,setLeadTimes}){
+  const FIELDS=[
+    ["printing_days","Printing",
+     "Days printing adds BEFORE cutting starts. Only orders marked for printing wait."],
+    ["stitching_outside_transport_days","Outside stitching transit",
+     "Days work sent outside spends travelling, out and back. It books no machine — nothing is being made — but the customer waits for it."],
+    ["stitching_inhouse_prep_days","In-house preparation",
+     "Preparation is already a stage in every route, so this stays 0 unless the factory wants a further buffer."],
+  ];
+  const cur=Object.fromEntries(FIELDS.map(([k])=>[k,Number((leadTimes||{})[k])||0]));
+  const [draft,setDraft]=useState(cur);
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  useEffect(()=>{setDraft(cur);},[leadTimes]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty=FIELDS.some(([k])=>Number(draft[k])!==Number(cur[k]));
+
+  async function save(){
+    setBusy(true); setMsg("");
+    try{
+      const v=await api.putSettings({lead_time_rules:Object.fromEntries(
+        FIELDS.map(([k])=>[k,Math.max(0,Math.round(Number(draft[k])||0))]))});
+      setLeadTimes(v.lead_time_rules||{});
+      setMsg("Saved — every dispatch date has been recalculated.");
+    }catch(e){ setMsg(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  return <div className="mb-5 border border-slate-200 rounded-xl p-3.5">
+    <div className="text-sm font-semibold text-slate-700 mb-1">Lead times — days an order is not being made</div>
+    <p className="text-xs text-slate-500 mb-3">
+      These are elapsed days, not machine time, and every dispatch date on the board includes them.
+      <b> Zero is a real answer</b> — it means no wait, not "not set".
+    </p>
+    <div className="flex gap-3 flex-wrap">
+      {FIELDS.map(([k,label,help])=>(
+        <label key={k} className="text-xs text-slate-600" style={{maxWidth:230}}>{label}
+          <input type="number" min={0} max={60} value={draft[k]??0} aria-label={label}
+            onChange={e=>setDraft(d=>({...d,[k]:e.target.value}))}
+            className="block mt-0.5 w-20 text-sm border border-slate-300 rounded-lg px-2 py-1 mono" />
+          <span className="block text-[11px] text-slate-400 mt-0.5">{help}</span>
+        </label>))}
+    </div>
+    {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
+    <button disabled={busy||!dirty} onClick={save}
+      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      {busy?"Saving…":"Save lead times"}</button>
   </div>;
 }
 

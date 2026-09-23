@@ -6,7 +6,11 @@ import * as api from "./lib/client.js";
 import PackingList from "./PackingList.jsx";
 import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
-import { comboSizes } from "../shared/pi.js";
+import { comboSizes, mrpForSize } from "../shared/pi.js";
+import GatePass from "./GatePass.jsx";
+import { buildGatePass, pairsFromCartons } from "../shared/gate-pass.js";
+import { singlePackQty } from "../shared/bridge.js";
+import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary } from "../shared/mixed-carton.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
 
@@ -40,6 +44,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      thing that travels with the lorry, so it has to be reprintable long after
      the dispatch was recorded — not only at the moment it was keyed in. */
   const [viewing,setViewing]=useState(null);
+  /* The gate pass is the SAME shipment as the packing list, so it is raised
+     from the same row rather than re-keyed. Three things are not in the
+     system and are typed here: the serial number off the pre-printed pad, the
+     transporter, and the destination city. */
+  const [showGate,setShowGate]=useState(false);
+  const [gate,setGate]=useState({serial_no:"",transporter:"",city:""});
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
@@ -114,6 +124,24 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
 
   const list=Object.values(pending);
   const totals=ledgerTotals(pending);
+  const reportsByOrder=useMemo(()=>{
+    const groups=new Map();
+    for(const d of dispatches.filter(row=>!row.hidden)){
+      const key=String(d.order_no||"");
+      if(!groups.has(key)){
+        const order=(orders||[]).find(o=>String(o.order_no)===key)||{};
+        groups.set(key,{order_no:key,party:order.party||"",article:order.article_code||order.article||"",reports:[]});
+      }
+      groups.get(key).reports.push(d);
+    }
+    return [...groups.values()].map(group=>{
+      group.reports.sort((a,b)=>String(b.dispatched_on||"").localeCompare(String(a.dispatched_on||""))||Number(b.id||0)-Number(a.id||0));
+      group.pairs=group.reports.reduce((sum,d)=>sum+Object.values(d.dispatched||{}).reduce((a,b)=>a+(Number(b)||0),0),0);
+      group.cartons=group.reports.reduce((sum,d)=>sum+Object.values(d.cartons||{}).reduce((a,b)=>a+(Number(b)||0),0),0);
+      group.latest=group.reports[0]?.dispatched_on||"";
+      return group;
+    }).sort((a,b)=>String(b.latest).localeCompare(String(a.latest))||a.order_no.localeCompare(b.order_no));
+  },[dispatches,orders]);
 
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
@@ -184,14 +212,16 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      same way the invoice is. A print stylesheet has to anticipate every piece
      of chrome on the page; a clean document cannot get one wrong, and what is
      saved as a PDF is then exactly the sheet and nothing else. */
-  function printPackingList(){
-    const node=document.querySelector(".packing-list");
+  function printPackingList(){ printDocument(".packing-list","Packing list"); }
+  function printGatePass(){ printDocument(".gate-pass","Gate pass"); }
+  function printDocument(selector,label){
+    const node=document.querySelector(selector);
     if(!node) return;
     const w=window.open("","_blank","width=900,height=1000");
-    if(!w){ setErr("Popup blocked — allow popups to print the packing list."); return; }
+    if(!w){ setErr(`Popup blocked — allow popups to print the ${label.toLowerCase()}.`); return; }
     w.document.open();
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
-      + `<title>Packing list ${viewing?viewing.order_no:""}</title>`
+      + `<title>${label} ${viewing?viewing.order_no:""}</title>`
       + `<style>*{box-sizing:border-box}`
       + `body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}`
       + `table{width:100%;border-collapse:collapse}`
@@ -412,44 +442,91 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       <div className="mb-4 rounded-2xl border border-slate-300 bg-white p-3 shadow-sm">
         <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
           <div className="text-sm font-semibold text-slate-800">
-            Packing list · <span className="mono">{viewing.order_no}</span>
+            <span className="mono">{viewing.order_no}</span>
           </div>
-          <button onClick={printPackingList}
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+            {[["list","Packing list"],["gate","Gate pass"]].map(([key,label])=>(
+              <button key={key} onClick={()=>setShowGate(key==="gate")}
+                className={`px-2.5 py-1 font-semibold ${(key==="gate")===showGate?"bg-slate-800 text-white":"bg-white text-slate-600"}`}>
+                {label}</button>))}
+          </div>
+          <button onClick={showGate?printGatePass:printPackingList}
             className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">
             Print / Save PDF</button>
-          <button onClick={()=>setViewing(null)}
+          <button onClick={()=>{setViewing(null);setShowGate(false);}}
             className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
         </div>
-        <PackingList data={viewing.sheet} />
+        {showGate && <div data-noprint className="flex gap-2 flex-wrap mb-2">
+          <label className="text-xs text-slate-600">SR. No. from the book
+            <input value={gate.serial_no} aria-label="Gate pass serial number"
+              onChange={e=>setGate(g=>({...g,serial_no:e.target.value}))}
+              className="block mt-0.5 w-32 text-sm border border-slate-300 rounded px-2 py-1 mono" /></label>
+          <label className="text-xs text-slate-600">Transporter
+            <input value={gate.transporter} aria-label="Transporter"
+              onChange={e=>setGate(g=>({...g,transporter:e.target.value}))}
+              className="block mt-0.5 w-44 text-sm border border-slate-300 rounded px-2 py-1" /></label>
+          <label className="text-xs text-slate-600">City
+            <input value={gate.city} aria-label="Destination city"
+              onChange={e=>setGate(g=>({...g,city:e.target.value}))}
+              className="block mt-0.5 w-36 text-sm border border-slate-300 rounded px-2 py-1" /></label>
+        </div>}
+        {showGate
+          ? (()=>{
+              const built=buildPackingList(viewing.sheet||{});
+              const order=(orders||[]).find(o=>o.order_no===viewing.order_no)||{};
+              const article=order.article_code||order.article||"";
+              return <GatePass data={buildGatePass({
+                packing_list:built, ...gate,
+                order_no:viewing.order_no, date:viewing.dispatched_on||built.date,
+                party:built.customer||order.party,
+                order_qty:(order.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0)||null,
+                /* Per SIZE, off the article master — blank where there is no
+                   figure on record rather than a zero. */
+                mrpFor:size=>mrpForSize((INPUTS.mrp&&INPUTS.mrp[article])||{},"",size),
+                packFor:size=>singlePackQty(article,size,"",""),
+              })} />;
+            })()
+          : <PackingList data={viewing.sheet} />}
       </div>)}
 
-    {!!dispatches.length && (
+    {!!reportsByOrder.length && (
       <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm mt-4">
-        <div className="text-sm font-semibold text-slate-700 mb-2">Dispatch history</div>
+        <div className="text-sm font-semibold text-slate-700">Order packing reports</div>
+        <p className="text-xs text-slate-500 mt-0.5 mb-3">
+          Reports are kept inside their order so separate partial dispatches never get mixed with another order.
+        </p>
         {(err||msg) && <div ref={historyMsgRef}
           className={`text-xs rounded-lg border px-3 py-2 mb-2 ${err
             ?"border-rose-200 bg-rose-50 text-rose-800":"border-emerald-200 bg-emerald-50 text-emerald-900"}`}>
           {err||msg}</div>}
-        <table className="w-full text-xs">
-          <thead><tr className="text-slate-500">
-            <th className="text-left py-1">Date</th><th className="text-left">Order</th>
-            <th className="text-left">Type</th><th className="text-left">Sent</th>
-            <th className="text-left">Note</th><th></th></tr></thead>
-          <tbody>
-            {dispatches.filter(d=>!d.hidden).map(d=>(
-              <tr key={d.id} className="border-t border-slate-100">
-                <td className="py-1 mono">{d.dispatched_on}</td>
-                <td className="mono">{d.order_no}</td>
+        <div className="space-y-3">
+          {reportsByOrder.map(group=><section key={group.order_no}
+            aria-label={`Packing reports for order ${group.order_no}`}
+            className="rounded-xl border border-slate-200 overflow-hidden">
+            <div className="bg-slate-50 px-3 py-2 flex gap-3 items-center flex-wrap">
+              <div className="mono text-sm font-semibold text-slate-800">{group.order_no}</div>
+              <div className="text-xs text-slate-600">{group.article||"—"}{group.party?` · ${group.party}`:""}</div>
+              <div className="ml-auto text-xs text-slate-500">
+                <b>{group.reports.length}</b> report{group.reports.length===1?"":"s"} · <b className="mono">{fmt(group.pairs)}</b> pairs
+                {group.cartons>0&&<> · <b className="mono">{fmt(group.cartons)}</b> cartons</>}
+              </div>
+            </div>
+            <div className="overflow-x-auto"><table className="w-full text-xs" style={{minWidth:760}}>
+              <thead><tr className="text-slate-500">
+                <th className="text-left px-3 py-1.5">Report</th><th className="text-left">Date</th>
+                <th className="text-left">Type</th><th className="text-left">Sent</th>
+                <th className="text-left">Note</th><th></th></tr></thead>
+              <tbody>{group.reports.map((d,index)=><tr key={d.id} className="border-t border-slate-100">
+                <td className="px-3 py-1.5 font-semibold text-slate-600">Packing report {group.reports.length-index}</td>
+                <td className="mono">{d.dispatched_on}</td>
                 <td>{d.closes_order ? <span className="text-rose-700 font-semibold">closed short</span> : d.kind}</td>
                 <td className="mono">{Object.entries(d.dispatched).map(([c,v])=>`${c}:${fmt(v)}`).join("  ")}</td>
                 <td className="text-slate-500">{d.note||""}</td>
-                <td className="text-right whitespace-nowrap">
-                  {/* Only offered where a sheet was actually entered — an
-                      empty document would be worse than none. */}
+                <td className="text-right whitespace-nowrap pr-3">
                   {d.packing_list && <button
                     onClick={()=>setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}})}
                     aria-label={`Packing list for ${d.order_no}`}
-                    className="font-semibold text-indigo-700 hover:underline mr-2">Packing list</button>}
+                    className="font-semibold text-indigo-700 hover:underline mr-2">View report</button>}
                   {confirmDel===d.id
                     ? <span className="inline-flex gap-1.5 items-center flex-wrap justify-end">
                         <span className="text-slate-700">Which one?</span>
@@ -471,9 +548,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                         title="Undo the dispatch, or just take this row off the history"
                         className="text-slate-600 font-semibold hover:underline">Remove…</button>}
                 </td>
-              </tr>))}
-          </tbody>
-        </table>
+              </tr>)}</tbody>
+            </table></div>
+          </section>)}
+        </div>
       </div>
     )}
   </div>;
@@ -486,12 +564,19 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
 function PackingListEditor({ sheet, setSheet, expectedPairs }){
   const built = buildPackingList({ ...sheet, dispatch_pairs: expectedPairs });
   const edit = fn => { const next = JSON.parse(JSON.stringify(sheet)); fn(next); setSheet(next); };
+  /* Per SIZE, never per range: SPIKE's 11X1 packs its 12s and 13s at 24 and
+     its size 1 at 18, so a rate taken from the range is wrong as often as it
+     is right. */
+  const rateForLine = line => size => singlePackQty(line.article, size, "", line.combo);
+  const summary = packingSummary(built, () => null);
 
   return <div className="rounded-xl border border-slate-300 bg-white p-3">
     <div className="flex items-baseline gap-3 flex-wrap mb-2">
       <div className="text-sm font-semibold text-slate-800">Packing list</div>
       <div className="text-xs text-slate-600">
         <b className="mono">{built.total_pairs}</b> pairs · <b className="mono">{built.total_cartons}</b> cartons
+        {summary.mixed_cartons > 0 && <> · <b className="mono">{summary.mixed_cartons}</b> mixed
+          {" "}(<b className="mono">{summary.mixed_pairs}</b> pairs)</>}
         {expectedPairs != null && <> · dispatching <b className="mono">{expectedPairs}</b></>}
       </div>
     </div>
@@ -507,6 +592,7 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
             <th className="text-left py-1">Size</th>
             <th className="text-right">Pairs</th>
             <th className="text-right">Cartons (counted)</th>
+            <th className="text-right">C/N</th>
             <th></th>
           </tr></thead>
           <tbody>
@@ -522,7 +608,31 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
                   <input type="number" min={0} value={g.cartons ?? 0}
                     aria-label={`Cartons for size ${g.sizes.map(x=>x.size).join(" and ")}`}
                     onChange={e=>edit(n=>{ n.lines[li].groups[gi].cartons = e.target.value; })}
-                    className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>}
+                    className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" />
+                  {/* PAIRS = CARTONS x STD. PAC. — the factory's own rule, off
+                      their gate pass. Offered rather than applied: the packer
+                      counted the box, and a figure that overwrites a count
+                      without being asked is how a gate pass stops matching the
+                      lorry. A size with no pack on record offers nothing. */}
+                  {(() => {
+                    if(g.sizes.length !== 1) return null;
+                    const pack = singlePackQty(line.article, g.sizes[0].size, "", line.combo);
+                    const derived = pairsFromCartons(g.cartons, pack);
+                    if(derived == null || derived === 0) return null;
+                    if(Number(g.sizes[0].pairs) === derived)
+                      return <div className="text-[10px] text-slate-400 mt-0.5">{g.cartons} × {pack}</div>;
+                    return <button type="button"
+                      onClick={()=>edit(n=>{ n.lines[li].groups[gi].sizes[0].pairs = derived; })}
+                      className="block mt-0.5 text-[10px] text-indigo-700 underline">
+                      = {derived} pairs ({g.cartons} × {pack})</button>;
+                  })()}
+                </td>}
+                {si === 0 && <td className="text-right mono text-slate-500" rowSpan={g.sizes.length}>
+                  {(() => { const b = (built.lines[li]||{}).groups||[];
+                    const bg = b[gi];
+                    const cn = bg && bg.cn_from ? (bg.cn_from===bg.cn_to?`${bg.cn_from}`:`${bg.cn_from}-${bg.cn_to}`) : "—";
+                    return <>{cn}{g.sizes.length>1 && <div className="text-[10px] font-semibold text-indigo-700">mixed</div>}</>; })()}
+                </td>}
                 {si === 0 && <td className="text-right" rowSpan={g.sizes.length}>
                   {gi > 0 && <button type="button" title="Pack this size in the carton above"
                     onClick={()=>edit(n=>{ const gs=n.lines[li].groups;
@@ -533,11 +643,38 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
                       const split=gs[gi].sizes.map(x=>({sizes:[x],cartons:0}));
                       gs.splice(gi,1,...split); })}
                     className="ml-2 text-[11px] text-slate-600 underline">split</button>}
+                  {g.mixed && <button type="button" title="Remove this mixed carton"
+                    onClick={()=>edit(n=>{ n.lines[li].groups.splice(gi,1); })}
+                    className="ml-2 text-[11px] text-rose-700 underline">remove</button>}
                 </td>}
               </tr>
             )))}
           </tbody>
         </table>
+
+        {/* THE LAST BOX. 45 cartons of whole sizes and six pairs of 8 with six
+            of 9 left over: those twelve pairs travel together in carton 46,
+            and the gate has to be told which sizes are inside it. The leftover
+            pairs are SUGGESTED from the packing rates and then typed over —
+            what is in the box is counted, never derived. */}
+        {(() => {
+          const suggestion = suggestMixedCarton(line, rateForLine(line));
+          const sizes = (comboSizes(line.combo)||[]).length
+            ? comboSizes(line.combo) : line.groups.flatMap(g=>g.sizes.map(s=>s.size));
+          return <div className="flex items-center gap-2 flex-wrap mt-1">
+            <button type="button"
+              onClick={()=>setSheet(withMixedCarton(sheet, li,
+                suggestion || { sizes: sizes.slice(0,1).map(size=>({ size, pairs:0 })) }))}
+              className="text-[11px] font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-800 bg-indigo-50">
+              + Add a mixed carton</button>
+            <span className="text-[11px] text-slate-500">
+              {suggestion
+                ? <>{suggestion.pairs} pair{suggestion.pairs===1?"":"s"} will not fill a carton of their own
+                    {" "}({suggestion.sizes.map(x=>`${x.size} x ${x.pairs}`).join(", ")}).</>
+                : <>One box holding several sizes. Its pairs are counted, and it takes the next carton number.</>}
+            </span>
+          </div>;
+        })()}
       </div>
     ))}
 
