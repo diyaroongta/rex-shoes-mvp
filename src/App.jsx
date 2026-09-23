@@ -2503,7 +2503,9 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
     <table className="w-full text-sm" style={{borderCollapse:"collapse",minWidth:760}}>
       <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
         <th className="text-left py-2 px-2">Order</th><th className="text-left py-2 px-2">Party</th><th className="text-left py-2 px-2">Article</th>
-        <th className="text-right py-2 px-2">Qty</th><th className="text-center py-2 px-2">Priority</th>
+        <th className="text-right py-2 px-2">Qty</th>
+        <th className="text-right py-2 px-2">On job cards</th>
+        <th className="text-center py-2 px-2">Priority</th>
         <th className="text-left py-2 px-2">Dispatch</th><th className="text-right py-2 px-2">Lead</th><th className="text-left py-2 px-2">SLA</th><th></th>
       </tr></thead>
       <tbody>{visible.map(o=>(
@@ -2512,7 +2514,18 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
           <td className="py-2 px-2 mono font-semibold" style={{borderTop:"1px solid #eef0f4"}}>{o.order_no}</td>
           <td className="py-2 px-2 text-slate-600" style={{borderTop:"1px solid #eef0f4"}}>{o.party}</td>
           <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>{o.article} <span className="mono text-xs" style={{color:SOLE_COLOR[o.sole_type]}}>· {o.sole_type}</span></td>
-          <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>{fmt(o.qty)}</td>
+          {/* THE ORDER, THEN WHAT HAS BEEN RELEASED OF IT. `qty` is what the
+              plan carries — the pairs on job cards — and `pending_pairs` is
+              what no card has claimed yet. Released 500 of 1,000 reads as
+              exactly that here, rather than the order book quietly showing
+              only the half in production. */}
+          <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>
+            {fmt(o.qty+(o.pending_pairs||0))}</td>
+          <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>
+            {o.pending_pairs>0
+              ? <>{fmt(o.qty)}
+                  <div className="text-[11px] text-amber-700">{fmt(o.pending_pairs)} waiting for a card</div></>
+              : <span className="text-slate-400">all of it</span>}</td>
           <td className="py-2 px-2 text-center" style={{borderTop:"1px solid #eef0f4"}}>
             <div className="inline-flex items-center gap-1">
               <button onClick={()=>onBump(o.order_no,-1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 mono">▲</button>
@@ -2531,7 +2544,7 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
               className="text-rose-500 ml-2 text-sm leading-none">×</button>}
           </td>
         </tr>
-        {confirmDel===o.order_no && <tr><td colSpan={9} className="px-2 pb-3">
+        {confirmDel===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 flex items-center gap-3 flex-wrap">
             <div className="text-sm text-rose-900">
               Remove <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty)} pairs for {o.party}?
@@ -2543,12 +2556,12 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
             </div>
           </div></td></tr>}
 
-        {editing===o.order_no && <tr><td colSpan={9} className="px-2 pb-3">
+        {editing===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
           <EditOrder o={o} onCancel={()=>setEditing(null)}
             onSave={async patch=>{ await onEdit(o.order_no,patch); setEditing(null); }} />
         </td></tr>}
 
-        {selected===o.order_no && <tr><td colSpan={9} className="px-2 pb-3" style={{background:"#fafbfd"}}>
+        {selected===o.order_no && <tr><td colSpan={10} className="px-2 pb-3" style={{background:"#fafbfd"}}>
           <div className="flex gap-4 flex-wrap py-2 items-start">
             <div>
               <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Combo lines</div>

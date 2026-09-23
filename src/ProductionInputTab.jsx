@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from "react";
 import { planImpact } from "../shared/input-impact.js";
+import { productionActualKey } from "../shared/production-actuals.js";
 import { todayIso } from "./lib/today.js";
 import * as XLSX from "xlsx";
 import { REF as INPUTS } from "./lib/refdata.js";
@@ -121,6 +122,11 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
      things moved — the card's plan, the order's dispatch date, tomorrow's
      machine load and the delivery status the customer is judged on. */
   const [impact,setImpact]=useState(null);
+  /* TYPED ON THE SCREEN, not only in a workbook. The factory's ask was that
+     the ERP asks for production against the planned job cards — downloading a
+     file, filling it and uploading it again is three steps for one number.
+     The Excel round trip stays for a week's worth at a time. */
+  const [entry,setEntry]=useState({});
   const fileRef=useRef(null);
   const planned=useMemo(()=>plannedProductionRows(state,INPUTS.origin,fromDay),[state]);
   const rows=useMemo(()=>withProductionActuals(planned,actuals),[planned,actuals]);
@@ -131,6 +137,28 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
   function download(){
     XLSX.writeFile(workbookFor(rows,weekStart),`weekly-production-plan-${weekStart}.xlsx`,{cellStyles:true});
     setMessage("Weekly plan downloaded. Fill only Achieved Pairs and Note on the Daily Input sheet, then upload the same file.");
+  }
+
+  async function saveTyped(){
+    setError("");setMessage("");setBusy(true);
+    try{
+      const rows=Object.entries(entry)
+        .filter(([,v])=>String(v).trim()!=="")
+        .map(([key,value])=>{
+          const row=(planned||[]).find(r=>productionActualKey(r)===key);
+          return row?{...row,actual_pairs:Number(value)}:null;
+        }).filter(Boolean);
+      if(!rows.length) throw new Error("Type the pairs achieved against at least one row first.");
+      const checked=validateProductionActuals(rows,planned);
+      if(!checked.ok) throw new Error(checked.problems.slice(0,8).join("; "));
+      const after=typeof replan==="function"?replan(checked.rows):null;
+      const result=await api.saveProductionActuals(checked.rows);
+      await onChanged();
+      setEntry({});
+      setImpact(after?planImpact(state,after,checked.rows):planImpact(state,state,checked.rows));
+      setMessage(`${result.saved} row${result.saved===1?"":"s"} saved.`);
+    }catch(e){setError(e.message||String(e));}
+    finally{setBusy(false);}
   }
 
   async function upload(file){
@@ -196,8 +224,27 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
         <td className="py-2 px-2 mono">{row.production_on}</td><td className="px-2">{(INPUTS.workcenters[row.work_center]||{}).name||row.work_center}</td>
         <td className="px-2">{row.stage}</td><td className="px-2"><div className="mono font-semibold">{row.job_card_no||'Whole order'}</div><div className="mono text-slate-400">{row.order_no}</div></td><td className="px-2">{row.article}</td>
         <td className="px-2">{row.size_ranges||'—'}</td><td className="px-2">{row.party||'—'}</td><td className="px-2 mono text-right">{fmt(row.planned_pairs)}</td>
-        <td className={`px-2 mono text-right font-semibold ${row.actual_pairs==null?'text-slate-300':'text-emerald-700'}`}>{row.actual_pairs==null?'Not entered':fmt(row.actual_pairs)}</td>
+        <td className="px-2 text-right">
+          {/* What was recorded stands until it is deliberately typed over —
+              the box shows the saved figure rather than an empty field that
+              reads as "nothing was ever entered". */}
+          <input type="number" min={0} disabled={busy}
+            aria-label={`Pairs achieved for ${row.job_card_no||row.order_no} ${row.stage} on ${row.production_on}`}
+            value={entry[productionActualKey(row)] ?? (row.actual_pairs==null?"":row.actual_pairs)}
+            placeholder="—"
+            onChange={e=>setEntry(d=>({...d,[productionActualKey(row)]:e.target.value}))}
+            className={`w-24 border rounded px-1.5 py-1 mono text-right ${
+              row.actual_pairs==null?"border-slate-300":"border-emerald-300 text-emerald-800"}`} />
+        </td>
       </tr>)}</tbody></table>
+      {!!visible.length&&<div className="flex items-center gap-3 flex-wrap mt-3">
+        <button onClick={saveTyped} disabled={busy||!Object.values(entry).some(v=>String(v).trim()!=="")}
+          className="text-xs font-semibold rounded-lg px-4 py-2 bg-indigo-600 text-white disabled:opacity-40">
+          {busy?"Saving…":"Save today's production"}</button>
+        <span className="text-xs text-slate-500">
+          Type the pairs achieved against any row and save. The plan re-plans what is left, and the panel above
+          says what moved.</span>
+      </div>}
       {!visible.length&&<div className="text-sm text-slate-500 text-center py-8">Nothing is scheduled in this Monday–Saturday week.</div>}
     </section>
   </div>;
