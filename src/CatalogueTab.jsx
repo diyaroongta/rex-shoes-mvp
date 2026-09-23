@@ -4,6 +4,7 @@ import { articlePhoto } from "../shared/catalogue-seed.js";
 import { comboSizesForArticleIn } from "../shared/bridge.js";
 import { mrpForSize } from "../shared/pi.js";
 import * as api from "./lib/client.js";
+import CatalogueBrowser from "./CatalogueBrowser.jsx";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
 
@@ -40,7 +41,15 @@ export default function CatalogueTab({onChanged,onAddBom}){
   const [newEntry,setNewEntry]=useState({article_code:"",description:"",price:"",sole_type:"EVA"});
   const [missingBom,setMissingBom]=useState("");
   const [deleteCandidate,setDeleteCandidate]=useState("");
+  /* BROWSE is what a person opening the catalogue wants — the shoe, then its
+     colours, then lace or velcro. EDIT is the flat grid of every article,
+     which is the right shape for maintaining one and the wrong shape for
+     finding one. */
+  const [mode,setMode]=useState("browse");
+  const [focus,setFocus]=useState("");
   const arts=Object.keys(INPUTS.articles);
+  const codes=Object.fromEntries(arts.filter(a=>INPUTS.articles[a].product_code)
+    .map(a=>[a,INPUTS.articles[a].product_code]));
 
   useEffect(()=>{ api.getCatalogue().then(setCat).catch(e=>setErr(e.message||String(e))); },[]);
 
@@ -121,6 +130,11 @@ export default function CatalogueTab({onChanged,onAddBom}){
     finally{setBusy("");}
   }
 
+  async function setSection(article, section){
+    await saveReference(article, { section:{ [article]: section } },
+      section ? `section set to ${section}` : "section cleared");
+  }
+
   return <div>
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3">{err}</div>}
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
@@ -128,6 +142,19 @@ export default function CatalogueTab({onChanged,onAddBom}){
       <span><b>{missingBom} has catalogue details but no BOM or sizes.</b> It cannot be ordered or scheduled yet.</span>
       <button onClick={()=>onAddBom&&onAddBom(missingBom)} className="text-xs font-semibold bg-amber-700 text-white rounded-lg px-3 py-1.5">Add its BOM now</button>
     </div>}
+    <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs w-fit mb-3">
+      {[["browse","Browse by shoe"],["edit","Edit every article"]].map(([key,label])=>(
+        <button key={key} onClick={()=>setMode(key)}
+          className={`px-3 py-1.5 font-semibold ${mode===key?"bg-indigo-600 text-white":"bg-white text-slate-600"}`}>
+          {label}</button>))}
+    </div>
+
+    {mode==="browse" && <CatalogueBrowser
+      articles={INPUTS.articles} codes={codes} catalogue={cat}
+      canEdit={true} onSetSection={setSection}
+      onOpenArticle={code=>{ setFocus(code); setMode("edit"); }} />}
+
+    <div style={{display:mode==="edit"?"block":"none"}}>
     <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
       <p className="text-xs text-slate-500 max-w-2xl">
         Add or edit catalogue details here. An article added without a BOM stays clearly marked and cannot be ordered until its BOM is uploaded.
@@ -163,7 +190,8 @@ export default function CatalogueTab({onChanged,onAddBom}){
         const combos=a.combo_order||Object.keys(a.combos||{});
         const sizeEntries=combos.flatMap(combo=>comboSizesForArticleIn(INPUTS,code,combo)
           .map(size=>({combo,size,key:`${combo}::${String(size).toUpperCase()}`})));
-        return <div key={code} className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+        return <div key={code} ref={el=>{ if(el&&focus===code){ el.scrollIntoView({block:"center"}); setFocus(""); } }}
+          className={`bg-white border rounded-2xl overflow-hidden shadow-sm ${focus===code?"border-indigo-400":"border-slate-200"}`}>
           <div className="h-40 bg-slate-100 flex items-center justify-center relative">
             {(e.image || articlePhoto(code))
               ? <img src={e.image || articlePhoto(code)} alt={code} className="w-full h-full object-cover" />
@@ -250,6 +278,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
             </details>}
           </div>
         </div>;})}
+    </div>
     </div>
   </div>;
 }
