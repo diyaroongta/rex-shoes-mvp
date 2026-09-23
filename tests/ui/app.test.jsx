@@ -189,8 +189,15 @@ describe("critical UI contracts",()=>{
     const user = userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
-    await user.click(await screen.findByRole("button",{name:"Orders menu"}));
+    /* The two books sit in different groups now — the Order Book is
+       commercial, the Dispatch Book is what leaves the gate — so each is
+       opened where it lives. The NAMES are the point of this test.
+       ONE group is open at a time, and clicking a second one while another is
+       open HOVERS it open and then toggles it shut, so these use fireEvent
+       rather than userEvent's full pointer sequence. */
+    fireEvent.click(await screen.findByRole("button",{name:"Orders menu"}));
     expect(screen.getByRole("menuitem",{name:"Order Book"})).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button",{name:"Quality & Dispatch menu"}));
     expect(screen.getByRole("menuitem",{name:"Dispatch Book"})).toBeInTheDocument();
     expect(screen.queryByRole("menuitem",{name:"Orders & dispatch"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Dispatch & packing"})).toBeNull();
@@ -204,14 +211,28 @@ describe("critical UI contracts",()=>{
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
 
-    await user.click(await screen.findByRole("button",{name:"Orders menu"}));
-    const navLabels=screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
-    expect(navLabels.indexOf("Create Job Order")).toBe(navLabels.indexOf("Order Book")+1);
-    expect(navLabels.indexOf("Job Orders Database")).toBe(navLabels.indexOf("Create Job Order")+1);
-    /* Repair is the last thing that happens before the lorry, so it sits
-       between the job-order screens and the Dispatch Book. */
-    expect(navLabels.indexOf("Repair")).toBe(navLabels.indexOf("Job Orders Database")+1);
-    expect(navLabels.indexOf("Dispatch Book")).toBe(navLabels.indexOf("Repair")+1);
+    /* Only one group is open at a time, so the order is asserted where it
+       actually lives: the GROUPS run in the order work does, and the
+       job-order screens open the Production group. */
+    const groups=screen.getAllByRole("button",{name:/ menu$/})
+      .map(b=>b.getAttribute("aria-label").replace(/ menu$/,""));
+    expect(groups.indexOf("Production")).toBe(groups.indexOf("Orders")+1);
+    expect(groups.indexOf("Quality & Dispatch")).toBe(groups.indexOf("Production")+1);
+
+    const itemsOf=name=>{
+      fireEvent.click(screen.getByRole("button",{name:`${name} menu`}));
+      return screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
+    };
+    /* Releasing work to the floor is the step straight after the Order Book,
+       so the two job-order screens come first in Production and in that order. */
+    const production=itemsOf("Production");
+    expect(production[0]).toBe("Create Job Order");
+    expect(production[1]).toBe("Job Orders Database");
+    /* Repair is the last thing that happens to a shoe before the lorry, so it
+       sits immediately before the Dispatch Book. */
+    const dispatch=itemsOf("Quality & Dispatch");
+    expect(dispatch.indexOf("Dispatch Book")).toBe(dispatch.indexOf("Quality & Repair")+1);
+    expect(itemsOf("Orders")).toContain("Order Book");
     expect(screen.queryByRole("menuitem",{name:"Job Cards"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Job work"})).toBeNull();
 

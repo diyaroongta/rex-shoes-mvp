@@ -28,7 +28,7 @@ beforeEach(()=>{ vi.clearAllMocks(); apiMocks.patchReference.mockResolvedValue({
 it("opens on a read-only view of the store with the numbers that matter on top",async()=>{
   const user=userEvent.setup();
   render(<StockTab/>);
-  expect(screen.getByRole("tab",{name:"View stock"})).toHaveAttribute("aria-selected","true");
+  expect(screen.getByRole("tab",{name:"View Stock"})).toHaveAttribute("aria-selected","true");
   expect(screen.queryAllByRole("spinbutton")).toHaveLength(0);          // nothing editable by default
 
   // 100 + 40 − 10 = 130, below its minimum of 200.
@@ -55,7 +55,7 @@ it("opens on a read-only view of the store with the numbers that matter on top",
 it("books a delivery as an addition, not a new running total",async()=>{
   const user=userEvent.setup();
   render(<StockTab/>);
-  await user.click(screen.getByRole("tab",{name:"Add stock"}));
+  await user.click(screen.getByRole("tab",{name:"Add Stock"}));
 
   expect(screen.getByRole("button",{name:"Add to stock"})).toBeDisabled();
   await user.type(screen.getByLabelText("Material to receive"),"rexine");
@@ -72,7 +72,7 @@ it("books a delivery as an addition, not a new running total",async()=>{
 it("refuses a delivery of nothing",async()=>{
   const user=userEvent.setup();
   render(<StockTab/>);
-  await user.click(screen.getByRole("tab",{name:"Add stock"}));
+  await user.click(screen.getByRole("tab",{name:"Add Stock"}));
   await user.type(screen.getByLabelText("Material to receive"),"mesh");
   await user.click(within(screen.getByRole("listbox")).getByRole("option",{name:/MESH/}));
   await user.type(screen.getByLabelText("Quantity received"),"0");
@@ -83,7 +83,7 @@ it("refuses a delivery of nothing",async()=>{
 it("offers to add a material the search cannot find",async()=>{
   const user=userEvent.setup();
   render(<StockTab/>);
-  await user.click(screen.getByRole("tab",{name:"Add stock"}));
+  await user.click(screen.getByRole("tab",{name:"Add Stock"}));
   await user.type(screen.getByLabelText("Material to receive"),"velcro 25mm");
   await user.click(screen.getByRole("button",{name:"Add it as a new material"}));
   expect(screen.getByLabelText("Material name")).toHaveValue("velcro 25mm");
