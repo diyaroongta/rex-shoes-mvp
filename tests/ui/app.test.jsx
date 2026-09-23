@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Production","Job Orders Database":"Production","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Quality & Repair":"Quality & Dispatch","Dispatch Book":"Quality & Dispatch","Procurement":"Materials","Stock":"Materials","BOM Upload & Tracker":"Inputs","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
+const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Production","Job Orders Database":"Production","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Orders","Dispatch Book":"Orders","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -189,15 +189,12 @@ describe("critical UI contracts",()=>{
     const user = userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
-    /* The two books sit in different groups now — the Order Book is
-       commercial, the Dispatch Book is what leaves the gate — so each is
-       opened where it lives. The NAMES are the point of this test.
+    /* Both books live in the Orders group, under the names the factory uses.
        ONE group is open at a time, and clicking a second one while another is
-       open HOVERS it open and then toggles it shut, so these use fireEvent
+       open HOVERS it open and then toggles it shut, so this uses fireEvent
        rather than userEvent's full pointer sequence. */
     fireEvent.click(await screen.findByRole("button",{name:"Orders menu"}));
     expect(screen.getByRole("menuitem",{name:"Order Book"})).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button",{name:"Quality & Dispatch menu"}));
     expect(screen.getByRole("menuitem",{name:"Dispatch Book"})).toBeInTheDocument();
     expect(screen.queryByRole("menuitem",{name:"Orders & dispatch"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Dispatch & packing"})).toBeNull();
@@ -217,7 +214,6 @@ describe("critical UI contracts",()=>{
     const groups=screen.getAllByRole("button",{name:/ menu$/})
       .map(b=>b.getAttribute("aria-label").replace(/ menu$/,""));
     expect(groups.indexOf("Production")).toBe(groups.indexOf("Orders")+1);
-    expect(groups.indexOf("Quality & Dispatch")).toBe(groups.indexOf("Production")+1);
 
     const itemsOf=name=>{
       fireEvent.click(screen.getByRole("button",{name:`${name} menu`}));
@@ -230,9 +226,12 @@ describe("critical UI contracts",()=>{
     expect(production[1]).toBe("Job Orders Database");
     /* Repair is the last thing that happens to a shoe before the lorry, so it
        sits immediately before the Dispatch Book. */
-    const dispatch=itemsOf("Quality & Dispatch");
-    expect(dispatch.indexOf("Dispatch Book")).toBe(dispatch.indexOf("Quality & Repair")+1);
-    expect(itemsOf("Orders")).toContain("Order Book");
+    const orders=itemsOf("Orders");
+    expect(orders.indexOf("Dispatch Book")).toBe(orders.indexOf("Repair")+1);
+    expect(orders).toContain("Order Book");
+    /* The copilot was never on the factory's change list, so it is not on the
+       menu bar either. */
+    expect(screen.queryByRole("button",{name:"Copilot"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Job Cards"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Job work"})).toBeNull();
 

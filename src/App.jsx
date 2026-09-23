@@ -412,6 +412,11 @@ export default function App({ user=null, onSignOut=null }={}){
       ["intake","PI generation"],
       ["pis","PI database"],
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
+      /* Repair is the last thing that happens to a shoe before the lorry, so
+         it sits beside the book that ships it. Both were briefly moved into a
+         group of their own; the factory already knows them here. */
+      ["repair","Repair"],
+      ["dispatch","Dispatch Book"],
     ]],
     ["Production", [
       /* A job order is the release of an Order Book row to the floor, so both
@@ -425,27 +430,18 @@ export default function App({ user=null, onSignOut=null }={}){
       ["plan","Production plan"],
       ["machines","Machine load"],
     ]],
-    ["Quality & Dispatch", [
-      /* Quality failures create repair movements. Dispatch stays a separate
-         book because repairing a pair is not the same event as shipping it. */
-      ["repair","Quality & Repair"],
-      ["dispatch","Dispatch Book"],
-    ]],
+
     ["Materials", [
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
       ["stock","Stock"],
     ]],
-    ["Inputs", [
-      /* This is the spreadsheet data Factory OS actually uses: article codes,
-         size ranges, BOM rates, packing rules and catalogue/MRP values. */
-      ["data","BOM Upload & Tracker"],
-    ]],
-    ["Setup", [
+        ["Setup", [
       ["parties","Parties & terms"],
       /* Who work goes OUT to, as parties are who it comes IN from. */
       ["fabricators","Fabricators & lines"],
       ["catalogue","Catalogue"],
       ["rules","Packing & BOM rules"],
+      ["data","Data & BOM"],
       ["profiles","Profiles & access"],
     ]],
   ].map(([group, items]) => [group, items.filter(([key]) => canSeeTab(role, key))])
@@ -2218,8 +2214,8 @@ const VIEWS = {
   fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
-  data:        {title:"BOM Upload & Tracker",sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
-  repair:      {title:"Quality & Repair",   sub:"Quality failures sent for repair, what came back and what was rejected"},
+  data:        {title:"Data & BOM",         sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
+  repair:      {title:"Repair",            sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };
 
@@ -2698,9 +2694,14 @@ function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
         </div>
       ))}
 
+      {/* THE COPILOT IS NOT ON THE MENU. It was never on the factory's own
+          change list — it predates it — and a screen nobody asked for invites
+          the question "what else is in here that we did not ask for?" in front
+          of the client. The screen and its endpoint are untouched: restoring
+          the button is this block, uncommented.
       {canSeeTab(role,"copilot") &&
         <button className="menubtn" onClick={()=>go("copilot")} data-on={tab==="copilot"?"1":"0"}>
-          <span>Copilot</span></button>}
+          <span>Copilot</span></button>} */}
 
       {/* Kept from the sidebar: which build is running, and whether the last
           refresh actually reached the server. Without these a fix that is not
