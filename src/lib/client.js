@@ -58,14 +58,6 @@ export const setPlanOverride = (no, ov)    => patchOrder(no, { plan_override:ov|
 export const deleteOrder     = no          => j(`/api/orders/${encodeURIComponent(no)}`, { method:"DELETE" });
 export const deleteAllOrders = ()          => j("/api/orders?all=1", { method:"DELETE" });
 export const listPis         = ()          => j("/api/pis");
-/* Quotations ride on /api/pis: Vercel's Hobby plan allows 12 functions and the
-   project is at 12. A quotation is a PI one step earlier in any case. */
-export const listQuotations  = ()          => j("/api/pis?resource=quotations");
-export const createQuotation = quotation   => post("/api/pis?resource=quotations", quotation);
-export const setQuotationStatus = (quote_no, status, converted_pi_no) =>
-  j("/api/pis?resource=quotations", { method:"PATCH",
-    headers:{ "content-type":"application/json" },
-    body: JSON.stringify({ quote_no, status, ...(converted_pi_no?{converted_pi_no}:{}) }) });
 /* Omit order_nos to release the whole PI; pass a subset to release only
    those orders and leave the rest of the PI unscheduled. */
 export const schedulePi      = (pi_no, order_nos) =>
