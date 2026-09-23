@@ -39,7 +39,7 @@ const MATERIAL_KEYS = ["new_material"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","repair","dispatch","schedule",
+const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","schedule",
                    "production_input","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -68,7 +68,7 @@ export const ROLE_DEFS = {
        confined to dispatch. */
     /* Repair is the last thing that happens to a shoe before it goes on the
        lorry, so it belongs to whoever is packing it. */
-    tabs:["mis","orders","pis","repair","dispatch","rules"],
+    tabs:["mis","orders","pis","status","repair","dispatch","rules"],
     writes:["dispatches"], reference:null,
   },
   /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
@@ -86,7 +86,7 @@ export const ROLE_DEFS = {
     summary:"Builds the production schedule and balances machine load. "
       +"Re-sequences work; cannot raise a PI, record a dispatch, "
       +"or change what was ordered.",
-    tabs:["mis","orders","schedule","production_input","plan","machines"],
+    tabs:["mis","orders","status","schedule","production_input","plan","machines"],
     writes:[], orders:"plan", production_actuals:true, reference:null,
   },
   procurement: {
@@ -110,7 +110,7 @@ export const ROLE_DEFS = {
   auditor: {
     label:"Auditor / Consultant",
     summary:"Reads the dashboard and the change history. No edit rights at all.",
-    tabs:["mis","orders","pis","repair","dispatch","schedule","procurement","stock","data"],
+    tabs:["mis","orders","pis","status","repair","dispatch","schedule","procurement","stock","data"],
     writes:[], reference:null,
   },
   /* Kept because accounts already carry it, and because "sees everything,
@@ -125,6 +125,21 @@ export const ROLE_DEFS = {
 export const ROLES = Object.keys(ROLE_DEFS);
 export const ROLE_LABEL = Object.fromEntries(ROLES.map(r => [r, ROLE_DEFS[r].label]));
 export const ROLE_SUMMARY = Object.fromEntries(ROLES.map(r => [r, ROLE_DEFS[r].summary]));
+
+/* The factory's recommended eleven named users. These are seat targets, not
+   placeholder accounts: a login is only created after an administrator gives
+   it a real person's name, username and temporary password. */
+export const RECOMMENDED_USER_COUNTS = Object.freeze({
+  admin:1,
+  owner:3,
+  sales:1,
+  dispatch:1,
+  planner:1,
+  procurement:1,
+  store:1,
+  data:1,
+  auditor:1,
+});
 
 export const KNOWN_ENDPOINTS = new Set([...ALL_WRITES, "auth"]);
 

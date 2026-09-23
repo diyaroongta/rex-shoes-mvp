@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { can, canSeeTab, defaultTab, isReadOnly, endpointOf,
-         KNOWN_ENDPOINTS, ROLES, ROLE_LABEL, ROLE_SUMMARY } from "../shared/permissions.js";
+         KNOWN_ENDPOINTS, ROLES, ROLE_LABEL, ROLE_SUMMARY,
+         RECOMMENDED_USER_COUNTS } from "../shared/permissions.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -277,6 +278,12 @@ test("every role is described for whoever hands out the account", () => {
     assert.ok(ROLE_LABEL[role], `${role} needs a label`);
     assert.ok(ROLE_SUMMARY[role] && ROLE_SUMMARY[role].length > 20, `${role} needs a summary`);
   }
+});
+
+test("the recommended profile allocation is exactly eleven recognised roles", () => {
+  assert.equal(Object.values(RECOMMENDED_USER_COUNTS).reduce((sum,count)=>sum+count,0),11);
+  assert.equal(RECOMMENDED_USER_COUNTS.owner,3);
+  for(const role of Object.keys(RECOMMENDED_USER_COUNTS)) assert.ok(ROLES.includes(role),role);
 });
 
 
