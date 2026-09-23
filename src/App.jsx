@@ -14,7 +14,6 @@ import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import StatusTab from "./StatusTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
-import QuotationsTab from "./QuotationsTab.jsx";
 import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
 import StockTab from "./StockTab.jsx";
@@ -412,7 +411,6 @@ export default function App({ user=null, onSignOut=null }={}){
          inside that screen rather than beside it. */
       ["intake","PI generation"],
       ["pis","PI database"],
-      ["quotations","Quotations"],
       ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
     ]],
     ["Production", [
@@ -645,7 +643,6 @@ export default function App({ user=null, onSignOut=null }={}){
           <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} />
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
-        {tab==="quotations" && <QuotationsTab readOnly={readOnly} />}
         {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
@@ -2208,7 +2205,6 @@ const VIEWS = {
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
   pis:         {title:"PI database",        sub:"Master record of every PI issued and revised"},
   orders:      {title:"Order Book",         sub:"Every live order, its dispatch date and delivery risk"},
-  quotations:  {title:"Quotations",         sub:"What a customer has been offered, before there is an order"},
   jobs:        {title:"Create Job Order",   sub:"Create a job order from the current live quantities in the Order Book"},
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
   status:      {title:"Production status",   sub:"Where every job card actually is — recorded movements first, the plan where nothing is recorded"},
