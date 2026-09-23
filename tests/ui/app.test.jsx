@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Orders", "Job Orders Database": "Orders", "Repair": "Orders", "Dispatch Book": "Orders", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock register": "Materials", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup", "Data & BOM": "Setup"};
+const NAV_GROUP = {"Executive MIS": "Overview", "PI generation": "Orders", "PI database": "Orders", "Order Book": "Orders", "Create Job Order": "Orders", "Job Orders Database": "Orders", "Repair": "Orders", "Dispatch Book": "Orders", "Schedule": "Production", "Production plan": "Production", "Machine load": "Production", "Procurement": "Materials", "Stock": "Materials", "Parties & terms": "Setup", "Fabricators & lines": "Setup", "Catalogue": "Setup", "Packing & BOM rules": "Setup", "Data & BOM": "Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -1268,5 +1268,30 @@ describe("article standard colours",()=>{
     await user.click(await screen.findByRole("button",{name:"Enter by hand"}));
     expect(screen.getByLabelText("Sole colour *")).toHaveValue("");
     expect(screen.getByLabelText("Upper colour *")).toHaveValue("");
+  });
+});
+
+/* EVERY STAGE THE ENGINE CAN PRODUCE MUST BE DISTINGUISHABLE ON THE BOARD.
+   The schedule carried its own stage list, which had drifted from
+   STAGE_SEQUENCE: PREPARATION, UPPER_QC, DISPATCH and the outside-stitching
+   TRANSIT leg were all missing, so four different things drew in one fallback
+   grey — and PRINTING, which is part of PREPARATION and not a stage at all,
+   sat in the colour map while the legend filtered it back out. This is the
+   same fault the project already recorded once as "four copies of the stage
+   order, one wrong". */
+describe("the schedule draws every stage",()=>{
+  it("gives each stage in the route its own colour and abbreviation",async()=>{
+    const { STAGE_COLOR, STAGE_ABBR } = await import("../../src/App.jsx");
+    const { STAGE_SEQUENCE, TRANSIT_STAGE } = await import("../../shared/engine.js");
+    for(const stage of [...STAGE_SEQUENCE, TRANSIT_STAGE]){
+      expect(STAGE_COLOR[stage], `${stage} has no colour`).toBeTruthy();
+      expect(STAGE_ABBR[stage], `${stage} has no abbreviation`).toBeTruthy();
+    }
+    // Distinguishable, not merely present — the original fault was four bars
+    // sharing one grey, which passes a "has a colour" check.
+    const used=[...STAGE_SEQUENCE,TRANSIT_STAGE].map(s=>STAGE_COLOR[s]);
+    expect(new Set(used).size).toBe(used.length);
+    // PRINTING is not a stage and must not be offered as one.
+    expect(STAGE_COLOR.PRINTING).toBeUndefined();
   });
 });

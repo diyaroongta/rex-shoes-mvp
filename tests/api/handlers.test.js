@@ -535,6 +535,57 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
+  /* A DELIVERY IS ADDED ON THE SERVER. The browser used to send the new
+     running total, so two people booking deliveries from two screens would
+     each send "what I saw + what arrived" and the second save erased the
+     first. And a material whose only figure came from the BOM upload had its
+     stock rebuilt as 0 + received on the first receipt. */
+  const stockClient=ref=>({query:vi.fn(async sql=>{
+    if(String(sql).includes("select value from reference_data")) return {rows:[{value:ref}]};
+    return {rows:[]};
+  }),release:vi.fn()});
+  const savedRef=client=>{
+    const call=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id, value)"));
+    return JSON.parse(call[1][0]);
+  };
+
+  it("adds a delivery to what is already received rather than replacing it",async()=>{
+    const ref={articles:{},materials:{"REXINE||MTR":{name:"REXINE",uom:"MTR",stock:130}},
+      stock_meta:{"REXINE||MTR":{opening:100,rec:40,issue:10}}};
+    const client=stockClient(ref); dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{stock_meta:{"REXINE||MTR":{rec_add:25}}}},res);
+    expect(res.statusCode).toBe(200);
+    const saved=savedRef(client);
+    expect(saved.stock_meta["REXINE||MTR"].rec).toBe(65);
+    expect(saved.materials["REXINE||MTR"].stock).toBe(155);   // 100 + 65 - 10
+  });
+
+  it("keeps a figure from the BOM upload as the opening balance on the first receipt",async()=>{
+    const ref={articles:{},materials:{"MESH||MTR":{name:"MESH",uom:"MTR",stock:50}}};
+    const client=stockClient(ref); dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+      body:{stock_meta:{"MESH||MTR":{rec_add:20}}}},res);
+    expect(res.statusCode).toBe(200);
+    const saved=savedRef(client);
+    expect(saved.stock_meta["MESH||MTR"]).toMatchObject({opening:50,rec:20});
+    expect(saved.materials["MESH||MTR"].stock).toBe(70);      // not 20
+  });
+
+  it("refuses a receipt of nothing, or a total and an addition together",async()=>{
+    for(const fields of [{rec_add:0},{rec_add:-5},{rec_add:"x"},{rec:10,rec_add:5}]){
+      const ref={articles:{},materials:{"MESH||MTR":{name:"MESH",uom:"MTR",stock:50}}};
+      const client=stockClient(ref); dbMocks.connect.mockResolvedValue(client);
+      const res=response();
+      await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference",
+        body:{stock_meta:{"MESH||MTR":fields}}},res);
+      expect(res.statusCode,JSON.stringify(fields)).toBe(400);
+      expect(client.query.mock.calls.some(([sql])=>String(sql).includes("insert into reference_data (id, value)"))).toBe(false);
+    }
+  });
+
   it("adds and clears individual-size packing overrides",async()=>{
     const ref={articles:{CUSTOM:{combo_order:["7X10"],combos:{"7X10":{}}}},materials:{},packing:{CUSTOM:{"7X10":48}},
       packing_singles_exact:{CUSTOM:{"7S":36}}};

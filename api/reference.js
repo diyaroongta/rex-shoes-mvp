@@ -567,7 +567,25 @@ export default wrap(async (req, res) => {
       for(const [key, fields] of Object.entries(body.stock_meta)){
         if(!ref.materials[key]) reject(`unknown material: ${key}`);
         const cur = { ...(ref.stock_meta[key] || {}) };
+        /* A material whose only figure came from the BOM upload has no
+           movement record yet — its stock lives in materials.stock alone. The
+           first receipt against it used to rebuild stock as 0 + received and
+           wipe that figure. It becomes the opening balance instead. */
+        if(cur.opening == null && cur.rec == null && cur.issue == null)
+          cur.opening = Number(ref.materials[key].stock) || 0;
+        /* A DELIVERY IS ADDED BY THE SERVER, NOT TOTALLED BY THE BROWSER.
+           `rec` is a running total. Two people booking deliveries from two
+           screens would each send "what I saw + what arrived", and the second
+           save would silently erase the first — goods in the store, not on the
+           register. `rec_add` is applied here, inside the row lock above. */
+        if("rec_add" in fields){
+          if("rec" in fields) reject(`send either rec or rec_add for ${key}, not both`);
+          const n = Number(fields.rec_add);
+          if(!isFinite(n) || n <= 0) reject(`quantity received for ${key} must be more than 0`);
+          cur.rec = (Number(cur.rec) || 0) + n;
+        }
         for(const [f, v] of Object.entries(fields)){
+          if(f === "rec_add") continue;
           if(["category","size"].includes(f)){ cur[f] = String(v).slice(0,60); continue; }
           if(!["opening","rec","issue","min_stock","min","rate"].includes(f))
             reject(`unknown stock field: ${f}`);

@@ -3,7 +3,7 @@ import { REF as INPUTS, catalogue as CATALOGUE, reload as reloadReference, sourc
 import { labelFor, familyOf, parseCode } from "../shared/product-codes.js";
 import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
 import { neededBy, buyingList, urgencyOf, daysBetween } from "../shared/procurement-timing.js";
-import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
+import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, TRANSIT_STAGE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
 import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
@@ -32,7 +32,30 @@ import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permiss
 const SOLE_COLOR = {PVC:"#4f46e5",PU:"#0f9d6b",EVA:"#c2410c","STUCK-ON":"#7c3aed"};
 const SLA_COLOR = {on_track:"#0f9d6b",at_risk:"#c2410c",breach:"#dc2626"};
 const SLA_LABEL = {on_track:"On track",at_risk:"At risk",breach:"Breach"};
-const STAGE_ABBR = {CUTTING:"CUT",STITCHING:"STI",MOLDING:"MLD",ASSEMBLY:"ASM",PACKING:"PCK"};
+/* EVERY STAGE THE ENGINE CAN PRODUCE, AND NOTHING ELSE.
+   These two maps had drifted from STAGE_SEQUENCE again — the same fault this
+   project already recorded once as "four copies of the stage order, one
+   wrong". PREPARATION, UPPER_QC, DISPATCH and the outside-stitching TRANSIT
+   leg were all absent, so the gantt drew four different things in one
+   fallback grey and the reader could not tell them apart; PRINTING was in the
+   colour map while not being a stage at all, and the legend quietly filtered
+   it out rather than removing it. A stage missing from here is now a build
+   error rather than an indistinguishable grey bar. */
+export const STAGE_ABBR = {
+  CUTTING:"CUT", PREPARATION:"PREP", STITCHING:"STI", [TRANSIT_STAGE]:"TRANSIT",
+  UPPER_QC:"QC", MOLDING:"MLD", ASSEMBLY:"ASM", PACKING:"PCK", DISPATCH:"DISP",
+};
+/* Walks the route in order, so neighbouring stages never share a hue. TRANSIT
+   is deliberately the odd one out — nothing is being made during it. */
+export const STAGE_COLOR = {
+  CUTTING:"#2563eb", PREPARATION:"#0891b2", STITCHING:"#7c3aed", [TRANSIT_STAGE]:"#94a3b8",
+  UPPER_QC:"#c026d3", MOLDING:"#059669", ASSEMBLY:"#0d9488", PACKING:"#d97706", DISPATCH:"#b45309",
+};
+/* Anything the engine emits that these maps do not name would render as an
+   anonymous grey bar, which is exactly the failure above. Fail loudly instead. */
+for(const stage of [...STAGE_SEQUENCE, TRANSIT_STAGE])
+  if(!STAGE_COLOR[stage] || !STAGE_ABBR[stage])
+    throw new Error(`Stage ${stage} has no colour or abbreviation — add it beside STAGE_SEQUENCE.`);
 const fmt = (n,d=0)=>n==null||isNaN(n)?"—":Number(n).toLocaleString("en-IN",{maximumFractionDigits:d});
 /* A range is a fixed run, so it covers sizes the slip never mentioned — 2X5
    covers a 3 that "2, 4, 5" never wrote. That on its own is NOT a fault: the
@@ -325,7 +348,7 @@ export default function App({ user=null, onSignOut=null }={}){
     ]],
     ["Materials", [
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
-      ["stock","Stock register"],
+      ["stock","Stock"],
     ]],
     ["Setup", [
       ["parties","Parties & terms"],
@@ -2098,7 +2121,7 @@ const VIEWS = {
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
   procurement: {title:"Procurement",        sub:"What to buy, netted against stock"},
-  stock:       {title:"Stock register",     sub:"Opening, received, issued and what is left"},
+  stock:       {title:"Stock",              sub:"What is in the store, and deliveries coming in"},
   parties:     {title:"Parties & terms",    sub:"Customers and their agreed commercial terms"},
   fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
@@ -3153,7 +3176,6 @@ function PlanOverrideEditor({order, queue, onChange, onClose}){
 
 function ScheduleTab({state,setPlanOverride}){
   const [editing,setEditing]=React.useState(null);
-  const STAGE_COLOR = {CUTTING:"#2563eb",STITCHING:"#7c3aed",PRINTING:"#0891b2",MOLDING:"#059669",ASSEMBLY:"#0d9488",PACKING:"#d97706"};
   const PRI_STYLE = {1:{bg:"#fee2e2",fg:"#b91c1c"},2:{bg:"#f1f5f9",fg:"#475569"},3:{bg:"#f8fafc",fg:"#94a3b8"}};
   const overrides=Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]));
   const rows=queueOrder(state.orders, overrides);
@@ -3261,7 +3283,7 @@ function ScheduleTab({state,setPlanOverride}){
     </div>
     <PlanningLogic orders={rows}/>
     <div className="flex gap-3 mt-3 flex-wrap items-center">
-      {Object.entries(STAGE_COLOR).filter(([k])=>k!=="PRINTING").map(([k,c])=>(
+      {[...STAGE_SEQUENCE,TRANSIT_STAGE].map(k=>[k,STAGE_COLOR[k]]).map(([k,c])=>(
         <span key={k} className="mono text-xs flex items-center gap-1"><span style={{width:10,height:10,background:c,borderRadius:2,display:"inline-block"}}/>{STAGE_ABBR[k]||k}</span>))}
       <span className="mono text-xs flex items-center gap-1"><span style={{width:16,height:10,background:"repeating-linear-gradient(45deg,#7c3aed40,#7c3aed40 2px,#f1f4f8 2px,#f1f4f8 5px)",borderRadius:2,display:"inline-block"}}/>waiting (tinted by the stage it waits for)</span>
       <span className="mono text-xs flex items-center gap-1"><span style={{width:16,height:10,background:"#e7e9f0",borderRadius:2,display:"inline-block"}}/>before order date</span>
