@@ -8,6 +8,7 @@ import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
+import { withStockBalances } from "../shared/stock.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import StatusTab from "./StatusTab.jsx";
@@ -275,7 +276,11 @@ export default function App({ user=null, onSignOut=null }={}){
         orders.map(o=>({ ...o,
           stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
           printing:(o.pi&&o.pi.printing)||o.printing||false })),
-        INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
+        /* The stock sheet's own balance — opening + received - issued — not the
+           opening figure. The register has always shown that sum; the planner
+           netted against opening alone, so every receipt the store entered and
+           every issue booked against a job card was invisible to the buying list. */
+        INPUTS.articles, withStockBalances(INPUTS.materials, INPUTS.stock_meta), wcs, INPUTS.origin,
         {...(targets?{targets}:{}), overrides:planOverrides,
          /* Job cards are the unit of production. An order with no card is
             still planned whole, so nothing changes until one is issued. */

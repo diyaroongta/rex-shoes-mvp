@@ -1,4 +1,5 @@
 import React from "react";
+import { familyOf, prefixOf } from "../shared/product-codes.js";
 import { stageCard } from "../shared/job-card-stages.js";
 import { isClosureWord } from "../shared/product-codes.js";
 
@@ -29,6 +30,8 @@ function closureOf(name){
   return word==="V"?"VELCRO":word==="L"?"LACE":word;
 }
 
+const prefixCodeOf = article => (article ? prefixOf(article) : "");
+
 export default function StageJobCard({card,article,kind="PACKING",config={}}){
   const c=card||{};
   const lines=(c.lines||[]).filter(l=>Number(l.qty)>0);
@@ -49,14 +52,20 @@ export default function StageJobCard({card,article,kind="PACKING",config={}}){
           <td style={{...LABEL,borderBottom:BB,width:"30%",lineHeight:1.6}}>
             JOB CARD NO :- {c.card_no||""}<br/>DATE:- {fmtDate(c.date)}</td>
         </tr>
-        <tr><td style={LABEL}>ARTICLE: {String(c.article||"").toUpperCase()}</td>
-            <td style={CELL}>ARTICLE CODE: {(article||{}).product_code||""}</td>
+        {/* THE FACTORY HAS TOLD US WHAT ITS TWO CODES MEAN: the ARTICLE is the
+            shoe SERIES (AXEL, JACK) and the SKU is one colour and closure of
+            it. An article row in our master IS a colour and a closure, so its
+            assigned product code is the SKU code and the family prefix is the
+            series code. Both print blank until codes are assigned — an
+            invented code on a job card is worse than none — and both cards
+            print the same two fields, or the floor would have to learn which
+            document lies. */}
+        <tr><td style={LABEL}>ARTICLE: {String(familyOf(c.article)||c.article||"").toUpperCase()}</td>
+            <td style={CELL}>ARTICLE CODE: {c.series_code||prefixCodeOf(c.article)}</td>
             <td style={CELL}>{c.order_no?`ORDER: ${c.order_no}`:""}</td></tr>
         <tr><td style={LABEL}>COLOUR: {colour}</td>
             <td style={CELL}>VELCRO/LACE: {closureOf(c.article)}</td>
-            {/* Factory OS holds no SKU code, so the box is left for the floor
-                to write in. An invented code on a job card is worse than none. */}
-            <td style={CELL}>SKU CODE:</td></tr>
+            <td style={CELL}>SKU CODE: {c.sku_code||(article||{}).product_code||""}</td></tr>
       </tbody></table>
 
       <table style={{width:"100%",borderCollapse:"collapse",borderLeft:BB,borderRight:BB,borderBottom:BB}}><tbody>

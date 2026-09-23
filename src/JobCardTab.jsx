@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./lib/client.js";
-import { REF as INPUTS } from "./lib/refdata.js";
+import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import JobCard from "./JobCard.jsx";
 import StageJobCard from "./StageJobCard.jsx";
 import { cardKinds } from "../shared/job-card-stages.js";
@@ -9,6 +9,7 @@ import { comboSizesForArticle } from "../shared/bridge.js";
 import { optionLabel, TYPES, TYPE_LABEL, TYPE_HELP, RULES, validateFabricator } from "../shared/fabricators.js";
 import { prefixOf } from "../shared/product-codes.js";
 import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
+import { jobCardIssueRows, issuePatch } from "../shared/stock.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const today = () => new Date().toISOString().slice(0,10);
@@ -167,7 +168,24 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
          touching the document — and stops the next render comparing a spent
          draft against a balance that has already absorbed it. */
       setQty({}); setSizes({}); setRemake(false);
-      setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs. `
+      /* The material has physically left the store, so the stock sheet is told.
+         Cumulative, against the register's own `issue` column. It is reported
+         separately from the job order: if the role may not write stock figures,
+         or the request fails, the job order still stands and the operator is
+         told what was NOT booked rather than seeing a red error over work that
+         succeeded. */
+      const issueRows=jobCardIssueRows(lines,article||{});
+      let stockNote="";
+      if(issueRows.length){
+        try{
+          await api.patchReference({stock_meta:issuePatch(issueRows,INPUTS.stock_meta||{})});
+          await reloadReference();
+          stockNote=` ${issueRows.length} material${issueRows.length===1?"":"s"} booked out on the stock sheet.`;
+        }catch(e){
+          stockNote=` The stock sheet was NOT updated (${e.message||e}) — book the issue on Stock yourself.`;
+        }
+      }
+      setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs.${stockNote} `
         + `Print it below, or choose another order to raise the next one.`);
       if(onIssued)await onIssued(made);
     }catch(e){ setErr(e.message||String(e)); }
