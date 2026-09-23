@@ -62,9 +62,6 @@ const CELL_INPUT = { width:"56px", textAlign:"center", font:"inherit", fontSize:
    corrected — not on a different screen that has to be found first. Left
    undefined the document renders exactly as it prints. */
 export default function PiDocument({ order, article, mrp, terms, config, image, piNo, confirmationDate, onCell,
-                                    /* A quotation is the same document one step earlier. Only the
-                                       bar at the top differs, and it must differ: a quotation that
-                                       says PROFORMA INVOICE is an invoice. */
                                     heading="PROFORMA INVOICE" }){
   const t   = { ...DEFAULT_TERMS, ...(terms||{}) };
   const cfg = { ...DEFAULT_PI_CONFIG, ...(config||{}) };
