@@ -38,11 +38,24 @@ const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
  * given a flat {sizes, cartons} is read as a single group, which is the common
  * case and keeps simple entry simple.
  */
+/* ONE BOX CAN HOLD TWO DIFFERENT SHOES.
+ * The factory's own gate pass (SR 15941) runs STRIKE (V) down the sheet and
+ * then STRIKE (L), and a single "1" in the carton column spans rows on both
+ * sides of that change — same article type, different shoe, one box.
+ *
+ * An S.NO is still one article/closure/colour, so a box like that belongs to
+ * no single line. Its parts carry the same `carton_group` label: the FIRST
+ * part owns the carton count and the C/N number, the rest contribute their
+ * pairs and no cartons, and the box is therefore counted and numbered ONCE
+ * while each shoe's pairs stay on its own line — which is what keeps the
+ * order book's per-range balance right.
+ */
 export function buildPackingList(input = {}){
   const rows = Array.isArray(input.lines) ? input.lines : [];
   const problems = [];
 
   let used = 0;                       // cartons numbered so far
+  const shared = new Map();           // carton_group -> {from, to, cartons, sno}
   const lines = rows.map((line, i) => {
     const sno = i + 1;
     const rawGroups = Array.isArray(line.groups) && line.groups.length
@@ -54,24 +67,41 @@ export function buildPackingList(input = {}){
         .map(s => ({ size: String(s.size ?? "").trim(), pairs: Math.round(num(s.pairs)) }))
         .filter(s => s.size !== "" || s.pairs);
       const pairs = sizes.reduce((a, s) => a + s.pairs, 0);
-      const cartons = Math.max(0, Math.round(num(g.cartons)));
+      const claimed = Math.max(0, Math.round(num(g.cartons)));
+      const label = String(g.carton_group ?? "").trim();
 
-      /* Numbered from the running total, so inserting or removing anything
-         renumbers what follows exactly as re-writing the sheet would. */
-      const from = used + 1;
-      const to = used + cartons;
-      used = to;
+      /* A shared box is allocated by its FIRST part and reused by the rest. */
+      let cartons = claimed, from, to, shares = false, owns = false;
+      const held = label ? shared.get(label) : null;
+      if(label && held){
+        shares = true;
+        cartons = 0;                                   // counted once, on the owner
+        from = held.from; to = held.to;
+        if(claimed > 0)
+          problems.push(`Carton ${label} is one box and is counted once — line ${sno} also claims `
+            + `${claimed} carton${claimed === 1 ? "" : "s"}`);
+      } else {
+        if(label){ owns = true; cartons = claimed || 1; }
+        from = used + 1;
+        to = used + cartons;
+        used = to;
+        if(label) shared.set(label, { from, to, cartons, sno });
+      }
 
       for(const s of sizes){
         if(!s.size) problems.push(`Line ${sno}: a size is blank`);
         if(s.pairs <= 0) problems.push(`Line ${sno}: size ${s.size||"?"} has no pairs`);
       }
       if(!sizes.length) problems.push(`Line ${sno}: no sizes entered`);
-      if(pairs > 0 && cartons === 0) problems.push(`Line ${sno}: ${pairs} pairs but no cartons counted`);
+      /* A part of a shared box legitimately carries pairs and no cartons of
+         its own — the box was counted where it was opened. */
+      if(pairs > 0 && cartons === 0 && !shares) problems.push(`Line ${sno}: ${pairs} pairs but no cartons counted`);
       if(cartons > 0 && pairs === 0) problems.push(`Line ${sno}: ${cartons} carton(s) but no pairs`);
 
       return { sizes, pairs, cartons,
-               cn_from: cartons ? from : null, cn_to: cartons ? to : null };
+               ...(label ? { carton_group: label, shares_carton: shares, owns_carton: owns } : {}),
+               cn_from: (cartons || shares) ? from : null,
+               cn_to: (cartons || shares) ? to : null };
     });
 
     return {

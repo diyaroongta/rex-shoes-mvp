@@ -10,7 +10,8 @@ import { comboSizes, mrpForSize } from "../shared/pi.js";
 import GatePass from "./GatePass.jsx";
 import { buildGatePass, pairsFromCartons } from "../shared/gate-pass.js";
 import { singlePackQty } from "../shared/bridge.js";
-import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary } from "../shared/mixed-carton.js";
+import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary,
+         withSharedCarton, sharedCartons } from "../shared/mixed-carton.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
 
@@ -678,8 +679,85 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
       </div>
     ))}
 
+    {/* A BOX THAT HOLDS TWO DIFFERENT SHOES — same article type, different
+        shoe, which is what their own slip does when one carton count spans the
+        change from STRIKE (V) to STRIKE (L). The box is counted once and each
+        shoe keeps its own pairs, so the order book's balance stays right. */}
+    {sheet.lines.length > 1 && <SharedCartonBuilder sheet={sheet} setSheet={setSheet} built={built} />}
+
     {!built.ok && <div className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">
       {built.problems.slice(0,4).map((p,i)=><div key={i}>{p}</div>)}
     </div>}
+  </div>;
+}
+
+/* One box, several shoes. The packer names what went into it, shoe by shoe;
+   the carton is counted once and numbered once. */
+function SharedCartonBuilder({ sheet, setSheet, built }){
+  const [open, setOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState({});     // "li:size" -> pairs
+  const boxes = sharedCartons(built);
+
+  const sizesOf = line => {
+    const seen = [];
+    for(const g of line.groups || []) for(const s of g.sizes || [])
+      if(s.size && !seen.includes(s.size)) seen.push(s.size);
+    return seen;
+  };
+  const parts = Object.entries(draft)
+    .map(([key, pairs]) => { const [li, size] = key.split("|"); return { line:Number(li), size, pairs:Number(pairs)||0 }; })
+    .filter(p => p.pairs > 0);
+  const total = parts.reduce((a, p) => a + p.pairs, 0);
+
+  function add(){
+    if(!parts.length) return;
+    setSheet(withSharedCarton(sheet, parts));
+    setDraft({}); setOpen(false);
+  }
+  function removeBox(label){
+    const next = JSON.parse(JSON.stringify(sheet));
+    for(const line of next.lines) line.groups = (line.groups||[]).filter(g => g.carton_group !== label);
+    setSheet(next);
+  }
+
+  return <div className="mt-1">
+    {boxes.map(box => (
+      <div key={box.label} className="text-[11px] rounded-lg border border-indigo-200 bg-indigo-50/60 px-2 py-1.5 mb-1.5">
+        <b className="mono">Box {box.label}</b> — carton {box.cn_from || "?"} ·{" "}
+        <b className="mono">{box.pairs}</b> pairs ·{" "}
+        {box.contents.map(c => `${c.closure||c.article} ${c.size}×${c.pairs}`).join(", ")}
+        <button type="button" onClick={()=>removeBox(box.label)}
+          className="ml-2 text-rose-700 underline">remove</button>
+      </div>))}
+
+    {!open
+      ? <button type="button" onClick={()=>setOpen(true)}
+          className="text-[11px] font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-800 bg-white">
+          + Mixed carton across shoes</button>
+      : <div className="rounded-lg border border-indigo-300 bg-white p-2">
+          <div className="text-xs font-semibold text-slate-700 mb-1">
+            One box, several shoes — enter the pairs of each that went into it</div>
+          {sheet.lines.map((line, li) => (
+            <div key={li} className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="text-[11px] text-slate-600" style={{minWidth:150}}>
+                <span className="mono">{line.article}</span> · {line.closure || "—"} · {line.colour || "—"}</span>
+              {sizesOf(line).map(size => (
+                <label key={size} className="text-[11px] text-slate-500">{size}
+                  <input type="number" min={0} style={{width:52}}
+                    aria-label={`Pairs of ${line.article} ${line.closure||""} size ${size} in this box`}
+                    value={draft[`${li}|${size}`] ?? ""}
+                    onChange={e=>setDraft(d=>({ ...d, [`${li}|${size}`]: e.target.value }))}
+                    className="block border border-slate-300 rounded px-1 py-0.5 mono text-right" />
+                </label>))}
+            </div>))}
+          <div className="flex items-center gap-2 mt-1.5">
+            <button type="button" onClick={add} disabled={!parts.length}
+              className="text-[11px] font-semibold rounded-lg px-2.5 py-1 bg-indigo-600 text-white disabled:opacity-40">
+              Add this box{total ? ` — ${total} pairs` : ""}</button>
+            <button type="button" onClick={()=>{setDraft({});setOpen(false);}}
+              className="text-[11px] font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white">Cancel</button>
+            <span className="text-[11px] text-slate-400">Counted as one carton, numbered once.</span>
+          </div>
+        </div>}
   </div>;
 }

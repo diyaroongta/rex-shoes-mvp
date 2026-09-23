@@ -116,3 +116,67 @@ export function packingSummary(built, rateFor = () => null){
   return { cartons, mixed_cartons: mixed, mixed_pairs: mixedPairs, part_cartons: part,
            pairs: (built && built.total_pairs) || 0 };
 }
+
+/* A BOX THAT HOLDS TWO DIFFERENT SHOES.
+ * Same article type, different shoe — their slip's rows 6, 7 and 8, where one
+ * carton count spans a change from STRIKE (V) to STRIKE (L). The parts share a
+ * `carton_group` label: the first one opens the box and carries the count, the
+ * rest carry only their pairs, so the box is counted once while each shoe's
+ * pairs stay on its own S.NO and the order book's balance stays right.
+ */
+export function nextCartonLabel(sheet){
+  const used = new Set();
+  for(const line of (sheet && sheet.lines) || [])
+    for(const g of line.groups || [])
+      if(g.carton_group) used.add(String(g.carton_group));
+  let n = 1;
+  while(used.has(`M${n}`)) n += 1;
+  return `M${n}`;
+}
+
+/* `parts` is [{line, size, pairs}] — `line` being the index of the S.NO the
+   shoe sits on. Parts on the same line are merged into one entry, because a
+   box holds a shoe's sizes together. */
+export function withSharedCarton(sheet, parts, opts = {}){
+  const next = JSON.parse(JSON.stringify(sheet || {}));
+  const label = String(opts.label || nextCartonLabel(next));
+  const byLine = new Map();
+  for(const part of parts || []){
+    const li = Number(part.line);
+    const size = String(part.size ?? "").trim();
+    const pairs = Math.max(0, Math.round(num(part.pairs)));
+    if(!Number.isInteger(li) || !(next.lines || [])[li] || !size || pairs <= 0) continue;
+    const list = byLine.get(li) || [];
+    const same = list.find(s => s.size === size);
+    if(same) same.pairs += pairs; else list.push({ size, pairs });
+    byLine.set(li, list);
+  }
+  if(!byLine.size) return next;
+
+  /* The first shoe in the box opens it and carries the carton; the rest carry
+     their pairs and no carton of their own. */
+  let first = true;
+  for(const [li, sizes] of [...byLine.entries()].sort((a, z) => a[0] - z[0])){
+    next.lines[li].groups = [...(next.lines[li].groups || []),
+      { sizes, cartons: first ? 1 : 0, carton_group: label, mixed: true }];
+    first = false;
+  }
+  return next;
+}
+
+/* Every shared box on a sheet, for a screen that lists what is in each one. */
+export function sharedCartons(built){
+  const boxes = new Map();
+  for(const line of (built && built.lines) || [])
+    for(const g of line.groups || []){
+      if(!g.carton_group) continue;
+      const box = boxes.get(g.carton_group)
+        || { label: g.carton_group, cartons: 0, pairs: 0, contents: [], cn_from: g.cn_from };
+      box.cartons += g.cartons;
+      box.pairs += g.pairs;
+      for(const s of g.sizes || [])
+        box.contents.push({ article: line.article, closure: line.closure, size: s.size, pairs: s.pairs });
+      boxes.set(g.carton_group, box);
+    }
+  return [...boxes.values()];
+}

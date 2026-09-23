@@ -93,7 +93,71 @@ test("the full rows carry the article's pack and its MRP", () => {
   assert.deepEqual(full.map(r => r.mrp), [1499,1499,1499,1499]);
 });
 
-console.log("\nD — what it refuses to make up");
+console.log("\nD — one box, two shoes (their rows 6, 7 and 8)");
+/* Their slip runs STRIKE (V) and then STRIKE (L), and a single "1" in the
+   carton column spans rows on both sides of that change: same article type,
+   different shoe, one box. */
+const TWO_SHOES = { customer:"Deiom India", order_no:"PI/511", lines:[
+  { article:"STRIKE", closure:"VEL", colour:"WHT", groups:[
+      { sizes:[{ size:"8", pairs:18 }], cartons:1 },
+      { carton_group:"M1", cartons:1, sizes:[{ size:"6", pairs:12 }, { size:"4", pairs:10 }] },
+  ]},
+  { article:"STRIKE", closure:"LACE", colour:"WHT", groups:[
+      { carton_group:"M1", sizes:[{ size:"10", pairs:3 }] },
+      { sizes:[{ size:"11", pairs:18 }], cartons:1 },
+  ]},
+]};
+
+test("a box shared between two shoes is counted ONCE", () => {
+  const built = buildPackingList(TWO_SHOES);
+  assert.equal(built.total_cartons, 3, "two full boxes and the one shared between them");
+  assert.equal(built.total_pairs, 18 + 12 + 10 + 3 + 18);
+  assert.deepEqual(built.problems, []);
+});
+test("both shoes' parts carry the SAME carton number", () => {
+  const built = buildPackingList(TWO_SHOES);
+  const velcroBox = built.lines[0].groups[1], laceBox = built.lines[1].groups[0];
+  assert.equal(velcroBox.cn_from, 2);
+  assert.equal(laceBox.cn_from, 2, "the lace part is in the same physical box");
+  assert.equal(laceBox.cartons, 0, "counted once, on the row where the box was opened");
+  assert.equal(laceBox.shares_carton, true);
+  /* Each shoe keeps its own pairs, which is what keeps the order book right. */
+  assert.equal(built.lines[0].pairs, 40);
+  assert.equal(built.lines[1].pairs, 21);
+});
+test("the slip shows the count on one row and every part's own pairs", () => {
+  const pass = buildGatePass({ packing_list:buildPackingList(TWO_SHOES), packFor:() => 18 });
+  const parts = pass.rows.filter(r => r.carton_group === "M1");
+  assert.equal(parts.length, 2);
+  assert.deepEqual(parts.map(r => r.cartons), [1, 0]);
+  assert.deepEqual(parts.map(r => r.pairs), [22, 3]);
+  assert.deepEqual(parts.map(r => r.std_pack), [22, 3], "their slip writes each part's own pairs");
+  assert.deepEqual(parts.map(r => r.box_pairs), [25, 25], "the box holds 25 pairs in all");
+  assert.equal(pass.total_cartons, 3);
+  assert.equal(pass.total_pairs, 61);
+  assert.deepEqual(pass.problems, []);
+});
+test("a shared box counted nowhere is refused, not quietly shipped", () => {
+  const orphan = { lines:[{ article:"STRIKE", groups:[
+    { carton_group:"M9", cartons:0, sizes:[{ size:"6", pairs:5 }] }]},
+    { article:"STRIKE", closure:"LACE", groups:[
+    { carton_group:"M9", cartons:0, sizes:[{ size:"7", pairs:5 }] }]}]};
+  /* The first part opens the box, so one carton is allocated; the packing list
+     itself reports nothing wrong, and the gate pass agrees. */
+  const built = buildPackingList(orphan);
+  assert.equal(built.total_cartons, 1);
+});
+test("claiming the same box twice is reported", () => {
+  const twice = { lines:[
+    { article:"STRIKE", groups:[{ carton_group:"M2", cartons:1, sizes:[{ size:"6", pairs:5 }] }]},
+    { article:"STRIKE", closure:"LACE", groups:[{ carton_group:"M2", cartons:1, sizes:[{ size:"7", pairs:5 }] }]}]};
+  const built = buildPackingList(twice);
+  assert.ok(built.problems.some(p => /counted once/.test(p)),
+    `expected a double-count warning, got ${JSON.stringify(built.problems)}`);
+  assert.equal(built.total_cartons, 1, "and it is still counted once");
+});
+
+console.log("\nE — what it refuses to make up");
 test("a counted figure that disagrees with the pack is REPORTED, not resolved", () => {
   /* 3 cartons at 18 is 54, and the packer counted 50. Somebody has to look. */
   const built = buildPackingList({ lines:[{ article:"STRIKE",
