@@ -1,8 +1,9 @@
-/* The gate pass slip, reproduced from the factory's own book (SR. No 15945).
-   It is built from the packing list that travels with the same lorry, so the
-   two can never disagree at the customer's gate. */
+/* The gate pass slip, from the factory's own book (SR. No 15941, STRIKE (V)).
+   One arithmetic rule governs the whole sheet: PAIRS = CARTON x STD. PAC. —
+   including on a mixed box, where the std. pac. column holds what that one box
+   actually carries. */
 import assert from "node:assert/strict";
-import { buildGatePass, gatePassRows } from "../shared/gate-pass.js";
+import { buildGatePass, gatePassRows, describeGroup, pairsFromCartons } from "../shared/gate-pass.js";
 import { buildPackingList } from "../shared/packing-list.js";
 
 let passed = 0, failed = 0;
@@ -11,76 +12,110 @@ function test(name, fn){
   catch(e){ failed++; console.log("  FAIL  " + name + "\n        " + e.message); }
 }
 
-/* Gola Plus, from the photographed slip: sizes 7 and 7-9 at MRP 679 packed 24
-   to a carton, the 1X3 and 4X5 ranges at 799 packed 18. */
-const MRP  = { "7":679, "9":679, "1":799, "3":799, "4":799, "5":799 };
-const PACK = { "7":24,  "9":24,  "1":18,  "3":18,  "4":18,  "5":18 };
-const opts = { mrpFor:size => MRP[size] ?? null, packFor:size => PACK[size] ?? null };
+console.log("\nA — pairs come from the cartons and the pack");
+test("one carton at ten to a pack is ten pairs", () => {
+  assert.equal(pairsFromCartons(1, 10), 10);
+  assert.equal(pairsFromCartons(2, 18), 36);     // their row 3
+  assert.equal(pairsFromCartons(1, 21), 21);     // their row 2
+});
+test("an unknown pack gives no pairs at all, rather than none", () => {
+  assert.equal(pairsFromCartons(3, null), null);
+  assert.equal(pairsFromCartons(null, 18), null);
+});
+test("a full carton of one size packs at the article's own rate", () => {
+  const g = describeGroup({ sizes:[{ size:"1", pairs:10 }], cartons:1 },
+                          { packFor:() => 10 });
+  assert.equal(g.mixed, false);
+  assert.equal(g.std_pack, 10);
+  assert.equal(g.pairs, 10);
+  assert.equal(g.mismatch, false);
+});
 
-const sheet = { customer:"Pawan Mkt", order_no:"PI/435", lines:[{
-  article:"GOLA PLUS", closure:"VEL", colour:"BLK",
-  groups:[
-    { sizes:[{ size:"7", pairs:48 }], cartons:2 },
-    { sizes:[{ size:"9", pairs:24 }], cartons:1 },
-    { sizes:[{ size:"1", pairs:234 }], cartons:13 },
-    { sizes:[{ size:"3", pairs:18 }, { size:"4", pairs:18 }], cartons:1 },
-  ],
-}]};
+console.log("\nB — the mixed carton, their row 4");
+test("one box of sizes 2, 3 and 5 reads 17 pairs at a std. pac. of 17", () => {
+  /* 2 pairs of size 2, 5 of size 3, 10 of size 5, all in ONE carton. */
+  const g = describeGroup({ cartons:1, sizes:[
+    { size:"2", pairs:2 }, { size:"3", pairs:5 }, { size:"5", pairs:10 }] });
+  assert.equal(g.mixed, true);
+  assert.equal(g.pairs, 17);
+  assert.equal(g.std_pack, 17, "a mixed box packs at whatever was put in it");
+  assert.equal(pairsFromCartons(g.cartons, g.std_pack), 17, "the sheet's own arithmetic still holds");
+  assert.equal(g.contents, "2 x 2, 3 x 5, 5 x 10");
+  assert.equal(g.size_label, "2, 3, 5");
+});
+test("the carton count is written ONCE for the box, not on every size in it", () => {
+  const built = buildPackingList({ lines:[{ article:"STRIKE", closure:"VEL", colour:"WHT", groups:[
+    { sizes:[{ size:"6", pairs:18 }], cartons:1 },
+    { cartons:1, sizes:[{ size:"6", pairs:12 }, { size:"4", pairs:10 }, { size:"10", pairs:3 }] },
+  ]}]});
+  const rows = gatePassRows(built, {});
+  assert.deepEqual(rows.map(r => r.cartons), [1, 1],
+    "three sizes sharing a box are ONE row carrying ONE carton");
+  assert.equal(rows[1].mixed, true);
+  assert.deepEqual(rows[1].breakdown.map(s => [s.size, s.pairs]), [["6",12],["4",10],["10",3]]);
+  assert.equal(rows[1].pairs, 25);
+  assert.equal(rows[1].std_pack, 25);
+});
 
-console.log("\nA — the rows the gate checks");
-test("one row per size, numbered down the slip", () => {
+console.log("\nC — the client's own dispatch example");
+/* "3 cartons of size 2, 3 of size 3, 3 of size 4 and 3 of size 5" ordered;
+   dispatch 10 full cartons of the 2X5 range plus ONE mixed carton holding
+   2 pairs of size 2, 4 of size 3, 6 of size 4 and 1 of size 5. */
+const sheet = { customer:"Deiom India", order_no:"PI/511", lines:[{
+  article:"STRIKE", closure:"VEL", colour:"WHT", combo:"2X5", groups:[
+    { sizes:[{ size:"2", pairs:54 }], cartons:3 },
+    { sizes:[{ size:"3", pairs:54 }], cartons:3 },
+    { sizes:[{ size:"4", pairs:36 }], cartons:2 },
+    { sizes:[{ size:"5", pairs:36 }], cartons:2 },
+    { cartons:1, sizes:[{ size:"2", pairs:2 }, { size:"3", pairs:4 },
+                        { size:"4", pairs:6 }, { size:"5", pairs:1 }] },
+  ]}]};
+
+test("ten full cartons and one mixed carton add up on the slip", () => {
   const built = buildPackingList(sheet);
-  const rows = gatePassRows(built, opts);
-  assert.deepEqual(rows.map(r => [r.sno, r.size, r.pairs]),
-    [[1,"7",48],[2,"9",24],[3,"1",234],[4,"3",18],[5,"4",18]]);
-});
-test("a carton count is written ONCE against the sizes that share the box", () => {
-  const rows = gatePassRows(buildPackingList(sheet), opts);
-  assert.deepEqual(rows.map(r => r.cartons), [2,1,13,1,null],
-    "repeating the count on the second size would treble the cartons at the gate");
-  assert.deepEqual(rows.map(r => r.carton_numbers), ["1-2","3","4-16","17",null]);
-  assert.deepEqual(rows.map(r => r.mixed), [false,false,false,true,true]);
-});
-test("MRP and standard pack come off the master, per size", () => {
-  const rows = gatePassRows(buildPackingList(sheet), opts);
-  assert.deepEqual(rows.map(r => [r.mrp, r.std_pack]),
-    [[679,24],[679,24],[799,18],[799,18],[799,18]]);
-});
-
-console.log("\nB — what it refuses to make up");
-test("the serial number is typed from the book, never generated", () => {
-  const pass = buildGatePass({ packing_list:buildPackingList(sheet), ...opts });
-  assert.equal(pass.serial_no, "", "a number we invent would compete with the printed pad");
-  const numbered = buildGatePass({ packing_list:buildPackingList(sheet), serial_no:"15945", ...opts });
-  assert.equal(numbered.serial_no, "15945");
-});
-test("a missing MRP prints blank and is COUNTED, never zero", () => {
-  const built = buildPackingList(sheet);
-  const pass = buildGatePass({ packing_list:built, mrpFor:() => null, packFor:() => null });
-  assert.equal(pass.rows[0].mrp, null, "zero would tell the gate the shoes are free");
-  assert.equal(pass.missing_mrp, 5);
-  assert.equal(pass.missing_pack, 5);
-});
-
-console.log("\nC — it cannot disagree with the lorry");
-test("totals match the packing list exactly", () => {
-  const built = buildPackingList(sheet);
-  const pass = buildGatePass({ packing_list:built, party:"Pawan Mkt", city:"Mumbai",
-    transporter:"A.B.C. Transport", serial_no:"15945", ...opts });
-  assert.equal(pass.total_pairs, 342);
-  assert.equal(pass.total_cartons, 17);
-  assert.equal(pass.total_pairs, built.total_pairs);
-  assert.equal(pass.total_cartons, built.total_cartons);
+  const pass = buildGatePass({ packing_list:built, party:"Deiom India", serial_no:"15941",
+                               packFor:() => 18, mrpFor:() => 1499 });
+  assert.equal(pass.total_cartons, 11, "ten full boxes and the mixed one");
+  assert.equal(pass.mixed_cartons, 1);
+  assert.equal(pass.total_pairs, 180 + 13);
   assert.deepEqual(pass.problems, []);
-  assert.equal(pass.ok, true);
-  assert.equal(pass.party, "Pawan Mkt");
-  assert.equal(pass.transporter, "A.B.C. Transport");
+  const mixed = pass.rows.find(r => r.mixed);
+  assert.equal(mixed.pairs, 13);
+  assert.equal(mixed.std_pack, 13);
+  assert.equal(mixed.contents, "2 x 2, 3 x 4, 4 x 6, 5 x 1");
 });
-test("a sheet edited underneath it is reported, not printed quietly", () => {
-  const built = buildPackingList(sheet);
-  const pass = buildGatePass({ packing_list:{ ...built, total_pairs:400 }, ...opts });
+test("the full rows carry the article's pack and its MRP", () => {
+  const pass = buildGatePass({ packing_list:buildPackingList(sheet),
+                               packFor:() => 18, mrpFor:() => 1499 });
+  const full = pass.rows.filter(r => !r.mixed);
+  assert.deepEqual(full.map(r => [r.cartons, r.std_pack, r.pairs]),
+    [[3,18,54],[3,18,54],[2,18,36],[2,18,36]]);
+  assert.deepEqual(full.map(r => r.mrp), [1499,1499,1499,1499]);
+});
+
+console.log("\nD — what it refuses to make up");
+test("a counted figure that disagrees with the pack is REPORTED, not resolved", () => {
+  /* 3 cartons at 18 is 54, and the packer counted 50. Somebody has to look. */
+  const built = buildPackingList({ lines:[{ article:"STRIKE",
+    groups:[{ sizes:[{ size:"2", pairs:50 }], cartons:3 }] }]});
+  const pass = buildGatePass({ packing_list:built, packFor:() => 18 });
   assert.equal(pass.ok, false);
-  assert.match(pass.problems[0], /342 pairs and the packing list says 400/);
+  assert.match(pass.problems[0], /3 carton\(s\) at 18 a pack is 54 pairs, but 50 were counted/);
+  assert.equal(pass.rows[0].pairs, 50, "the counted figure is what prints — it is what was packed");
+});
+test("no pack quantity on record prints blank and is counted, never zero", () => {
+  const built = buildPackingList({ lines:[{ article:"NEW",
+    groups:[{ sizes:[{ size:"5.5", pairs:0 }], cartons:1 }] }]});
+  const pass = buildGatePass({ packing_list:built, packFor:() => null, mrpFor:() => null });
+  assert.equal(pass.rows[0].std_pack, null);
+  assert.equal(pass.rows[0].pack_unknown, true);
+  assert.equal(pass.missing_pack, 1);
+  assert.equal(pass.missing_mrp, 1);
+});
+test("the serial number is typed from the book, never generated", () => {
+  const pass = buildGatePass({ packing_list:buildPackingList(sheet) });
+  assert.equal(pass.serial_no, "");
+  assert.equal(buildGatePass({ packing_list:buildPackingList(sheet), serial_no:"15941" }).serial_no, "15941");
 });
 test("an empty shipment is empty, not an error", () => {
   const pass = buildGatePass({});

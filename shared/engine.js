@@ -180,7 +180,14 @@ export function queueOrder(orders, overrides={}){
   return out;
 }
 
-export function schedule(orders, articles, wcs, origin, horizon=1500, overrides={}){
+/* WHAT THE FLOOR HAS ALREADY DONE.
+   `progress` is {unit key: {STAGE: {done: pairs, on: "YYYY-MM-DD"}}} — the
+   pairs actually achieved, keyed the way the plan is keyed. A stage that is
+   finished takes no capacity and no future day; a stage part done is
+   rescheduled for WHAT IS LEFT, from the day after the last entry. That is the
+   whole feedback loop: the floor reports a number, and tomorrow's plan is
+   built from what is genuinely still to make. */
+export function schedule(orders, articles, wcs, origin, horizon=1500, overrides={}, progress={}){
   const used={};
   const busy={};   // exclusive machines: [{start,end,order_no}] blocks already taken
   // Release day = order date + whatever the order's own routing costs before
@@ -202,6 +209,7 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
   for(const o of ordered){
     const ov=normalizeOverride(overrides[o.order_no]);
     const art=articles[o.article_code]; const qty=o.lines.reduce((s,l)=>s+l.qty,0);
+    const done=(progress||{})[o.order_no]||{};
     const r=rel(o); let prevEnd=r; let firstStage=true; const stages=[];
     for(const [stage,autoWc,kind,legDays] of route(art, o, wcs && wcs._lead_time_rules)){
       if(kind==="instant"){ stages.push({stage,work_center:autoWc,start:prevEnd,end:prevEnd,instant:true}); continue; }
@@ -213,6 +221,22 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
         stages.push({stage,work_center:null,start,end,transit:true});
         prevEnd=end; continue;
       }
+      /* WHAT IS ALREADY MADE IS NOT PLANNED AGAIN.
+         A stage finished on the floor is recorded where it actually happened
+         and books no further capacity; a stage part done is planned for the
+         BALANCE only, and never before the day after the last entry — the
+         work cannot be done again yesterday. */
+      const record=done[stage];
+      const madeSoFar=record?Math.max(0,Math.min(qty,Number(record.done)||0)):0;
+      const lastOn=record&&record.on?dayIndex(record.on,origin):null;
+      if(record&&madeSoFar>=qty-1e-9){
+        const end=lastOn==null?prevEnd:Math.max(prevEnd,lastOn);
+        stages.push({stage,work_center:autoWc,start:lastOn==null?prevEnd:lastOn,end,
+          instant:false,alloc:{},complete:true,achieved:madeSoFar});
+        prevEnd=end; firstStage=false; continue;
+      }
+      const remaining=qty-madeSoFar;
+
       /* A forced work centre that does not exist would crash the planner, so
          it falls back to the automatic one and says so. Everything else about
          the override is obeyed. */
@@ -226,7 +250,10 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
           message:`${stage} moved to ${wcs[wanted].name||wanted}; the routing would have used ${wcs[autoWc]?.name||autoWc}.`});
       const wc=wcs[wcCode], cap=wc.capacity_per_day;
       const forcedDays=ov.days[stage]||null;
-      const earliest=firstStage?prevEnd:prevEnd+1;
+      const readyOn=firstStage?prevEnd:prevEnd+1;
+      /* Part done yesterday: the rest picks up today, not back at the
+         beginning of the stage. */
+      const earliest=lastOn==null?readyOn:Math.max(readyOn,lastOn+1);
       let startDay=null, endDay=prevEnd; const alloc={};
       if(!used[wcCode]) used[wcCode]={};
 
@@ -270,34 +297,34 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
         } else {
           let c=earliest;
           while(c<=earliest+horizon){
-            let remaining=qty, d=c, run=[];
-            while(remaining>1e-9 && d<=earliest+horizon){
+            let want=remaining, d=c, run=[];
+            while(want>1e-9 && d<=earliest+horizon){
               const holder=dayHolder(d);
               if((holder && holder!==article) || free(d)<=1e-9){ break; }
-              const take=Math.min(free(d),remaining);
-              run.push([d,take]); remaining-=take; d++;
+              const take=Math.min(free(d),want);
+              run.push([d,take]); want-=take; d++;
             }
-            if(remaining<=1e-9){ s=c; e=run[run.length-1][0]; break; }
+            if(want<=1e-9){ s=c; e=run[run.length-1][0]; break; }
             /* The run was broken. Restart after whatever stopped it. */
             c=(run.length?run[run.length-1][0]:c)+1;
           }
-          if(s===null){ s=earliest; e=earliest+Math.max(1,Math.ceil(qty/cap-1e-9))-1; }
+          if(s===null){ s=earliest; e=earliest+Math.max(1,Math.ceil(remaining/cap-1e-9))-1; }
         }
         startDay=s; endDay=e;
         blocks.push({start:startDay,end:endDay,order_no:o.order_no,article});
         // A forced span spreads the whole order evenly across those days, even
         // when that is more than the line can hold in a day. That is the point.
         const span=endDay-startDay+1;
-        const perDay=forcedDays?qty/span:null;
-        let remaining=qty;
+        const perDay=forcedDays?remaining/span:null;
+        let left=remaining;
         for(let d=startDay; d<=endDay; d++){
           /* Unforced, a day takes what is LEFT on the machine that day, not the
              full capacity — another card of the same article may already hold
              part of it. */
           const take=forcedDays
-            ? (d===endDay?remaining:perDay)
-            : Math.min(Math.max(0,cap-(used[wcCode][d]||0)),remaining);
-          used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; remaining-=take;
+            ? (d===endDay?left:perDay)
+            : Math.min(Math.max(0,cap-(used[wcCode][d]||0)),left);
+          used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; left-=take;
           if(forcedDays&&used[wcCode][d]>cap+1e-6){
             (forcedLoad[wcCode]=forcedLoad[wcCode]||{})[d]=true;
           }
@@ -306,17 +333,17 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
         /* Told to finish in N days on a shared line: take the day whether or
            not it is free. The line is now overbooked, and that is reported. */
         startDay=earliest; endDay=startDay+forcedDays-1;
-        const perDay=qty/forcedDays;
+        const perDay=remaining/forcedDays;
         for(let d=startDay; d<=endDay; d++){
           used[wcCode][d]=(used[wcCode][d]||0)+perDay; alloc[d]=perDay;
           if(used[wcCode][d]>cap+1e-6) (forcedLoad[wcCode]=forcedLoad[wcCode]||{})[d]=true;
         }
       } else {
         // a hall or a bank of lines: several orders can share the same day's capacity
-        let remaining=qty, d=earliest;
-        while(remaining>1e-9 && d<=r+horizon){
+        let left=remaining, d=earliest;
+        while(left>1e-9 && d<=r+horizon){
           const free=cap-(used[wcCode][d]||0);
-          if(free>1e-9){ const take=Math.min(free,remaining); used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; remaining-=take; if(startDay===null)startDay=d; }
+          if(free>1e-9){ const take=Math.min(free,left); used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; left-=take; if(startDay===null)startDay=d; }
           d++;
         }
         endDay=startDay!==null?d-1:prevEnd;
@@ -574,7 +601,10 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   const pending=units.filter(u=>u.unit_kind==="balance");
 
   const expanded=overridesForUnits(scheduled, overrides);
-  const sched=schedule(scheduled,articles,wcs,origin,1500,expanded.overrides);
+  /* What the floor reported it actually made, fed back in: a finished stage
+     books no more capacity and a part-finished one is planned for the balance
+     from tomorrow. Absent, the plan is the pure forecast it always was. */
+  const sched=schedule(scheduled,articles,wcs,origin,1500,expanded.overrides,opts.progress||{});
   sched.warnings.push(...expanded.notes);
   const problems=validateSchedule(sched,wcs);
   for(const o of orphaned)

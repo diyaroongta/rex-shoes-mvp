@@ -65,14 +65,16 @@ export default function GatePass({ data, logo = "/brand/rex-logo.jpg" }){
             <td style={CELL}>{i === 0 || pass.rows[i-1].article !== r.article ? r.article : ""}
               {r.closure ? <span style={{ fontSize:9 }}> ({r.closure})</span> : null}</td>
             <td style={{ ...CELL, textAlign:"center" }}>{r.size}</td>
-            <td style={{ ...CELL, textAlign:"center" }}>{r.colour}</td>
-            <td style={{ ...CELL, textAlign:"center" }}>
-              {i === 0 ? pass.order_no : ""}</td>
+            {/* A MIXED BOX lists what is inside it. Their own slip writes the
+                sizes and pairs across these two columns, because a gate that
+                cannot see inside the box has to read it here. */}
+            <td style={{ ...CELL, textAlign:"center", fontSize:r.mixed ? 9 : 11 }}>
+              {r.mixed ? r.contents : r.colour}</td>
+            <td style={{ ...CELL, textAlign:"center" }}>{i === 0 ? pass.order_no : ""}</td>
             <td style={{ ...CELL, textAlign:"right" }}>{i === 0 ? fmt(pass.order_qty) : ""}</td>
             <td style={{ ...CELL, textAlign:"center", fontWeight:700 }}>
-              {r.cartons == null ? "" : r.cartons}
-              {r.mixed && r.cartons != null
-                ? <div style={{ fontWeight:400, fontSize:8 }}>MIXED</div> : null}</td>
+              {r.cartons || ""}
+              {r.mixed ? <div style={{ fontWeight:400, fontSize:8 }}>MIXED</div> : null}</td>
             {/* Blank, never zero: a blank tells the gate to check, a zero tells
                 it the shoes are free. */}
             <td style={{ ...CELL, textAlign:"right" }}>{fmt(r.mrp)}</td>
@@ -107,6 +109,7 @@ export default function GatePass({ data, logo = "/brand/rex-logo.jpg" }){
         {!pass.ok && <div><b>{pass.problems.join(" · ")}</b></div>}
         {pass.missing_mrp > 0 && <div>{pass.missing_mrp} row(s) have no MRP on record — printed blank.</div>}
         {pass.missing_pack > 0 && <div>{pass.missing_pack} row(s) have no standard pack on record — printed blank.</div>}
+        <div style={{ marginTop:4 }}>Pairs = cartons × std. pac. on every row; a mixed box packs at what it holds.</div>
       </div>)}
   </div>;
 }

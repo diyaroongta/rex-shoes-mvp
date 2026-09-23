@@ -8,7 +8,7 @@ import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import GatePass from "./GatePass.jsx";
-import { buildGatePass } from "../shared/gate-pass.js";
+import { buildGatePass, pairsFromCartons } from "../shared/gate-pass.js";
 import { singlePackQty } from "../shared/bridge.js";
 import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary } from "../shared/mixed-carton.js";
 
@@ -608,7 +608,25 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
                   <input type="number" min={0} value={g.cartons ?? 0}
                     aria-label={`Cartons for size ${g.sizes.map(x=>x.size).join(" and ")}`}
                     onChange={e=>edit(n=>{ n.lines[li].groups[gi].cartons = e.target.value; })}
-                    className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>}
+                    className="w-20 border border-slate-300 rounded px-1 py-0.5 mono text-right" />
+                  {/* PAIRS = CARTONS x STD. PAC. — the factory's own rule, off
+                      their gate pass. Offered rather than applied: the packer
+                      counted the box, and a figure that overwrites a count
+                      without being asked is how a gate pass stops matching the
+                      lorry. A size with no pack on record offers nothing. */}
+                  {(() => {
+                    if(g.sizes.length !== 1) return null;
+                    const pack = singlePackQty(line.article, g.sizes[0].size, "", line.combo);
+                    const derived = pairsFromCartons(g.cartons, pack);
+                    if(derived == null || derived === 0) return null;
+                    if(Number(g.sizes[0].pairs) === derived)
+                      return <div className="text-[10px] text-slate-400 mt-0.5">{g.cartons} × {pack}</div>;
+                    return <button type="button"
+                      onClick={()=>edit(n=>{ n.lines[li].groups[gi].sizes[0].pairs = derived; })}
+                      className="block mt-0.5 text-[10px] text-indigo-700 underline">
+                      = {derived} pairs ({g.cartons} × {pack})</button>;
+                  })()}
+                </td>}
                 {si === 0 && <td className="text-right mono text-slate-500" rowSpan={g.sizes.length}>
                   {(() => { const b = (built.lines[li]||{}).groups||[];
                     const bg = b[gi];

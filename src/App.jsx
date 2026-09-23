@@ -32,6 +32,7 @@ import ProfilesTab from "./ProfilesTab.jsx";
 import ChangePassword from "./ChangePassword.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { productionUnits } from "../shared/production-units.js";
+import { progressFrom } from "../shared/production-progress.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
 import { productionActualKey } from "../shared/production-actuals.js";
@@ -280,6 +281,26 @@ export default function App({ user=null, onSignOut=null }={}){
     }
     return out;
   },[orders]);
+  /* The same inputs the plan is built from, kept in one place so a screen can
+     ask "what would this change?" and get an answer from the SAME planner
+     rather than a second implementation of it. */
+  const planInputs = useMemo(()=>{
+    if(!orders) return null;
+    const mapped = orders.map(o=>({ ...o,
+      stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
+      printing:(o.pi&&o.pi.printing)||o.printing||false }));
+    return { orders:mapped, units:productionUnits(mapped, jobs) };
+  },[orders,jobs]);
+
+  /* Re-plan with extra achievement rows folded in, without saving anything.
+     This is what lets the daily input screen show the consequence of an entry
+     before and after — computed, never described. */
+  const replan = React.useCallback(extra => planInputs && compute(
+    planInputs.orders, INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
+    {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units,
+     progress:progressFrom([...(productionActuals||[]), ...(extra||[])])}),
+    [planInputs,wcs,targets,planOverrides,productionActuals]);
+
   const state = useMemo(()=> orders
     ? compute(
         // stitching/printing live on the pi blob; lift them so the engine sees them
@@ -296,8 +317,13 @@ export default function App({ user=null, onSignOut=null }={}){
             still planned whole, so nothing changes until one is issued. */
          units:productionUnits(orders.map(o=>({ ...o,
            stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
-           printing:(o.pi&&o.pi.printing)||o.printing||false })), jobs)})
-    : null, [orders,jobs,wcs,refTick,targets,planOverrides]);
+           printing:(o.pi&&o.pi.printing)||o.printing||false })), jobs),
+         /* What the floor reported it actually made. A finished stage books no
+            more capacity; a stage part done is re-planned for the balance from
+            the day after the entry — which is how a short day pushes the work
+            behind it rather than quietly disappearing. */
+         progress:progressFrom(productionActuals)})
+    : null, [orders,jobs,wcs,refTick,targets,planOverrides,productionActuals]);
 
   /* Ordered versus dispatched, from the same shared ledger the dispatch screen
      renders. An order that has shipped in full — or been closed short — is
@@ -600,7 +626,8 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
-        {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} onChanged={refreshProductionActuals} />}
+        {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals}
+          replan={replan} onChanged={refreshProductionActuals} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
