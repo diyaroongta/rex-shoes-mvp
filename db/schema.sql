@@ -5,6 +5,10 @@
 -- can never be handed the same number.
 create sequence if not exists order_no_seq start 2001;
 create sequence if not exists pi_no_seq start 1;
+-- Quotations have their OWN series. A quotation that borrowed a PI number
+-- would consume a number the invoice ledger expects to issue, and most
+-- quotations never become invoices.
+create sequence if not exists quotation_no_seq start 1;
 
 create table if not exists orders (
   order_no     text primary key,
@@ -71,6 +75,25 @@ create index if not exists proforma_invoices_archived_idx on proforma_invoices (
 
 -- Shared config: machine capacities. One row, id = 1.
 -- These are shared factory settings, not per-browser preferences.
+-- A priced offer, before there is an order. It releases nothing: no order, no
+-- PI number, no material demand and no machine time, until it is converted.
+create table if not exists quotations (
+  quote_no        text primary key,
+  quote_date      date,
+  party           text,
+  city            text,
+  status          text        not null default 'draft',
+  valid_days      integer,
+  pairs           integer     not null default 0,
+  total           numeric     not null default 0,
+  converted_pi_no text,
+  note            text,
+  snapshot        jsonb       not null default '{}'::jsonb,
+  created_by      text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
 create table if not exists settings (
   id         integer primary key,
   value      jsonb       not null,

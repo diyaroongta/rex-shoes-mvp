@@ -39,7 +39,7 @@ const MATERIAL_KEYS = ["new_material"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","schedule",
+const EVERY_TAB = ["mis","intake","pis","quotations","orders","jobs","jobwork","status","repair","dispatch","schedule",
                    "production_input","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -57,7 +57,7 @@ export const ROLE_DEFS = {
   sales: {
     label:"CRM / Sales",
     summary:"Raises PIs and bulk orders, and maintains customers and their terms.",
-    tabs:["mis","intake","pis","orders","parties","copilot"],
+    tabs:["mis","intake","pis","quotations","orders","parties","copilot"],
     writes:["orders","pis","parties","read-order-photo","read-pi","copilot"], reference:null,
   },
   dispatch: {

@@ -61,7 +61,11 @@ const CELL_INPUT = { width:"56px", textAlign:"center", font:"inherit", fontSize:
    when they spot a wrong quantity or price, so that is where it should be
    corrected — not on a different screen that has to be found first. Left
    undefined the document renders exactly as it prints. */
-export default function PiDocument({ order, article, mrp, terms, config, image, piNo, confirmationDate, onCell }){
+export default function PiDocument({ order, article, mrp, terms, config, image, piNo, confirmationDate, onCell,
+                                    /* A quotation is the same document one step earlier. Only the
+                                       bar at the top differs, and it must differ: a quotation that
+                                       says PROFORMA INVOICE is an invoice. */
+                                    heading="PROFORMA INVOICE" }){
   const t   = { ...DEFAULT_TERMS, ...(terms||{}) };
   const cfg = { ...DEFAULT_PI_CONFIG, ...(config||{}) };
   // `image` is the single-article convenience prop; multi-article orders carry
@@ -103,7 +107,7 @@ export default function PiDocument({ order, article, mrp, terms, config, image, 
       </div>
 
       <div style={{ textAlign:"center", fontWeight:700, fontSize:"13px", border:"1px solid #000", padding:"5px" }}>
-        PROFORMA INVOICE
+        {heading}
       </div>
 
       <table style={{ width:"100%", borderCollapse:"collapse" }}>
