@@ -1,4 +1,4 @@
-import { takeFromSizes } from "./pi-split.js";
+import { takeFromSizes, remainingForPi } from "./pi-split.js";
 
 /* Job Orders are the factory allocation view of the live Order Book. A row is
    waiting while any of its ordered pairs have not yet been put on an issued
@@ -84,6 +84,23 @@ export function jobOrderBalance(order, jobs = []){
        pairs. Never used unless they ask for it. */
     remake_allowance: Math.max(0, ordered - issued) + to_remake,
     fully_issued: issued >= ordered && to_remake === 0 };
+}
+
+/* WHAT A PI STILL OWES THE FLOOR, in pairs with no job card.
+ * The PI database used to answer from `remainingForPi`, which counts pairs
+ * not yet turned into ORDERS. Since orders reach the book directly (a bulk
+ * upload creates them at once), that read "Fully released" for PI/DEMO-01
+ * while the Order Book beside it said 500 of its 1,000 pairs were still
+ * waiting for a card. Release means a job card now, so the answer is:
+ *   pairs never made into an order  +  each live order's job-card balance.
+ * The button it drives opens Create Job Order, so it has to count what that
+ * screen would offer. */
+export function owedForPi(snapshotOrders = [], liveOrders = [], jobs = [], piNo = ""){
+  const notOrdered = remainingForPi(snapshotOrders, liveOrders, piNo).reduce((a, r) => a + r.remaining, 0);
+  const onBook = (liveOrders || [])
+    .filter(o => String(((o.pi || {}).pi_no) || "").trim() === String(piNo || "").trim())
+    .reduce((a, o) => a + jobOrderBalance(o, jobs).remaining, 0);
+  return notOrdered + onBook;
 }
 
 export function jobOrderQueue(orders = [], jobs = []){

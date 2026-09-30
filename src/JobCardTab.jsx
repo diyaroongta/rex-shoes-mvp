@@ -115,7 +115,10 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   },[initialOrderNo,jobs,orders]);
 
   const lines=useMemo(()=>Object.entries(qty).filter(([,value])=>Number(value)>0).map(([combo,value])=>({
-    combo, qty:Number(value), sizes:sizes[combo],
+    /* Numbers, not the input boxes' strings: card 9 was stored as
+       {"2":"125",...}, and anything summing those with + concatenates. */
+    combo, qty:Number(value),
+    sizes:sizes[combo]&&Object.fromEntries(Object.entries(sizes[combo]).map(([s,n])=>[s,Number(n)||0])),
     size_order:order?comboSizesForArticle(order.article_code,combo):[],
   })),[qty,sizes,order]);
   const totalPairs=lines.reduce((a,line)=>a+line.qty,0);

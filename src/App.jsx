@@ -5,7 +5,8 @@ import { labelFor, familyOf, parseCode } from "../shared/product-codes.js";
 import { customerSummaries, historyFor, partyKey as customerKey } from "../shared/customer-history.js";
 import { neededBy, buyingList, urgencyOf, daysBetween } from "../shared/procurement-timing.js";
 import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, TRANSIT_STAGE, inStageOrder, workCentresInOrder } from "../shared/engine.js";
-import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
+import { sourceOrderOf } from "../shared/pi-split.js";
+import { owedForPi } from "../shared/job-orders.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
@@ -620,7 +621,7 @@ export default function App({ user=null, onSignOut=null }={}){
         </div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} productionActuals={productionActuals} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
           onRefresh={syncAll} />}
-        {tab==="pis" && <PiDatabaseTab orders={orders} shortfall={state?state.procurement_by_pi:null}
+        {tab==="pis" && <PiDatabaseTab orders={orders} jobs={jobs} shortfall={state?state.procurement_by_pi:null}
                             onGoToJobs={()=>setTab("jobs")}
           onScheduled={syncAll} onChanged={syncAll} />}
         {tab==="orders" && <>
@@ -2287,7 +2288,7 @@ function Pill({status}){
   return <span className="mono text-xs font-semibold px-2 py-0.5 rounded-full" style={{color:SLA_COLOR[status],background:status==="on_track"?"#ecfdf5":status==="at_risk"?"#fff7ed":"#fef2f2"}}>{SLA_LABEL[status]}</span>;
 }
 
-function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
+function PiDatabaseTab({orders=[],jobs=[],shortfall,onScheduled,onChanged,onGoToJobs}){
   const [pis,setPis]=useState(null);
   const [selectedPi,setSelectedPi]=useState(null);
   const [editingOrder,setEditingOrder]=useState(null);
@@ -2328,12 +2329,6 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
     .then(([rows,cfg])=>{setPis(rows);setSettings(cfg||{});})
     .catch(e=>{setErr(e.message||String(e));setPis([]);}); },[showArchived]);
   if(!pis) return <div className="text-sm text-slate-500">Loading the PI master…</div>;
-  /* WHAT IS STILL OWED, not what is absent. A PI order released in two runs
-     has a production order against it from the first run, so asking "is it on
-     the schedule" answers yes while half the pairs have never been made. The
-     remainder is derived from the runs that exist. */
-  const outstandingFor=pi=>remainingForPi(
-    (pi.snapshot&&pi.snapshot.orders)||[], orders||[], pi.pi_no);
   /* A PI order can have several production runs against it, so it is "on the
      schedule" when ANY run exists — not when a row carries its own number. */
   const runsFor=sourceNo=>(orders||[]).filter(o=>sourceOrderOf(o)===sourceNo);
@@ -2383,8 +2378,9 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
           <th></th>
         </tr></thead>
         <tbody>{pis.map(p=>{const os=(p.snapshot&&p.snapshot.orders)||[];
-          const owed=outstandingFor(p);
-          const owedPairs=owed.reduce((a,r)=>a+r.remaining,0);
+          /* Pairs with no JOB CARD — the same figure the Order Book shows as
+             waiting, and what the button's screen would offer to release. */
+          const owedPairs=owedForPi(os,orders||[],jobs||[],p.pi_no);
           const articles=[...new Set(os.map(o=>o.article_code))];
           /* Shortfall for THIS PI, after every PI ahead of it in the queue has
              taken its stock — a second line, not a second badge. */

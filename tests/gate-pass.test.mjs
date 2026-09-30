@@ -212,5 +212,18 @@ test("each row's pack quantity is asked for within its own line's range", () => 
   assert.equal(pass.ok, true);
 });
 
+/* The MRP chart is keyed by RANGE — live ARMOUR LACE BLACK is {"2X5":949}.
+   Looked up without the line's range, every row printed a blank MRP. */
+test("the MRP comes from the row's own range", () => {
+  const built = buildPackingList({ lines:[{ article:"A", combo:"2X5",
+    groups:[{ sizes:[{ size:"2", pairs:18 }], cartons:1 }] }] });
+  const chart = { "2X5":949 };
+  const pass = buildGatePass({ packing_list: built,
+    mrpFor: (size, line) => line && line.combo ? chart[line.combo] ?? null : null,
+    packFor: () => 18 });
+  assert.equal(pass.rows[0].mrp, 949);
+  assert.equal(pass.missing_mrp, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

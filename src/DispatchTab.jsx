@@ -497,11 +497,17 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                 order_qty:(order.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0)||null,
                 /* Per SIZE, off the article master — blank where there is no
                    figure on record rather than a zero. */
-                mrpFor:size=>mrpForSize((INPUTS.mrp&&INPUTS.mrp[article])||{},"",size),
+                /* The chart is keyed by RANGE (2X5: 949); asked with "" for the
+                   range it found no per-size key and printed every MRP blank. */
+                mrpFor:(size,line)=>mrpForSize((INPUTS.mrp&&INPUTS.mrp[(line&&line.article)||article])||{},(line&&line.combo)||"",size),
                 packFor:(size,group,line)=>singlePackQty((line&&line.article)||article,size,"",(line&&line.combo)||""),
               })} />;
             })()
-          : <PackingList data={viewing.sheet} />}
+          /* Sheets recorded before the draft carried the order's total
+             reprinted "Order Quantity" blank; the order still knows it. */
+          : <PackingList data={{...viewing.sheet, order_qty:viewing.sheet.order_qty
+              ?? ((((orders||[]).find(o=>o.order_no===viewing.order_no)||{}).lines||[])
+                   .reduce((a,l)=>a+(Number(l.qty)||0),0)||null)}} />}
       </div>)}
 
     {!!reportsByOrder.length && (

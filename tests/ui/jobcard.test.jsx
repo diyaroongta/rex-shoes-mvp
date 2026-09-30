@@ -51,6 +51,25 @@ it("a successful job order does not report itself as an error",async()=>{
     expect(screen.queryByText(/More than the unassigned balance/i)).toBeNull());
 });
 
+/* Card 9 of the live demo was stored as {"2":"125",...} — the input boxes'
+   own strings. Anything that sums them with + concatenates. */
+it("stores the size quantities it issues as numbers",async()=>{
+  mocks.issueJobWork.mockImplementation(async payload=>({ id:9, order_no:"JO1", qty:payload.qty,
+    received:0, status:"issued", card:payload.card }));
+  const user=userEvent.setup();
+  render(<JobCardTab orders={[ORDER]} />);
+  await user.selectOptions(await screen.findByLabelText("Send to"), "Rex Internal");
+  await user.selectOptions(await screen.findByLabelText("Current Order"), "JO1");
+  const box = await screen.findByLabelText("7X10S size 7s pairs");
+  await user.clear(box); await user.type(box, "15");
+  await user.click(await screen.findByRole("button",{name:/Preview Job Order/i}));
+  await user.click(await screen.findByRole("button",{name:/Confirm & Create Job Order/i}));
+  await waitFor(()=>expect(mocks.issueJobWork).toHaveBeenCalled());
+  const sizes = mocks.issueJobWork.mock.calls[0][0].card.lines[0].sizes;
+  expect(sizes).toEqual({ "7s":15, "8s":20, "9s":20 });
+  expect(Object.values(sizes).every(n=>typeof n==="number")).toBe(true);
+});
+
 /* The warning is still real while the card is a DRAFT — it must not be
    disabled outright, only stopped from firing on an already-issued card. */
 it("still warns when a draft really does exceed the balance",async()=>{

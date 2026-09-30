@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
+import { jobOrderBalance, jobOrderQueue, owedForPi } from "../shared/job-orders.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 
 let passed=0,failed=0;
@@ -98,6 +98,21 @@ console.log("\nZ — a shortage does not reopen the balance, and that is the gap
   assert.equal(led.total_pending, 0);
   console.log("  pass  dispatch completeness is ordered-vs-dispatched, not job work");
 }
+
+/* The live demo: PI/DEMO-01 was bulk-uploaded, so its order reached the book
+   at once, and half of it was carded. The PI database read "Fully released"
+   while the Order Book said 500 pairs were waiting — release means a JOB CARD. */
+test("a PI owes the floor every pair with no job card, whether or not it is on the book",()=>{
+  const snap=[{order_no:"JO2173",article_code:"ARMOUR",lines:[{combo:"2X5",qty:1000}]},
+              {order_no:"JO2174",article_code:"SPIKE", lines:[{combo:"7X10",qty:240}]}];
+  const live=[{order_no:"JO2173",article_code:"ARMOUR",pi:{pi_no:"PI/D"},lines:[{combo:"2X5",qty:1000,
+    sizes:{"2":250,"3":250,"4":250,"5":250}}]}];
+  const card={order_no:"JO2173",qty:500,card:{lines:[{combo:"2X5",qty:500,sizes:{"2":125,"3":125,"4":125,"5":125}}]}};
+  assert.equal(owedForPi(snap,live,[],"PI/D"),1240,"nothing carded: all of it, on the book or not");
+  assert.equal(owedForPi(snap,live,[card],"PI/D"),740,"500 carded leaves 500 on the book + 240 never ordered");
+  assert.equal(owedForPi(snap.slice(0,1),live,[card],"PI/D"),500,"the demo PI: 500 to release, not 0");
+  assert.equal(owedForPi(snap.slice(0,1),live,[card],"PI/OTHER"),1000,"another PI's orders are not this one's");
+});
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exitCode=failed?1:0;

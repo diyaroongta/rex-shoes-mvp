@@ -15,6 +15,7 @@ vi.mock("../../src/lib/client.js",()=>({
   undoDispatch:mocks.undoDispatch,hideDispatch:mocks.hideDispatch,deleteDispatch:mocks.undoDispatch,
 }));
 import DispatchTab from "../../src/DispatchTab.jsx";
+import { REF } from "../../src/lib/refdata.js";
 
 beforeEach(()=>{vi.clearAllMocks();mocks.listDispatches.mockResolvedValue([]);
   mocks.listRepairs.mockResolvedValue([]);
@@ -205,6 +206,9 @@ it("opens the gate pass straight from a report, with the PI's city and the range
       groups:[{sizes:[{size:"2",pairs:108}],cartons:6},{sizes:[{size:"3",pairs:108}],cartons:6},
               {sizes:[{size:"4",pairs:108}],cartons:6},{sizes:[{size:"5",pairs:90}],cartons:5},
               {sizes:[{size:"2",pairs:2},{size:"3",pairs:4},{size:"4",pairs:4},{size:"5",pairs:1}],cartons:1,mixed:true}]}]}}];
+  /* The live chart is keyed by RANGE. Asked with "" for the range, every
+     MRP on the slip printed blank although 949 is on record. */
+  REF.mrp = { ...(REF.mrp||{}), "ARMOUR (LACE)":{ "2X5":949 } };
   render(<DispatchTab orders={[order]} dispatches={dispatched} onChanged={()=>{}}/>);
 
   await user.click(screen.getByRole("button",{name:"Gate pass for JO2173"}));
@@ -216,4 +220,11 @@ it("opens the gate pass straight from a report, with the PI's city and the range
   expect(slip.textContent).not.toMatch(/no standard pack on record/);
   const rows=[...slip.querySelectorAll("tbody tr")].filter(r=>/^\d+$/.test(r.children[0]?.textContent||"")&&r.children[9]?.textContent);
   expect(rows.slice(0,4).map(r=>r.children[8].textContent)).toEqual(["18","18","18","18"]);
+  expect(rows.slice(0,5).map(r=>r.children[7].textContent)).toEqual(["949","949","949","949","949"]);
+  expect(slip.textContent).not.toMatch(/no MRP on record/);
+
+  /* The packing list recorded before the draft carried the order's total
+     reprinted "Order Quantity" blank; the order still knows it is 1,000. */
+  await user.click(screen.getByRole("button",{name:"Packing list"}));
+  expect((await screen.findByText("Order Quantity :-")).nextSibling.textContent).toBe("1000");
 });
