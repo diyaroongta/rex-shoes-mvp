@@ -29,6 +29,8 @@ console.log("\nA — pairs, whichever shape the order arrived in");
 test("a raw row is summed from its lines, a computed one uses qty", () => {
   assert.equal(pairsOf(BOOK[0]), 300);
   assert.equal(pairsOf({ qty: 750, lines: [] }), 750, "the engine's own total wins when present");
+  assert.equal(pairsOf({ qty: 500, pending_pairs:500, lines:[] }), 1000,
+    "released and waiting pairs are one commercial order");
   assert.equal(pairsOf({ lines: [{ sizes: { 6: 10, 7: 5 } }] }), 15, "no qty, no line total — sum the sizes");
   assert.equal(pairsOf({}), 0);
 });

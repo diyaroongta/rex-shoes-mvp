@@ -403,7 +403,9 @@ export default function App({ user=null, onSignOut=null }={}){
 
   /* Grouped navigation. Badges show work actually outstanding, so the sidebar
      answers "what needs me?" without opening anything. */
-  const lateCount = state.orders.filter(o=>o.sla!=="on_track").length;
+  /* A PI waiting for its first job card has no SLA yet. It is visible as
+     Waiting on the MIS, but must not be painted red as a late order. */
+  const lateCount = state.orders.filter(o=>o.sla==="at_risk"||o.sla==="breach").length;
   const nav = [
     ["Overview", [
       ["mis","Executive MIS", {n:state.totals.sla.breach, tone:"#BE123C"}],
@@ -530,8 +532,8 @@ export default function App({ user=null, onSignOut=null }={}){
             </div>
             <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap",alignItems:"center"}}>
               <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
-              <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
-                    tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />
+              {tab==="mis" && <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
+                    tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />}
               <Stat label="To procure" value={state.procurement.length}
                     tone={state.procurement.length?"#B45309":"#047857"} />
               {user && (
@@ -2460,14 +2462,14 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
   function exportOrders(){
     const header=["Order","PI","Party","Article","Sole","Order date","Ordered","On job cards",
       "Waiting for a card","Dispatched","Still to go","Shortfall","Dispatches","Last dispatch",
-      "Planned dispatch","Lead days","SLA","Status"];
+      "Planned dispatch","Lead days","Status"];
     const body=[...(state.orders||[])].map(o=>{
       const rec=ledger[o.order_no]||{};
       return [o.order_no,(o.pi&&o.pi.pi_no)||"",o.party,o.article,o.sole_type,o.order_date,
         (Number(o.qty)||0)+(Number(o.pending_pairs)||0), Number(o.qty)||0, Number(o.pending_pairs)||0,
         rec.total_dispatched??0, rec.total_pending??"", rec.shortfall??0,
         rec.dispatch_count??0, rec.last_dispatched_on||"",
-        o.dispatch_date||"", o.lead_days??"", o.sla||"", rec.status||"not started"];
+        o.dispatch_date||"", o.lead_days??"", rec.status||"not started"];
     });
     const ws=XLSX.utils.aoa_to_sheet([header,...body]);
     const wb=XLSX.utils.book_new();
@@ -2534,7 +2536,7 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
         <th className="text-right py-2 px-2">On job cards</th>
         <th className="text-right py-2 px-2">Dispatched</th>
         <th className="text-center py-2 px-2">Priority</th>
-        <th className="text-left py-2 px-2">Dispatch</th><th className="text-right py-2 px-2">Lead</th><th className="text-left py-2 px-2">SLA</th><th></th>
+        <th className="text-left py-2 px-2">Dispatch</th><th className="text-right py-2 px-2">Lead</th><th></th>
       </tr></thead>
       <tbody>{visible.map(o=>(
         <React.Fragment key={o.order_no}>
@@ -2579,7 +2581,6 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
           </td>
           <td className="py-2 px-2 mono" style={{borderTop:"1px solid #eef0f4"}}>{niceDate(o.dispatch_date)}</td>
           <td className="py-2 px-2 text-right mono text-slate-500" style={{borderTop:"1px solid #eef0f4"}}>{o.lead_days}d</td>
-          <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}><Pill status={o.sla}/></td>
           <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>
             <button onClick={()=>onSelect(selected===o.order_no?null:o.order_no)} className="text-xs font-semibold text-indigo-700 hover:underline">{selected===o.order_no?"Hide":"Detail"}</button>
             {onEdit && <button onClick={()=>{setEditing(editing===o.order_no?null:o.order_no); setConfirmDel(null);}}
@@ -2588,7 +2589,7 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
               className="text-rose-500 ml-2 text-sm leading-none">×</button>}
           </td>
         </tr>
-        {confirmDel===o.order_no && <tr><td colSpan={11} className="px-2 pb-3">
+        {confirmDel===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 flex items-center gap-3 flex-wrap">
             <div className="text-sm text-rose-900">
               Remove <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty)} pairs for {o.party}?
@@ -2600,12 +2601,12 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
             </div>
           </div></td></tr>}
 
-        {editing===o.order_no && <tr><td colSpan={11} className="px-2 pb-3">
+        {editing===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
           <EditOrder o={o} onCancel={()=>setEditing(null)}
             onSave={async patch=>{ await onEdit(o.order_no,patch); setEditing(null); }} />
         </td></tr>}
 
-        {selected===o.order_no && <tr><td colSpan={11} className="px-2 pb-3" style={{background:"#fafbfd"}}>
+        {selected===o.order_no && <tr><td colSpan={10} className="px-2 pb-3" style={{background:"#fafbfd"}}>
           <div className="flex gap-4 flex-wrap py-2 items-start">
             <div>
               <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Combo lines</div>

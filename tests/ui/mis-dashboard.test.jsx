@@ -60,4 +60,17 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.queryByText("O-ON")).not.toBeInTheDocument();
     expect(screen.getByTestId("kpi-total-orders")).toHaveTextContent("3");
   });
+
+  it("shows a PI without a job card as waiting, not on time or delayed",async()=>{
+    const user=userEvent.setup();
+    const waiting={orders:[{order_no:"JO2171",party:"K.P. Gurgaon",article:"SPIKE",
+      order_date:"2026-09-29",dispatch_date:null,qty:0,pending_pairs:288,
+      lead_days:null,sla:null,pi:{pi_no:"PI/2171"},stages:[]}],machine_load:[],daily_load:{}};
+    render(<MISDashboard state={waiting} dispatches={[]} today="2026-09-29"/>);
+    expect(screen.getByTestId("kpi-waiting")).toHaveTextContent("1");
+    expect(screen.getByTestId("kpi-on-time")).toHaveTextContent("0");
+    await user.click(screen.getByRole("button",{name:"Waiting · 1"}));
+    expect(screen.getAllByText("JO2171").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Waiting for job card").length).toBeGreaterThan(0);
+  });
 });

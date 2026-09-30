@@ -29,13 +29,13 @@ const plan = (orders, jobs, opts={}) =>
           { units: productionUnits(orders, jobs), ...opts });
 
 console.log("\nA — splitting an order into what the floor actually releases");
-test("an order with no job cards is one unit, keyed by its own order number", () => {
+test("an order with no job cards is wholly waiting, not scheduled", () => {
   const units = productionUnits([ORDER], []);
   assert.equal(units.length, 1);
-  assert.equal(units[0].unit_key, "JO9001");
-  assert.equal(units[0].unit_kind, "order");
+  assert.equal(units[0].unit_key, "JO9001#BAL");
+  assert.equal(units[0].unit_kind, "balance");
   assert.equal(unitPairs(units[0]), 1000);
-  assert.equal(unitLabel(units[0]), "Whole order");
+  assert.equal(unitLabel(units[0]), "Not yet on a job card");
 });
 test("two cards of 200 against a 1,000 order leave a balance of 600", () => {
   const units = productionUnits([ORDER], [card(1,"2026-07-06",200), card(2,"2026-07-20",200)]);
@@ -177,12 +177,18 @@ test("an override pinned to ONE card moves only that card", () => {
   assert.equal(o.batches.find(b => b.card_no === "JC2").release_date, "2026-07-08");
   assert.ok(o.batches.find(b => b.card_no === "JC2").overridden);
 });
-test("an order scheduled whole is byte-for-byte what it was before batching existed", () => {
-  const before = compute([ORDER], articles, materials, wcs, origin, {});
+test("an order-level queue pin follows its only released card", () => {
+  const units = productionUnits([ORDER], [card(1,"2026-07-06",1000)]);
+  const expanded = overridesForUnits(units, { JO9001:{seq:1,start_on:"2026-07-08"} });
+  assert.deepEqual(expanded.overrides["JO9001#JC1"], {seq:1,start_on:"2026-07-08"});
+  assert.deepEqual(expanded.notes, []);
+});
+test("issuing an order without a card creates no production schedule", () => {
   const after = plan([ORDER], []);
-  const strip = o => { const { batches, batch_count, unit_key, unit_kind, card_no, fabricator, job_id, ...rest } = o; return rest; };
-  assert.deepEqual(strip(after.orders[0]), strip(before.orders[0]));
-  assert.equal(after.orders[0].batch_count, 1);
+  assert.equal(after.orders[0].batch_count, 0);
+  assert.equal(after.orders[0].dispatch_date, null);
+  assert.deepEqual(after.orders[0].stages, []);
+  assert.equal(after.units.length, 0);
 });
 
 console.log("\nD — pairs nobody has put on a card are NOT on the plan");
@@ -219,11 +225,16 @@ test("the buyer still buys for the whole order — the material is not waiting f
       `${m.material_key}: ${m.required} vs ${same.required}`);
   }
 });
-test("an order with no cards at all is still planned whole, and owes nothing", () => {
+test("an order with no cards has zero on cards and its full quantity waiting", () => {
   const plain = plan([ORDER], []);
-  assert.equal(plain.orders[0].qty, 1000);
-  assert.equal(plain.orders[0].pending_pairs, 0);
-  assert.deepEqual(plain.pending_release, []);
+  assert.equal(plain.orders[0].qty, 0);
+  assert.equal(plain.orders[0].pending_pairs, 1000);
+  assert.equal(plain.orders[0].sla, null);
+  assert.equal(plain.orders[0].dispatch_date, null);
+  assert.deepEqual(plain.orders[0].stages, []);
+  assert.equal(plain.pending_release.length, 1);
+  assert.equal(plain.pending_release[0].pairs, 1000);
+  assert.equal(plain.totals.last_dispatch, null);
 });
 
 console.log("\nE — how many cards a machine runs at once is its capacity");

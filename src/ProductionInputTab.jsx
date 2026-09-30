@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { planImpact } from "../shared/input-impact.js";
 import { productionActualKey } from "../shared/production-actuals.js";
 import { todayIso } from "./lib/today.js";
@@ -114,6 +114,14 @@ export function workbookFor(rows, weekStart){
   return wb;
 }
 
+/* "Mon 21 Sep" rather than a bare ISO date, because the empty state is read
+   as a sentence. */
+const niceDay = iso => {
+  const d = new Date(String(iso)+"T00:00:00");
+  return isNaN(d) ? String(iso)
+    : d.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"});
+};
+
 export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
   const today=todayIso();
   const [weekStart,setWeekStart]=useState(()=>mondayOf(today));
@@ -132,7 +140,64 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
   const rows=useMemo(()=>withProductionActuals(planned,actuals),[planned,actuals]);
   const summary=useMemo(()=>productionActualSummary(planned,actuals,today),[planned,actuals,today]);
   const weekEnd=plusDays(weekStart,5);
-  const visible=rows.filter(row=>row.production_on>=weekStart&&row.production_on<=weekEnd);
+  /* A DAY AT A TIME, BECAUSE THAT IS WHAT IS BEING REPORTED.
+     The screen showed a whole Monday-to-Saturday week as one flat list of
+     number boxes, so reporting today's production meant finding today's rows
+     among five other days' and filling them one at a time. The floor reports
+     ONE day; the week stays a click away for catching up. */
+  const [day,setDay]=useState(()=>today);
+  const [scope,setScope]=useState("day");        // "day" | "week"
+  /* OPEN ON A DAY THAT HAS WORK ON IT. Landing on today is right when today
+     is a working day, and useless on a Sunday or before the first job starts
+     — the screen would greet the operator with an empty table and no hint
+     that the plan is fine, just not today. Once the date is touched it is
+     theirs and this never fires again. */
+  const chosenDay=useRef(false);
+  useEffect(()=>{
+    if(chosenDay.current||!rows.length) return;
+    if(rows.some(r=>r.production_on===today)){ chosenDay.current=true; return; }
+    const ahead=rows.map(r=>r.production_on).filter(d=>d>=today).sort();
+    const earliest=ahead.length?ahead[0]:rows.map(r=>r.production_on).sort().pop();
+    if(earliest){ setDay(earliest); setWeekStart(mondayOf(earliest)); }
+    chosenDay.current=true;
+  },[rows,today]);
+  const visible=rows.filter(row=>scope==="week"
+    ? row.production_on>=weekStart&&row.production_on<=weekEnd
+    : row.production_on===day);
+
+  /* WHAT IS TYPED BUT NOT YET SAVED, as it is typed. Reporting used to be
+     numbers going into boxes with no total until after the save. */
+  const typed=useMemo(()=>{
+    let plannedPairs=0, enteredPairs=0, filled=0;
+    for(const row of visible){
+      plannedPairs+=Number(row.planned_pairs)||0;
+      const raw=entry[productionActualKey(row)];
+      const has=raw!=null&&String(raw).trim()!=="";
+      const value=has?Number(raw):(row.actual_pairs==null?null:Number(row.actual_pairs));
+      if(value!=null&&!Number.isNaN(value)){ enteredPairs+=value; filled+=1; }
+    }
+    return { plannedPairs, enteredPairs, filled, rows:visible.length,
+             pct: plannedPairs>0?Math.round(100*enteredPairs/plannedPairs):null };
+  },[visible,entry]);
+
+  /* BULK ENTRY, AND IT IS STILL AN ASSERTION.
+     Nothing is pre-filled and nothing auto-saves: these write into the boxes,
+     the operator sees every figure, and Save is still a separate press. A day
+     that ran to plan is one click instead of forty identical numbers, and a
+     line that ran at about 85% is one figure instead of forty arithmetic
+     sums — which is how the floor actually reports it. */
+  function fillAll(factorPct){
+    setEntry(current=>{
+      const next={...current};
+      for(const row of visible){
+        const key=productionActualKey(row);
+        const planned=Number(row.planned_pairs)||0;
+        next[key]=String(Math.round(planned*(Number(factorPct)||0)/100));
+      }
+      return next;
+    });
+  }
+  const [pct,setPct]=useState("85");
 
   function download(){
     XLSX.writeFile(workbookFor(rows,weekStart),`weekly-production-plan-${weekStart}.xlsx`,{cellStyles:true});
@@ -216,8 +281,53 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
     </section>
 
     <section className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
-      <div className="text-sm font-semibold text-slate-800">Week preview · {weekStart} to {weekEnd}</div>
-      <p className="text-xs text-slate-500 mt-1 mb-3">This is the same plan that is placed into the Excel workbook.</p>
+      <div className="flex items-center gap-2 flex-wrap mb-1">
+        <div className="text-sm font-semibold text-slate-800">
+          {scope==="day"?"Report production":`Week · ${weekStart} to ${weekEnd}`}</div>
+        <div className="inline-flex rounded-lg bg-slate-100 p-0.5 ml-auto">
+          {[["day","One day"],["week","Whole week"]].map(([k,label])=>
+            <button key={k} onClick={()=>setScope(k)} aria-pressed={scope===k}
+              className="text-xs font-semibold rounded-md px-2.5 py-1"
+              style={scope===k?{background:"#fff",color:"#1e293b"}:{background:"transparent",color:"#64748b"}}>
+              {label}</button>)}
+        </div>
+      </div>
+      {scope==="day" && <div className="flex items-center gap-2 flex-wrap mb-3">
+        <button onClick={()=>setDay(plusDays(day,-1))} aria-label="Previous day"
+          className="text-xs font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white">←</button>
+        <input type="date" value={day} onChange={e=>setDay(e.target.value)} aria-label="Production date"
+          className="border border-slate-300 rounded-lg px-2 py-1 bg-white mono text-xs"/>
+        <button onClick={()=>setDay(plusDays(day,1))} aria-label="Next day"
+          className="text-xs font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white">→</button>
+        {day!==today && <button onClick={()=>setDay(today)}
+          className="text-xs font-semibold text-indigo-700">Today</button>}
+      </div>}
+
+      {/* HOW THE FLOOR ACTUALLY REPORTS IT: "everything ran" or "we were at
+          about 85%". Both write into the boxes below — every figure stays
+          visible and editable, and Save is still a separate press. */}
+      {!!visible.length && <div className="flex items-center gap-2 flex-wrap mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <span className="text-xs font-semibold text-slate-600">Fill every row:</span>
+        <button onClick={()=>fillAll(100)} disabled={busy}
+          className="text-xs font-semibold rounded-lg px-2.5 py-1 border border-slate-300 bg-white disabled:opacity-40">
+          Ran to plan</button>
+        <div className="flex items-center gap-1">
+          <input type="number" min="0" max="200" value={pct} onChange={e=>setPct(e.target.value)}
+            aria-label="Percent of plan achieved"
+            className="w-16 border border-slate-300 rounded px-1.5 py-1 mono text-right text-xs bg-white"/>
+          <span className="text-xs text-slate-500">% of plan</span>
+          <button onClick={()=>fillAll(pct)} disabled={busy}
+            className="text-xs font-semibold rounded-lg px-2.5 py-1 border border-slate-300 bg-white disabled:opacity-40">
+            Apply</button>
+        </div>
+        <button onClick={()=>setEntry({})} disabled={busy}
+          className="text-xs font-semibold text-slate-500 ml-1 disabled:opacity-40">Clear</button>
+        <span className="text-xs text-slate-600 ml-auto">
+          <b className="mono">{fmt(typed.enteredPairs)}</b> of <b className="mono">{fmt(typed.plannedPairs)}</b> pairs
+          {typed.pct!=null && <> · <b className="mono">{typed.pct}%</b></>}
+          {" "}· {typed.filled} of {typed.rows} rows
+        </span>
+      </div>}
       <table className="w-full text-xs" style={{minWidth:950}}><thead><tr className="sign text-slate-500">
         {['Date','Work centre','Stage','Job card / Order','Article','Size range','Party','Plan','Achievement'].map(h=><th key={h} className={`py-2 px-2 ${['Plan','Achievement'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
       </tr></thead><tbody>{visible.map(row=><tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100">
@@ -228,13 +338,27 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
           {/* What was recorded stands until it is deliberately typed over —
               the box shows the saved figure rather than an empty field that
               reads as "nothing was ever entered". */}
-          <input type="number" min={0} disabled={busy}
-            aria-label={`Pairs achieved for ${row.job_card_no||row.order_no} ${row.stage} on ${row.production_on}`}
-            value={entry[productionActualKey(row)] ?? (row.actual_pairs==null?"":row.actual_pairs)}
-            placeholder="—"
-            onChange={e=>setEntry(d=>({...d,[productionActualKey(row)]:e.target.value}))}
-            className={`w-24 border rounded px-1.5 py-1 mono text-right ${
-              row.actual_pairs==null?"border-slate-300":"border-emerald-300 text-emerald-800"}`} />
+          <div className="flex items-center gap-1 justify-end">
+            <input type="number" min={0} disabled={busy} data-production-input
+              aria-label={`Pairs achieved for ${row.job_card_no||row.order_no} ${row.stage} on ${row.production_on}`}
+              value={entry[productionActualKey(row)] ?? (row.actual_pairs==null?"":row.actual_pairs)}
+              placeholder="—"
+              onChange={e=>setEntry(d=>({...d,[productionActualKey(row)]:e.target.value}))}
+              /* Enter moves to the next row rather than doing nothing, so a
+                 column of figures is typed without reaching for the mouse. */
+              onKeyDown={e=>{ if(e.key!=="Enter") return; e.preventDefault();
+                const all=[...document.querySelectorAll("[data-production-input]")];
+                const at=all.indexOf(e.currentTarget);
+                if(at>-1&&all[at+1]) all[at+1].focus(); }}
+              className={`w-24 border rounded px-1.5 py-1 mono text-right ${
+                row.actual_pairs==null?"border-slate-300":"border-emerald-300 text-emerald-800"}`} />
+            {/* One click for the commonest entry of all. */}
+            <button type="button" disabled={busy}
+              title={`This row ran to plan — ${fmt(row.planned_pairs)} pairs`}
+              aria-label={`${row.job_card_no||row.order_no} ${row.stage} ran to plan`}
+              onClick={()=>setEntry(d=>({...d,[productionActualKey(row)]:String(Number(row.planned_pairs)||0)}))}
+              className="text-[10px] font-semibold text-slate-500 hover:text-indigo-700 disabled:opacity-40">=plan</button>
+          </div>
         </td>
       </tr>)}</tbody></table>
       {!!visible.length&&<div className="flex items-center gap-3 flex-wrap mt-3">
@@ -245,7 +369,12 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
           Type the pairs achieved against any row and save. The plan re-plans what is left, and the panel above
           says what moved.</span>
       </div>}
-      {!visible.length&&<div className="text-sm text-slate-500 text-center py-8">Nothing is scheduled in this Monday–Saturday week.</div>}
+      {!visible.length&&<div className="text-sm text-slate-500 text-center py-8">
+        {scope==="day"
+          ? <>Nothing is scheduled for {niceDay(day)}.{" "}
+              <button onClick={()=>setScope("week")} className="font-semibold text-indigo-700">Show the whole week</button></>
+          : <>Nothing is scheduled in this Monday–Saturday week.</>}
+      </div>}
     </section>
   </div>;
 }

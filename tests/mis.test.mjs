@@ -102,3 +102,25 @@ assert.equal(liveOne.dispatched_last_30_days, 120, "only the live order's pairs 
 assert.equal(liveOne.orders[0].dispatched, 120);
 
 console.log("  pass  dispatches against archived orders stop counting\n");
+
+/* Releasing only part of an order to job cards must not shrink management's
+   ordered-pairs figure. A computed row stores the two pieces separately. */
+const partialRelease = buildMisSnapshot(
+  { orders:[{order_no:"JO-PART",qty:500,pending_pairs:500,lines:[{combo:"A",qty:1000}],
+             order_date:"2026-08-20",dispatch_date:"2026-09-01",lead_days:10,
+             sla:"on_track",stages:[]}], machine_load:[], daily_load:{} },
+  [], { today:"2026-08-23" });
+assert.equal(partialRelease.total_pairs, 1000);
+assert.equal(partialRelease.orders[0].qty, 1000);
+assert.equal(partialRelease.orders[0].pending, 1000);
+
+const unreleased = buildMisSnapshot(
+  { orders:[{order_no:"JO-WAIT",qty:0,pending_pairs:288,lines:[{combo:"A",qty:288}],
+             order_date:"2026-08-20",dispatch_date:null,lead_days:null,sla:null,stages:[]}],
+    machine_load:[], daily_load:{} }, [], { today:"2026-08-23" });
+assert.equal(unreleased.total_pairs, 288);
+assert.equal(unreleased.status.waiting.count, 1);
+assert.equal(unreleased.status.on_track.count, 0);
+assert.equal(unreleased.orders[0].status_label, "Waiting for job card");
+
+console.log("  pass  partial and unreleased orders retain their full commercial quantity\n");
