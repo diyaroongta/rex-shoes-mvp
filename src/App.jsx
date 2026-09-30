@@ -532,8 +532,8 @@ export default function App({ user=null, onSignOut=null }={}){
             </div>
             <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap",alignItems:"center"}}>
               <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
-              <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
-                    tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />
+              {tab==="mis" && <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
+                    tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />}
               <Stat label="To procure" value={state.procurement.length}
                     tone={state.procurement.length?"#B45309":"#047857"} />
               {user && (
