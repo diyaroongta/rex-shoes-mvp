@@ -1217,6 +1217,53 @@ describe("live orders exclude completed work",()=>{
     expect(screen.queryByText("JO2")).not.toBeInTheDocument();
   });
 
+  /* WHAT HAS ACTUALLY LEFT, ON THE ORDER SHEET.
+     The ledger was computed and handed to the Order Book, then used only to
+     decide which rows to hide — so the sheet could say 1,000 ordered and 500
+     on job cards while saying nothing at all about the 425 that shipped. It
+     is the same ledger the Dispatch Book prints, so the two cannot disagree. */
+  it("shows dispatched pairs and what is still to go",async()=>{
+    mocks.listOrders.mockResolvedValue([
+      {order_no:"JO1",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"A",
+       lines:[{combo:"7X10S",qty:24}],pi:{},version:1},
+    ]);
+    mocks.listDispatches.mockResolvedValue([
+      {id:1,order_no:"JO1",dispatched:{"7X10S":10},kind:"partial",dispatched_on:"2026-08-21"},
+    ]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Order Book");
+
+    expect(await screen.findByText("JO1")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader",{name:"Dispatched"})).toBeInTheDocument();
+    expect(screen.getByText("10")).toBeInTheDocument();          // what left
+    expect(screen.getByText("14 to go")).toBeInTheDocument();    // what remains
+  });
+
+  it("shows the client demo as 1,000 ordered, 500 on a job card, 425 dispatched",async()=>{
+    mocks.listOrders.mockResolvedValue([{order_no:"JO9500",order_date:"2026-09-21",
+      article_code:"SMART BOY (L) BLACK",priority:2,party:"Deiom India",
+      lines:[{combo:"6X8",qty:1000,sizes:{"6":250,"7":250,"8":250,"9":250}}],
+      pi:{pi_no:"PI/511",vl:"VELCRO",upper_colour:"WHITE"},version:1}]);
+    mocks.listJobWork.mockResolvedValue([{id:41,order_no:"JO9500",article:"SMART BOY (L) BLACK",
+      stage:"CUTTING & STITCHING",fabricator:"Rex Internal",qty:500,received:0,issued_on:"2026-09-21",
+      card:{card_no:"JC41",date:"2026-09-21",start_on:"2026-09-21",
+        lines:[{combo:"6X8",qty:500,sizes:{"6":125,"7":125,"8":125,"9":125}}]}}]);
+    mocks.listDispatches.mockResolvedValue([{id:1,order_no:"JO9500",dispatched:{"6X8":425},
+      kind:"partial",dispatched_on:"2026-09-25"}]);
+
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user,"Order Book");
+
+    const row=(await screen.findByText("JO9500")).closest("tr");
+    expect(row).toHaveTextContent("1,000");
+    expect(row).toHaveTextContent("500");
+    expect(row).toHaveTextContent("500 waiting for a card");
+    expect(row).toHaveTextContent("425");
+    expect(row).toHaveTextContent("575 to go");
+  });
+
   it("keeps a partly dispatched order in the live list",async()=>{
     mocks.listOrders.mockResolvedValue(two);
     mocks.listDispatches.mockResolvedValue([

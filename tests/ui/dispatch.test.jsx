@@ -114,6 +114,38 @@ it("counts cartons per size on the packing list, and totals what was entered",as
   });
 });
 
+it("records ten full cartons plus the client's 13-pair mixed carton without double-counting",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO-MIX",party:"K.P. Gurgaon",article:"SPIKE",article_code:"SPIKE",
+    pi:{vl:"VELCRO",upper_colour:"N.BLUE / S.BLUE"},
+    lines:[{combo:"2X5",qty:193,sizes:{"2":56,"3":58,"4":42,"5":37}}]};
+  render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}}/>);
+
+  await user.click(screen.getByRole("button",{name:"Packing report"}));
+  await user.click(screen.getByRole("button",{name:"Fill in the packing list"}));
+
+  for(const [size,pairs,cartons] of [["2",56,3],["3",58,3],["4",42,2],["5",37,2]]){
+    const pairBox=screen.getByLabelText(`Pairs of size ${size}`);
+    await user.clear(pairBox); await user.type(pairBox,String(pairs));
+    const cartonBox=screen.getByLabelText(`Cartons for size ${size}`);
+    await user.clear(cartonBox); await user.type(cartonBox,String(cartons));
+  }
+
+  await user.click(screen.getByRole("button",{name:"+ Add a mixed carton"}));
+  const summary=screen.getByText("Packing list").parentElement.textContent.replace(/\s+/g," ");
+  expect(summary).toMatch(/193 pairs · 11 cartons · 1 mixed \(13 pairs\)/);
+  expect(screen.getByText(/Reconciled —/).parentElement).toHaveTextContent("193 pairs in 11 cartons");
+
+  await user.click(screen.getByRole("button",{name:"Generate packing list"}));
+  const record=screen.getByRole("button",{name:"Record dispatch"});
+  expect(record).toBeEnabled();
+  await user.click(record);
+  await waitFor(()=>expect(mocks.addDispatch).toHaveBeenCalledWith(expect.objectContaining({
+    order_no:"JO-MIX",dispatched:{"2X5":193},cartons:{"2X5":11},
+    packing_list:expect.objectContaining({order_no:"JO-MIX"}),
+  })));
+});
+
 /* A packing report can be mis-keyed. Removing one returns its pairs to the
    order's pending balance — a correction, not a way to hide a shipment, which
    is why it is confirmed and says what it did. */

@@ -51,11 +51,14 @@ export default function CatalogueBrowser({ articles, codes = {}, catalogue = {},
       {query && <button onClick={()=>setQuery("")} className="text-xs text-slate-500 underline">clear</button>}
       <button type="button" onClick={download} disabled={!shown.length}
         className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-2 disabled:opacity-40">
-        Download sheet</button>
+        Download data sheet</button>
+      <a href="/rex-catalogue-2025-26.pdf" target="_blank" rel="noreferrer"
+        className="text-xs font-semibold border border-indigo-300 text-indigo-700 bg-indigo-50 rounded-lg px-3 py-2">
+        Open official catalogue (PDF)</a>
     </div>
     <div className="text-[11px] text-slate-500 -mt-2 mb-3">
-      The sheet downloads the shoes shown below, with the columns Factory OS holds.
-      It will be re-cut to the factory&rsquo;s own catalogue format when that format is supplied.
+      The PDF is the factory&rsquo;s final 2025&ndash;26 presentation catalogue. The Excel sheet is the
+      live Factory OS data for the shoes and filters shown below.
     </div>
 
     {/* TWO filter rows, never one. The factory's own catalogue mixes them —

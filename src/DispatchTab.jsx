@@ -10,7 +10,7 @@ import { comboSizes, mrpForSize } from "../shared/pi.js";
 import GatePass from "./GatePass.jsx";
 import { buildGatePass, pairsFromCartons } from "../shared/gate-pass.js";
 import { singlePackQty } from "../shared/bridge.js";
-import { suggestMixedCarton, withMixedCarton, describeCartons, packingSummary,
+import { suggestMixedCarton, withMixedCarton, moveToMixedCarton, describeCartons, packingSummary,
          withSharedCarton, sharedCartons } from "../shared/mixed-carton.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
@@ -357,7 +357,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                       return built.problems.length
                         ? <div className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5 mt-2">
                             <b>The packing list and the dispatch do not agree yet:</b>
-                            <ul className="list-disc pl-4 mt-0.5">{built.problems.map(p=><li key={p}>{p}</li>)}</ul>
+                            <ul className="list-disc pl-4 mt-0.5">{built.problems.map((p,i)=><li key={`${i}-${p}`}>{p}</li>)}</ul>
                           </div>
                         : <div className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5 mt-2">
                             Reconciled — <b className="mono">{fmt(built.total_pairs)}</b> pairs in
@@ -664,8 +664,10 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
             ? comboSizes(line.combo) : line.groups.flatMap(g=>g.sizes.map(s=>s.size));
           return <div className="flex items-center gap-2 flex-wrap mt-1">
             <button type="button"
-              onClick={()=>setSheet(withMixedCarton(sheet, li,
-                suggestion || { sizes: sizes.slice(0,1).map(size=>({ size, pairs:0 })) }))}
+              onClick={()=>setSheet(suggestion
+                ? moveToMixedCarton(sheet, li, suggestion)
+                : withMixedCarton(sheet, li,
+                    { sizes: sizes.slice(0,1).map(size=>({ size, pairs:0 })) }))}
               className="text-[11px] font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-800 bg-indigo-50">
               + Add a mixed carton</button>
             <span className="text-[11px] text-slate-500">

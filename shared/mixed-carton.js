@@ -79,6 +79,48 @@ export function withMixedCarton(sheet, lineIndex, contents){
   return next;
 }
 
+/* Turn the loose pairs ALREADY present on a line into the last mixed carton.
+   The editor starts with every dispatched pair spread across the ordinary
+   size rows. Appending the suggestion without moving those pairs would count
+   them twice: 193 dispatched pairs would become 206 on the packing list.
+
+   This helper moves (never copies) the requested quantities out of the
+   ordinary groups and into one counted carton. `withMixedCarton` remains the
+   lower-level append operation used when a packer is adding genuinely new
+   contents by hand. */
+export function moveToMixedCarton(sheet, lineIndex, contents){
+  const next = JSON.parse(JSON.stringify(sheet || {}));
+  const line = (next.lines || [])[lineIndex];
+  if(!line) return next;
+
+  const requested = ((contents && contents.sizes) || [])
+    .map(s => ({ size:String(s.size ?? "").trim(), pairs:Math.max(0, Math.round(num(s.pairs))) }))
+    .filter(s => s.size && s.pairs > 0);
+  const moved = [];
+
+  for(const want of requested){
+    let remaining = want.pairs, taken = 0;
+    for(const group of line.groups || []){
+      if(remaining <= 0) break;
+      if(group.mixed || group.carton_group) continue;
+      for(const size of group.sizes || []){
+        if(remaining <= 0) break;
+        if(String(size.size ?? "").trim() !== want.size) continue;
+        const available = Math.max(0, Math.round(num(size.pairs)));
+        const take = Math.min(available, remaining);
+        size.pairs = available - take;
+        remaining -= take;
+        taken += take;
+      }
+    }
+    if(taken > 0) moved.push({ size:want.size, pairs:taken });
+  }
+
+  if(moved.length)
+    line.groups = [...(line.groups || []), { sizes:moved, cartons:1, mixed:true }];
+  return next;
+}
+
 /* What each numbered box on a built line actually is. A group of one size at
    its own full rate is an ordinary carton; anything else is called what it is,
    so the packing list can print "mixed" beside the C/N rather than leaving the

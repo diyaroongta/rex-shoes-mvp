@@ -75,7 +75,8 @@ test("the movement blocks are the ones on their sheets", () => {
     ["UPPER RECEIVED","SHORTAGE / PENDING AFTER RECEIPT","SHORTAGE RECEIPT"]);
   const packing = stageCard(LINES(), ARTICLE(), "PACKING");
   assert.deepEqual(packing.movements,
-    ["MOULDED/PASTED SHOE","SENT FOR REPAIR / REJECTION","PACKING","CARTON RECEIVED"]);
+    ["MOULDED/PASTED SHOE","SENT FOR REPAIR / REJECTION","PACKING","CARTON RECEIVED",
+     "LOOSE PAIRS","B GRADE SHOE"]);
   assert.deepEqual(packing.summary, ["REJECTION/REPAIR","PACKING","CARTON RECEIVED","LOOSE PAIRS"]);
 });
 

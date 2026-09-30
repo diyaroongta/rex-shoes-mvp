@@ -4,7 +4,7 @@
  *     500 on a job card            -> in production; 500 still waiting
  *     425 made (85% of the card)   -> the 75 short reroute to the next day,
  *                                     and everything behind them moves too
- *     425 dispatched               -> ten full cartons and one mixed box
+ *     425 dispatched               -> 23 full cartons and one mixed box
  *
  * Every figure printed below is computed, not written down: if the planner
  * changes, this test says so in the numbers. */
@@ -112,7 +112,7 @@ test("the screen can say exactly what the entry changed", () => {
 });
 
 /* ---- 4. dispatch the 425, with a mixed carton ------------------------ */
-console.log("\n4 — dispatching the 425: ten full cartons and one mixed box");
+console.log("\n4 — dispatching the 425: 23 full cartons and one mixed box");
 /* 18 to a carton: 23 full cartons is 414 pairs, and the 11 left over travel
    together in one mixed box. */
 const SHEET = { customer:"Deiom India", order_no:"JO9500", lines:[{

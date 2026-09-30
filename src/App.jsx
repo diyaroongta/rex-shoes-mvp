@@ -2501,6 +2501,7 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
         <th className="text-left py-2 px-2">Order</th><th className="text-left py-2 px-2">Party</th><th className="text-left py-2 px-2">Article</th>
         <th className="text-right py-2 px-2">Qty</th>
         <th className="text-right py-2 px-2">On job cards</th>
+        <th className="text-right py-2 px-2">Dispatched</th>
         <th className="text-center py-2 px-2">Priority</th>
         <th className="text-left py-2 px-2">Dispatch</th><th className="text-right py-2 px-2">Lead</th><th className="text-left py-2 px-2">SLA</th><th></th>
       </tr></thead>
@@ -2522,6 +2523,22 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
               ? <>{fmt(o.qty)}
                   <div className="text-[11px] text-amber-700">{fmt(o.pending_pairs)} waiting for a card</div></>
               : <span className="text-slate-400">all of it</span>}</td>
+          {/* WHAT HAS ACTUALLY LEFT. The ledger was already computed and handed
+              to this screen, and used only to decide which rows to hide — so
+              the order book could say 1,000 ordered and 500 on job cards while
+              staying silent about the 425 that shipped. Same ledger the
+              Dispatch Book prints, so the two can never disagree. */}
+          <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>
+            {(()=>{ const rec=ledger[o.order_no];
+              const out=rec?rec.total_dispatched:0;
+              if(!out) return <span className="text-slate-300">—</span>;
+              const short=rec.shortfall>0;
+              return <>
+                <span className={short?"text-rose-700 font-semibold":""}>{fmt(out)}</span>
+                <div className="text-[11px] text-slate-500">
+                  {rec.total_pending>0 ? `${fmt(rec.total_pending)} to go`
+                    : short ? `closed ${fmt(rec.shortfall)} short` : "complete"}</div>
+              </>; })()}</td>
           <td className="py-2 px-2 text-center" style={{borderTop:"1px solid #eef0f4"}}>
             <div className="inline-flex items-center gap-1">
               <button onClick={()=>onBump(o.order_no,-1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 mono">▲</button>
@@ -2540,7 +2557,7 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
               className="text-rose-500 ml-2 text-sm leading-none">×</button>}
           </td>
         </tr>
-        {confirmDel===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
+        {confirmDel===o.order_no && <tr><td colSpan={11} className="px-2 pb-3">
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 flex items-center gap-3 flex-wrap">
             <div className="text-sm text-rose-900">
               Remove <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty)} pairs for {o.party}?
@@ -2552,12 +2569,12 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
             </div>
           </div></td></tr>}
 
-        {editing===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
+        {editing===o.order_no && <tr><td colSpan={11} className="px-2 pb-3">
           <EditOrder o={o} onCancel={()=>setEditing(null)}
             onSave={async patch=>{ await onEdit(o.order_no,patch); setEditing(null); }} />
         </td></tr>}
 
-        {selected===o.order_no && <tr><td colSpan={10} className="px-2 pb-3" style={{background:"#fafbfd"}}>
+        {selected===o.order_no && <tr><td colSpan={11} className="px-2 pb-3" style={{background:"#fafbfd"}}>
           <div className="flex gap-4 flex-wrap py-2 items-start">
             <div>
               <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-1">Combo lines</div>

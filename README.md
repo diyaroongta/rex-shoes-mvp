@@ -700,3 +700,10 @@ fuzzy-matches against the known article and combo lists.
 Whatever reads the slip, keep the validation in `api/orders/index.js`. A confidently wrong read
 is worse than a failed one, and that endpoint is the only thing standing between a
 misread combo and a silent under-buy.
+
+## Client-supplied source formats
+
+The original catalogue, weekly-planning examples, pasting and packing job-card
+workbooks, packing list, gate passes, role list and BOM tracker are indexed in
+[`reference/client-supplied/README.md`](reference/client-supplied/README.md).
+Check those files before changing a factory-facing format or adding a new input.

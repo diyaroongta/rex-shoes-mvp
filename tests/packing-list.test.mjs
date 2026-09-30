@@ -188,8 +188,31 @@ test("the draft carries the article, closure and colour so they are not re-keyed
 test("the draft leaves the carton count at zero — that is the number to count", () => {
   const order = { order_no:"JO1", party:"P", article_code:"BOLT", pi:{} };
   const d = draftFromOrder(order, () => ["8"], { "8X10":28 });
-  assert.equal(d.lines[0].groups[0].cartons, 0);
-  assert.equal(d.lines[0].groups[0].sizes[0].pairs, 0, "pairs per size are counted too, not split evenly");
+  assert.equal(d.lines[0].groups[0].cartons, 0, "cartons are counted on the screen, never derived");
+});
+
+/* A COMBINATION PACK IS PACKED EQUAL.
+   The factory's rule: a carton labelled 8X10 holds 8, 9 and 10 in equal
+   numbers. The draft used to start every size at zero and make the packer
+   type the obvious case; it now offers the even split and lets them change
+   it. The carton COUNT is still theirs to count. */
+test("the draft splits a range's pairs equally across its sizes", () => {
+  const order = { order_no:"JO1", party:"P", article_code:"BOLT", pi:{} };
+  const d = draftFromOrder(order, () => ["8","9","10"], { "8X10":84 });
+  assert.deepEqual(d.lines[0].groups.map(g => g.sizes[0].pairs), [28,28,28]);
+  assert.equal(d.lines[0].groups.every(g => g.cartons === 0), true);
+  assert.equal(d.lines[0].combo_pairs, 84, "and the line still totals what was dispatched");
+});
+
+/* 18 pairs across 4 sizes is 4.5 each, which is not a thing. The remainder
+   falls on the earliest sizes — the same way the invoice already splits a
+   range, so one range never splits two ways on two documents. */
+test("an indivisible range still adds up, with the remainder on the earliest sizes", () => {
+  const order = { order_no:"JO1", party:"P", article_code:"BOLT", pi:{} };
+  const d = draftFromOrder(order, () => ["2","3","4","5"], { "2X5":18 });
+  const pairs = d.lines[0].groups.map(g => g.sizes[0].pairs);
+  assert.deepEqual(pairs, [5,5,4,4]);
+  assert.equal(pairs.reduce((a,b)=>a+b,0), 18, "nothing is lost or invented in the rounding");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

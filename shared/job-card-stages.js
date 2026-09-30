@@ -66,7 +66,14 @@ export const CARD_KINDS = {
     signatures: ["Sign. of Stuckon/pvc dept incharge", "Sign. of Store In-charge", "Sign. of QC In-charge"],
     /* Their sheet spells these CARTOON and LOOS; the words are corrected here
        and nothing else about the block is changed. */
-    movements: ["MOULDED/PASTED SHOE", "SENT FOR REPAIR / REJECTION", "PACKING", "CARTON RECEIVED"],
+    movements: [
+      "MOULDED/PASTED SHOE",
+      "SENT FOR REPAIR / REJECTION",
+      "PACKING",
+      "CARTON RECEIVED",
+      "LOOSE PAIRS",
+      "B GRADE SHOE",
+    ],
     summary: ["REJECTION/REPAIR", "PACKING", "CARTON RECEIVED", "LOOSE PAIRS"],
     checklist: [],
   },

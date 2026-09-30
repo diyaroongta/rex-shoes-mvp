@@ -4,6 +4,7 @@
    pairs are in it and which sizes. */
 import assert from "node:assert/strict";
 import { splitAtRate, lineBreakdown, suggestMixedCarton, withMixedCarton,
+         moveToMixedCarton,
          describeCartons, packingSummary, withSharedCarton, nextCartonLabel,
          sharedCartons } from "../shared/mixed-carton.js";
 import { buildPackingList, cartonNumbers } from "../shared/packing-list.js";
@@ -65,6 +66,22 @@ test("carton 46 carries several sizes, its own pairs, and the next number", () =
   assert.equal(mixed.cn_from, 46);
   assert.equal(cartonNumbers(mixed, built.total_cartons), "46/46");
   assert.deepEqual(mixed.sizes.map(s => s.size), ["8","9"]);
+});
+test("the editor MOVES suggested leftovers into the mixed carton instead of counting them twice", () => {
+  const draft={ article:"SPIKE", combo:"2X5", groups:[
+    {sizes:[{size:"2",pairs:56}],cartons:3},
+    {sizes:[{size:"3",pairs:58}],cartons:3},
+    {sizes:[{size:"4",pairs:42}],cartons:2},
+    {sizes:[{size:"5",pairs:37}],cartons:2},
+  ]};
+  const suggestion=suggestMixedCarton(draft,()=>18);
+  assert.deepEqual(suggestion,{sizes:[{size:"2",pairs:2},{size:"3",pairs:4},
+                                     {size:"4",pairs:6},{size:"5",pairs:1}],pairs:13});
+  const built=buildPackingList(moveToMixedCarton({lines:[draft]},0,suggestion));
+  assert.equal(built.total_pairs,193,"the 13 loose pairs move; they are not added a second time");
+  assert.equal(built.total_cartons,11);
+  assert.deepEqual(built.lines[0].groups.slice(0,4).map(g=>g.pairs),[54,54,36,36]);
+  assert.equal(built.lines[0].groups[4].pairs,13);
 });
 test("a mixed carton is named as one, and an under-filled single size as a part carton", () => {
   const sheet = withMixedCarton({ lines:[line] }, 0,

@@ -50,6 +50,8 @@ const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
  * while each shoe's pairs stay on its own line — which is what keeps the
  * order book's per-range balance right.
  */
+import { spread } from "./carton-mix.js";
+
 export function buildPackingList(input = {}){
   const rows = Array.isArray(input.lines) ? input.lines : [];
   const problems = [];
@@ -109,6 +111,10 @@ export function buildPackingList(input = {}){
       article: String(line.article || "").trim(),
       closure: String(line.closure || "").trim(),      // Velcro / Lace
       colour: String(line.colour || "").trim(),
+      /* Keep the order's range key through normalization. Dispatch storage is
+         per range, so dropping it here made a correctly counted packing list
+         save `cartons:{}` even while the screen showed the right total. */
+      combo: String(line.combo || "").trim(),
       groups,
       rows: groups.reduce((a, g) => a + Math.max(1, g.sizes.length), 0),
       pairs: groups.reduce((a, g) => a + g.pairs, 0),
@@ -160,7 +166,20 @@ export function draftFromOrder(order, sizesForCombo, dispatched = {}){
   for(const [combo, pairs] of Object.entries(dispatched)){
     const total = Math.round(num(pairs));
     if(total <= 0) continue;
-    const sizes = (sizesForCombo(combo) || []).map(size => ({ size, pairs: 0 }));
+    /* A COMBINATION PACK IS PACKED EQUAL, AND THAT IS THE STARTING POINT.
+       The factory's rule: a carton labelled 8X10 holds sizes 8, 9 and 10 in
+       equal numbers. So the draft divides the dispatched pairs across the
+       range's sizes rather than starting every box at zero and making the
+       packer type the obvious case.
+       It is a STARTING POINT, not an assertion — the packer changes any of it,
+       and their own gate pass shows why: an odd box really does go out as
+       "2|2 3|5 5|10". The remainder falls on the earliest sizes, the same way
+       the invoice splits a range, so one range never splits two ways.
+       The CARTON COUNT is untouched and stays zero: cartons are counted on
+       this screen, never derived. */
+    const names = sizesForCombo(combo) || [];
+    const share = spread(total, names.length);
+    const sizes = names.map((size, i) => ({ size, pairs: share[i] || 0 }));
     lines.push({
       article: order.article_code || "",
       closure: pi.vl || "",
