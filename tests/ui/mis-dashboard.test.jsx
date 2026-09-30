@@ -74,3 +74,56 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getAllByText("Waiting for job card").length).toBeGreaterThan(0);
   });
 });
+
+/* THE BOARD IS READ BY CUSTOMER, because that is who rings up. Search already
+   matched a party name, but only if you knew how it was spelled. */
+describe("the dashboard answers by customer, and says why",()=>{
+  const withReasons={
+    ...state,
+    orders:[
+      state.orders[0],
+      /* Beta's order: four days behind the rotary, and a planner pinned it. */
+      {...state.orders[1], release_delay_days:2, override:{seq:1},
+       stages:[{stage:"MOLDING",work_center:"MOLDING_PVC_ROTARY",slip_days:2,
+                queue_wait_days:4,capacity_per_day:1000,duration_days:1}]},
+      state.orders[2],
+    ],
+  };
+
+  it("filters the board to one customer",async()=>{
+    const user=userEvent.setup();
+    render(<MISDashboard state={withReasons} dispatches={[]} today="2026-08-26"/>);
+    expect(screen.getByText("O-ON")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Customer"),"Beta");
+    // O-RISK appears in both the attention list and the order table.
+    expect(screen.getAllByText("O-RISK").length).toBeGreaterThan(0);
+    expect(screen.queryByText("O-ON")).not.toBeInTheDocument();
+    // …and the whole board follows the customer, not just the bottom table.
+    expect(screen.queryByText("O-LATE")).not.toBeInTheDocument();
+  });
+
+  /* "At risk" tells a director what they can already see. The inputs to that
+     verdict were computed and thrown away; this puts them back. */
+  it("opens an order and gives the reasons, worst first",async()=>{
+    const user=userEvent.setup();
+    render(<MISDashboard state={withReasons} dispatches={[]} today="2026-08-26"/>);
+    // Click the row in the full order table, not the attention summary.
+    const rows=screen.getAllByText("O-RISK");
+    await user.click(rows[rows.length-1]);
+
+    expect(screen.getByText(/Why it sits where it does/)).toBeInTheDocument();
+    // The machine queue, named and costed — and by the machine's real name.
+    expect(screen.getByText(/waited 4 days for PVC rotary/)).toBeInTheDocument();
+    // The planner's own instruction, kept apart from the factory's constraints.
+    expect(screen.getByText(/set by hand to position 1/)).toBeInTheDocument();
+    // And the release delay.
+    expect(screen.getByText(/could not start for 2 days/)).toBeInTheDocument();
+  });
+
+  it("says plainly when nothing is holding an order up",async()=>{
+    const user=userEvent.setup();
+    render(<MISDashboard state={withReasons} dispatches={[]} today="2026-08-26"/>);
+    await user.click(screen.getByText("O-ON"));
+    expect(screen.getByText(/Nothing is holding this order up/)).toBeInTheDocument();
+  });
+});
