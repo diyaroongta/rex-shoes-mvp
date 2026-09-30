@@ -1265,6 +1265,24 @@ describe("live orders exclude completed work",()=>{
     expect(row).toHaveTextContent("575 to go");
   });
 
+  /* THE ORDER BOOK CAN LEAVE THE SCREEN. Completed orders go into the export
+     whether or not the screen is showing them — an export that silently drops
+     finished work is a worse answer than none. */
+  it("offers the order book as a spreadsheet",async()=>{
+    mocks.listOrders.mockResolvedValue(two);
+    mocks.listDispatches.mockResolvedValue([
+      {id:1,order_no:"JO1",dispatched:{"7X10S":24},kind:"full",dispatched_on:"2026-08-21"},
+    ]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Order Book");
+    // JO1 shipped in full, so it is hidden from the live list…
+    expect(await screen.findByText("Live orders · 1")).toBeInTheDocument();
+    expect(screen.queryByText("JO1")).not.toBeInTheDocument();
+    // …and the export is still offered, covering it.
+    expect(screen.getByRole("button",{name:"Export to Excel"})).toBeEnabled();
+  });
+
   it("keeps a partly dispatched order in the live list",async()=>{
     mocks.listOrders.mockResolvedValue(two);
     mocks.listDispatches.mockResolvedValue([

@@ -88,3 +88,43 @@ it("offers to add a material the search cannot find",async()=>{
   await user.click(screen.getByRole("button",{name:"Add it as a new material"}));
   expect(screen.getByLabelText("Material name")).toHaveValue("velcro 25mm");
 });
+
+/* SHOES MADE FOR STOCK. A job card with no Order Book row is the factory's own
+   work; one with an order_no belongs to that customer and is counted there. */
+it("counts only stock job cards as finished goods",async()=>{
+  const user=userEvent.setup();
+  render(<StockTab jobs={[
+    {article:"SPIKE",order_no:"JO1",qty:500,received:500,status:"closed",
+     card:{lines:[{combo:"2X5",sizes:{"2":500}}]}},
+    {article:"SPIKE",order_no:null,qty:300,received:300,status:"closed",
+     card:{lines:[{combo:"2X5",sizes:{"2":150,"3":150}}]}},
+  ]}/>);
+  await user.click(screen.getByRole("tab",{name:"Finished Goods"}));
+
+  expect(screen.getByText("SPIKE")).toBeInTheDocument();
+  // 300 shows twice — once in the summary, once in the row — and that is right.
+  expect(screen.getAllByText("300").length).toBeGreaterThan(0);  // the stock card only
+  expect(screen.queryByText("800")).not.toBeInTheDocument();     // never the customer's pairs
+  expect(screen.getByText(/2: 150 · 3: 150/)).toBeInTheDocument();
+});
+
+/* A part-received card says how many came back, not WHICH — splitting them
+   across sizes would invent a breakdown nobody wrote down. */
+it("says when the sizes of finished pairs are not known",async()=>{
+  const user=userEvent.setup();
+  render(<StockTab jobs={[
+    {article:"JILL",order_no:null,qty:300,received:200,status:"partial",
+     card:{lines:[{combo:"2X5",sizes:{"2":150,"3":150}}]}},
+  ]}/>);
+  await user.click(screen.getByRole("tab",{name:"Finished Goods"}));
+  expect(screen.getAllByText("200").length).toBeGreaterThan(0);
+  expect(screen.getByText("not recorded per size")).toBeInTheDocument();
+  expect(screen.getByText(/200 pairs whose sizes are not yet known/)).toBeInTheDocument();
+});
+
+it("says plainly when nothing has been made for stock",async()=>{
+  const user=userEvent.setup();
+  render(<StockTab jobs={[]}/>);
+  await user.click(screen.getByRole("tab",{name:"Finished Goods"}));
+  expect(screen.getByText(/No job card has been raised for stock yet/)).toBeInTheDocument();
+});

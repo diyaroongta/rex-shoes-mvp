@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
+import { finishedGoods } from "../shared/finished-goods.js";
 import { stockSheetRows, stockPatchFromRows } from "../shared/stock-upload.js";
 
 /* Stock register in the factory's own STOCK MASTER layout:
@@ -46,7 +47,7 @@ function guessCategory(name){
    separate jobs — "what have we got" and "a delivery just came in" — and each
    now has a screen of its own. Correcting a figure is still possible, but it
    is a deliberate act on ONE row, from View stock. */
-export default function StockTab({ state, onChanged }){
+export default function StockTab({ state, onChanged, jobs=null }){
   const [mode,setMode]=useState("view");
   const [material,setMaterial]=useState({name:"",uom:"",colour:"",opening:"",min:"",rate:""});
   const [materialMsg,setMaterialMsg]=useState("");
@@ -57,7 +58,7 @@ export default function StockTab({ state, onChanged }){
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div role="tablist" aria-label="Stock" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4">
-      {[["add","Add Stock"],["view","View Stock"],["mto","MTO Stock"],["material","Add New Material"]].map(([k,label])=>
+      {[["add","Add Stock"],["view","View Stock"],["finished","Finished Goods"],["mto","MTO Stock"],["material","Add New Material"]].map(([k,label])=>
         <button key={k} role="tab" aria-selected={mode===k} onClick={()=>setMode(k)}
           className="text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors"
           style={mode===k
@@ -66,6 +67,7 @@ export default function StockTab({ state, onChanged }){
     </div>
     {mode==="view" ? <ViewStock version={version} onSaved={refreshed} />
       : mode==="add" ? <AddStock version={version} onSaved={refreshed} onViewAll={()=>setMode("view")} />
+      : mode==="finished" ? <FinishedGoods jobs={jobs} />
       : mode==="mto" ? <MtoStock state={state} />
       : <div>
           <div className="text-sm font-semibold text-slate-800 mb-1">Add New Material</div>
@@ -490,6 +492,65 @@ function AddStock({ version, onSaved, onViewAll }){
               className="text-xs font-semibold text-indigo-700">+ A material that is not on the list</button>}
       </div>
     </div>
+  </div>;
+}
+
+/* SHOES MADE FOR STOCK. A job card either belongs to an Order Book row or it
+   does not, and `order_no` already says which. What comes back on a CUSTOMER
+   card is owed to that customer; what comes back on a STOCK card belongs to
+   the factory and was recorded nowhere until now.
+   Derived from the receipts, never stored, so a corrected receipt corrects
+   this too. */
+function FinishedGoods({ jobs }){
+  const fg = React.useMemo(()=>finishedGoods(jobs||[]), [jobs]);
+  if(jobs===null) return <div className="text-sm text-slate-500 py-8 text-center">Loading job orders…</div>;
+  return <div>
+    <div className="text-sm font-semibold text-slate-700">Finished goods made for stock</div>
+    <div className="text-xs text-slate-500 mt-1 mb-3">
+      Pairs that came back on job cards raised WITHOUT an Order Book row — work the factory
+      made for itself. Pairs on a customer's job card belong to that order and are counted there.
+      This is what has been <b>made</b>: nothing in the system yet records a sale out of finished
+      stock, so it does not fall when stock is sold.
+    </div>
+    {!fg.articles.length
+      ? <div className="text-sm text-slate-500 text-center py-8">
+          No job card has been raised for stock yet. A job order created without choosing an
+          Order Book row is a stock card, and what comes back on it appears here.</div>
+      : <>
+        <div className="flex gap-4 flex-wrap mb-3 text-xs">
+          <span className="text-slate-500">Articles <b className="mono text-slate-800">{fg.articles.length}</b></span>
+          <span className="text-slate-500">Pairs made <b className="mono text-slate-800">{fmt(fg.total_pairs)}</b></span>
+          {fg.sizes_unknown_pairs>0 && <span className="text-amber-700 font-semibold">
+            {fmt(fg.sizes_unknown_pairs)} pairs whose sizes are not yet known</span>}
+        </div>
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
+          <table className="w-full text-sm"><thead>
+            <tr className="text-[11px] uppercase tracking-wide text-slate-500 bg-slate-50">
+              <th className="text-left px-3 py-2">Article</th>
+              <th className="text-right px-3 py-2">Pairs</th>
+              <th className="text-left px-3 py-2">Sizes</th>
+              <th className="text-right px-3 py-2">Cards</th>
+            </tr></thead>
+            <tbody>{fg.articles.map(a=>(
+              <tr key={a.article} className="border-t border-slate-100">
+                <td className="px-3 py-2 font-medium text-slate-800">{a.article}</td>
+                <td className="px-3 py-2 text-right mono font-semibold">{fmt(a.pairs)}</td>
+                <td className="px-3 py-2 text-[11px] text-slate-600">
+                  {a.size_list.length
+                    ? a.size_list.map(s=>`${s.size}: ${fmt(s.pairs)}`).join(" · ")
+                    : <span className="text-amber-700">not recorded per size</span>}
+                  {/* A part-received card says how many pairs came back but not
+                      WHICH — splitting them across sizes would invent a
+                      breakdown nobody wrote down. */}
+                  {a.sizes_unknown>0 && a.size_list.length>0 &&
+                    <div className="text-amber-700">+{fmt(a.sizes_unknown)} pairs of unknown size</div>}
+                </td>
+                <td className="px-3 py-2 text-right mono text-slate-500">{a.cards}
+                  {a.open_cards>0 && <span className="text-amber-700"> ({a.open_cards} open)</span>}</td>
+              </tr>))}</tbody>
+          </table>
+        </div>
+      </>}
   </div>;
 }
 

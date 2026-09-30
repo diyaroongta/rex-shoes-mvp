@@ -12,6 +12,7 @@ import { buildLedger } from "../shared/dispatch-ledger.js";
 import { floorToday } from "../shared/floor-today.js";
 import StockAtHand from "./StockAtHand.jsx";
 import { withStockBalances } from "../shared/stock.js";
+import * as XLSX from "xlsx";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import StatusTab from "./StatusTab.jsx";
@@ -610,7 +611,7 @@ export default function App({ user=null, onSignOut=null }={}){
             ))}
           </div>
           <div style={{display:intakeMode==="slip"?"block":"none"}}>
-            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} />
+            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} jobs={jobs} />
           </div>
           {intakeMode==="sheet" &&
             <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
@@ -650,7 +651,7 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="procurement" && <ProcurementTab state={state} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
-        {tab==="stock" && <StockTab state={state} onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="stock" && <StockTab state={state} jobs={jobs} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
         {tab==="catalogue" && <CatalogueTab
@@ -709,7 +710,7 @@ const vlSummary = card => {
   return card.vl||"";
 };
 
-function NewOrderFlow({onSaved,catalogueVersion=0}){
+function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[]}){
   const [img,setImg]=useState(null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
@@ -1941,7 +1942,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   return {...cc, lines:merged};
                 }))} />
             </div>
-            <StockAtHand article={c.article} lines={c.lines} />
+            <StockAtHand article={c.article} lines={c.lines} jobs={jobs} />
             <details className="mt-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
               <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
               <div className="mt-2"><ArticleRules article={c.article} compact /></div>
@@ -2456,6 +2457,24 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
   const [customer,setCustomer]=useState("");     // a partyKey, or "" for all
   const [showHistory,setShowHistory]=useState(false);
 
+  function exportOrders(){
+    const header=["Order","PI","Party","Article","Sole","Order date","Ordered","On job cards",
+      "Waiting for a card","Dispatched","Still to go","Shortfall","Dispatches","Last dispatch",
+      "Planned dispatch","Lead days","SLA","Status"];
+    const body=[...(state.orders||[])].map(o=>{
+      const rec=ledger[o.order_no]||{};
+      return [o.order_no,(o.pi&&o.pi.pi_no)||"",o.party,o.article,o.sole_type,o.order_date,
+        (Number(o.qty)||0)+(Number(o.pending_pairs)||0), Number(o.qty)||0, Number(o.pending_pairs)||0,
+        rec.total_dispatched??0, rec.total_pending??"", rec.shortfall??0,
+        rec.dispatch_count??0, rec.last_dispatched_on||"",
+        o.dispatch_date||"", o.lead_days??"", o.sla||"", rec.status||"not started"];
+    });
+    const ws=XLSX.utils.aoa_to_sheet([header,...body]);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"ORDER BOOK");
+    XLSX.writeFile(wb,"order-book.xlsx");
+  }
+
   /* The customer list is built from EVERY order, completed ones included, so
      picking a customer does not depend on which view happens to be showing.
      History likewise: "what have we given them before" is a question about
@@ -2495,6 +2514,15 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
         <input type="checkbox" checked={showDone} onChange={e=>{setShowDone(e.target.checked);onSelect(null);}} />
         Show completed ({done.length})
       </label>}
+      {/* THE ORDER BOOK CAN LEAVE THE SCREEN. "What did we take last month,
+          and how much of it went out" had no answer here that could be sent
+          to anyone. Completed orders are included whether or not the screen
+          is showing them — an export that silently drops finished work is a
+          worse answer than none. Figures come from the same ledger the rows
+          print, so the sheet and the screen cannot disagree. */}
+      <button onClick={()=>exportOrders()}
+        className={`text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white${done.length?"":" ml-auto"}`}>
+        Export to Excel</button>
     </div>
     {showHistory && history && <CustomerHistory history={history}/>}
     {!visible.length && <div className="text-sm text-slate-500 py-6 text-center">
