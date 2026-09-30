@@ -11,6 +11,13 @@ export function db(){
       max: 3,                                    // serverless: keep it small
       ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized:false },
     });
+    /* An IDLE client dropped by the server (Neon closes idle connections;
+       the log said `read ETIMEDOUT`) is emitted on the pool. With no listener
+       Node treats that as an unhandled error and kills the process — the
+       local server died that way after an hour and a half idle, and a warm
+       function instance would too. pg has already discarded the dead client;
+       the next query opens a fresh one, so logging it is all that is needed. */
+    pool.on("error", e => console.error("Postgres idle client error (discarded):", e.code || e.message));
   }
   return pool;
 }

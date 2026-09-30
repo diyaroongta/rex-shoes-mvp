@@ -6,15 +6,7 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": [
         "run",
-        "dev"
-      ],
-      "port": 5173
-    },
-    {
-      "name": "local",
-      "runtimeExecutable": "node",
-      "runtimeArgs": [
-        "scripts/dev-server.mjs"
+        "dev:local"
       ],
       "port": 5173
     }
