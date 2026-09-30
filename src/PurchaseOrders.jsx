@@ -1,24 +1,31 @@
 import React, { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import * as api from "./lib/client.js";
 import { todayIso } from "./lib/today.js";
 import { purchaseOrderProgress } from "../shared/purchase-orders.js";
+import { parsePurchaseOrderRows, PURCHASE_ORDER_TEMPLATE_HEADERS } from "../shared/purchase-order-import.js";
 
 const fmt=(n,d=2)=>Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:d});
 const nice=date=>date?new Date(`${String(date).slice(0,10)}T00:00:00`).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}):"—";
 const STATUS={open:["Open","#fff7ed","#9a3412"],partial:["Part received","#eff6ff","#1d4ed8"],received:["Received","#ecfdf5","#047857"],cancelled:["Cancelled","#f1f5f9","#64748b"]};
+const fileBytes=file=>typeof file?.arrayBuffer==="function"?file.arrayBuffer():new Promise((resolve,reject)=>{
+  const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error||new Error("Could not read file"));reader.readAsArrayBuffer(file);
+});
 
 function Status({value}){
   const [label,bg,color]=STATUS[value]||STATUS.open;
   return <span className="text-[11px] font-semibold rounded-full px-2 py-0.5" style={{background:bg,color}}>{label}</span>;
 }
 
-export default function PurchaseOrders({materials=[],canCreate=true,canReceive=true,onStockChanged}){
+export default function PurchaseOrders({materials=[],allMaterials=materials,canCreate=true,canReceive=true,onStockChanged}){
   const [orders,setOrders]=useState([]),[loading,setLoading]=useState(true),[error,setError]=useState("");
-  const [screen,setScreen]=useState("register"),[chosen,setChosen]=useState(null);
+  const [screen,setScreen]=useState(canCreate?"upload":"register"),[chosen,setChosen]=useState(null);
   const [supplier,setSupplier]=useState(""),[poDate,setPoDate]=useState(todayIso()),[expected,setExpected]=useState("");
   const [additional,setAdditional]=useState(""),[selected,setSelected]=useState({}),[busy,setBusy]=useState(false);
   const [receiving,setReceiving]=useState(null),[receiptDate,setReceiptDate]=useState(todayIso());
   const [receiptQty,setReceiptQty]=useState({}),[receiptNote,setReceiptNote]=useState("");
+  const [uploadPreview,setUploadPreview]=useState(null),[uploadName,setUploadName]=useState("");
+  const [uploadKey,setUploadKey]=useState(0),[uploadMessage,setUploadMessage]=useState("");
 
   const load=async()=>{setLoading(true);setError("");try{setOrders(await api.listPurchaseOrders());}
     catch(e){setError(`Could not load purchase orders: ${e.message||e}`);}finally{setLoading(false);}};
@@ -40,6 +47,55 @@ export default function PurchaseOrders({materials=[],canCreate=true,canReceive=t
         additional_information:additional,lines});
       await load();setChosen(made.po_no);setScreen("register");setSupplier("");setExpected("");setAdditional("");setSelected({});
     }catch(e){setError(`Could not create purchase order: ${e.message||e}`);}finally{setBusy(false);}
+  }
+  function downloadTemplate(){
+    const rows=materials.map(material=>["PO-1","",todayIso(),"","",material.material_key,material.name,
+      material.uom,Number(material.shortfall)||"",material.rate==null?"":Number(material.rate)]);
+    const sheet=XLSX.utils.aoa_to_sheet([PURCHASE_ORDER_TEMPLATE_HEADERS,...rows]);
+    sheet["!cols"]=[{wch:14},{wch:25},{wch:13},{wch:20},{wch:38},{wch:30},{wch:34},{wch:12},{wch:18},{wch:14}];
+    sheet["!autofilter"]={ref:`A1:J${Math.max(1,rows.length+1)}`};
+    sheet["!freeze"]={xSplit:0,ySplit:1};
+    const instructions=XLSX.utils.aoa_to_sheet([
+      ["FACTORY OS — PURCHASE ORDER UPLOAD"],
+      ["1. One row is one material. Do not rename the headings."],
+      ["2. Rows with the same PO GROUP become one purchase order."],
+      ["3. Use a new PO GROUP when the supplier or terms change (PO-2, PO-3, etc.)."],
+      ["4. Supplier and PO date are required. Expected delivery, rate and additional information are optional."],
+      ["5. Enter dates as YYYY-MM-DD. Keep MATERIAL KEY unchanged."],
+      ["6. You may enter supplier/dates/additional information once per group; Factory OS applies them to that group."],
+      ["7. Upload the completed workbook, review every warning, then create the POs together."],
+    ]);
+    instructions["!cols"]=[{wch:110}];
+    const workbook=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook,sheet,"Purchase Orders");
+    XLSX.utils.book_append_sheet(workbook,instructions,"Read me");
+    XLSX.writeFile(workbook,"factory-os-purchase-order-upload.xlsx");
+  }
+  async function inspectWorkbook(file){
+    setError("");setUploadMessage("");setUploadPreview(null);setUploadName(file?.name||"");
+    if(!file)return;
+    if(file.size>10*1024*1024){setError("The PO workbook is larger than 10 MB. Split it into smaller uploads.");return;}
+    try{
+      /* Keep Excel dates as serial numbers. Converting them to JavaScript Date
+         objects first can move a date back one day in Indian time zones. */
+      const workbook=XLSX.read(await fileBytes(file),{type:"array",cellDates:false});
+      const wanted=workbook.Sheets["Purchase Orders"]||workbook.Sheets[workbook.SheetNames[0]];
+      if(!wanted)throw new Error("The workbook has no worksheets");
+      const matrix=XLSX.utils.sheet_to_json(wanted,{header:1,raw:true,defval:"",blankrows:false});
+      if(matrix.length>5002)throw new Error("The PO workbook has more than 5,000 lines. Split it into smaller uploads.");
+      setUploadPreview(parsePurchaseOrderRows(matrix,allMaterials));
+    }catch(e){setError(`Could not read the PO workbook: ${e.message||e}`);}
+  }
+  async function importWorkbook(){
+    if(!uploadPreview||uploadPreview.errors.length||!uploadPreview.purchase_orders.length)return;
+    setBusy(true);setError("");setUploadMessage("");
+    try{
+      const payload=uploadPreview.purchase_orders.map(({upload_group,...order})=>order);
+      const made=await api.createPurchaseOrders(payload);
+      const count=Array.isArray(made)?made.length:Number(made?.purchase_orders?.length)||payload.length;
+      await load();setUploadMessage(`${count} purchase order${count===1?"":"s"} created from ${uploadName}.`);
+      setUploadPreview(null);setUploadName("");setUploadKey(key=>key+1);setScreen("register");
+    }catch(e){setError(`Could not import purchase orders: ${e.message||e}`);}finally{setBusy(false);}
   }
   function startReceipt(order){
     const p=purchaseOrderProgress(order);setReceiving(p.po_no);setReceiptDate(todayIso());setReceiptNote("");
@@ -63,11 +119,32 @@ export default function PurchaseOrders({materials=[],canCreate=true,canReceive=t
   return <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-4" data-noprint={!detail||undefined}>
     <div className="flex items-center gap-2 flex-wrap mb-3" data-noprint>
       <div className="text-sm font-semibold text-slate-800 mr-2">Purchase orders</div>
+      {canCreate&&<button onClick={()=>setScreen("upload")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="upload"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>Upload PO Excel</button>}
       <button onClick={()=>setScreen("register")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="register"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>PO register</button>
-      {canCreate&&<button onClick={()=>setScreen("create")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="create"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>Create purchase order</button>}
+      {canCreate&&<button onClick={()=>setScreen("create")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="create"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>Manual backup</button>}
       <span className="ml-auto text-xs text-slate-500">{live.filter(o=>["open","partial"].includes(o.status)).length} open</span>
     </div>
     {error&&<div role="alert" className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3" data-noprint>{error}</div>}
+    {uploadMessage&&<div role="status" className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 px-3 py-2 mb-3" data-noprint>{uploadMessage}</div>}
+
+    {screen==="upload"&&canCreate&&<div data-noprint className="rounded-xl border border-indigo-200 bg-white p-4">
+      <div className="text-sm font-semibold text-slate-800">Create purchase orders from Excel</div>
+      <p className="text-xs text-slate-600 mt-1 mb-3">Download the buying list, fill supplier, dates, quantity and rate, then upload it here. One file can create several POs.</p>
+      <div className="flex gap-2 flex-wrap items-center">
+        <button onClick={downloadTemplate} className="text-xs font-semibold rounded-lg px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50">Download prefilled PO template</button>
+        <label className="text-xs font-semibold rounded-lg px-3 py-2 bg-indigo-600 text-white cursor-pointer">Upload completed Excel
+          <input key={uploadKey} aria-label="Upload purchase order Excel" type="file" accept=".xlsx,.xls" className="sr-only" onChange={e=>inspectWorkbook(e.target.files?.[0])}/>
+        </label>
+        <span className="text-xs text-slate-500">{uploadName||`${materials.length} current shortfall line${materials.length===1?"":"s"} in the template`}</span>
+      </div>
+      {uploadPreview&&<div className="mt-4 rounded-lg border border-slate-200 p-3">
+        <div className="text-xs font-semibold text-slate-800">Upload check</div>
+        <div className="text-xs text-slate-600 mt-1">{uploadPreview.purchase_orders.length} PO group{uploadPreview.purchase_orders.length===1?"":"s"} · {uploadPreview.row_count} material line{uploadPreview.row_count===1?"":"s"}</div>
+        {!!uploadPreview.errors.length&&<div role="alert" className="mt-2 rounded bg-rose-50 border border-rose-200 p-2 text-xs text-rose-800"><b>Fix these in Excel and upload again:</b><ul className="list-disc ml-5 mt-1">{uploadPreview.errors.map(message=><li key={message}>{message}</li>)}</ul></div>}
+        {!uploadPreview.errors.length&&<div className="mt-2 overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-slate-500"><th className="text-left">Group</th><th className="text-left">Supplier</th><th className="text-left">PO date</th><th className="text-left">Expected</th><th className="text-right">Materials</th><th className="text-right">Quantity</th></tr></thead><tbody>{uploadPreview.purchase_orders.map(order=><tr key={order.upload_group} className="border-t border-slate-100"><td className="py-1.5 mono">{order.upload_group}</td><td>{order.supplier}</td><td className="mono">{order.po_date}</td><td className="mono">{order.expected_on||"—"}</td><td className="text-right">{order.lines.length}</td><td className="text-right mono">{fmt(order.lines.reduce((sum,line)=>sum+line.ordered_qty,0))}</td></tr>)}</tbody></table></div>}
+        <button disabled={busy||!!uploadPreview.errors.length||!uploadPreview.purchase_orders.length} onClick={importWorkbook} className="mt-3 text-xs font-semibold rounded-lg px-3 py-2 bg-emerald-700 text-white disabled:opacity-40">{busy?"Creating POs…":`Create ${uploadPreview.purchase_orders.length} purchase order${uploadPreview.purchase_orders.length===1?"":"s"}`}</button>
+      </div>}
+    </div>}
 
     {screen==="create"&&canCreate&&<div data-noprint className="rounded-xl border border-indigo-200 bg-white p-4">
       <div className="grid gap-3 md:grid-cols-4 mb-3">

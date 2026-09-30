@@ -240,30 +240,42 @@ async function purchaseOrders(req,res){
   }
 
   if(req.method==="POST"){
-    const checked=validatePurchaseOrder(req.body||{});
-    if(!checked.ok)return fail(res,400,checked.error);
+    const bulk=Array.isArray(req.body?.purchase_orders);
+    const inputs=bulk?req.body.purchase_orders:[req.body||{}];
+    if(!inputs.length)return fail(res,400,"The upload has no purchase orders");
+    if(inputs.length>50)return fail(res,400,"One upload can create at most 50 purchase orders");
+    const checkedOrders=[];
+    for(let index=0;index<inputs.length;index++){
+      const checked=validatePurchaseOrder(inputs[index]);
+      if(!checked.ok)return fail(res,400,`${bulk?`PO group ${index+1}: `:""}${checked.error}`);
+      checkedOrders.push(checked.value);
+    }
     /* Names and units come from the material master, never from the browser.
        Otherwise a direct request could put an invented material on an
        official PO even though Stock could never receive it. */
     const ref=await current();
-    for(const line of checked.value.lines){
-      const material=ref.materials?.[line.material_key];
-      if(!material)return fail(res,409,`${line.material_key} is not in the material register`);
-      line.name=material.name;line.uom=material.uom;
-    }
+    for(const order of checkedOrders)for(const line of order.lines){
+        const material=ref.materials?.[line.material_key];
+        if(!material)return fail(res,409,`${line.material_key} is not in the material register`);
+        line.name=material.name;line.uom=material.uom;
+      }
     const client=await db().connect();
     try{
       await client.query("begin");await ensurePurchaseOrderTables(client);
-      const {rows:numberRows}=await client.query("select nextval('purchase_order_no_seq') as n");
-      const no=`PO-${checked.value.po_date.slice(0,4)}-${String(numberRows[0].n).padStart(6,"0")}`;
-      const {rows}=await client.query(`insert into purchase_orders
-        (po_no,supplier,po_date,expected_on,additional_information,lines,created_by)
-        values ($1,$2,$3,$4,$5,$6,$7)
-        returning po_no,supplier,po_date,expected_on,status,additional_information,lines,created_by,created_at`,
-        [no,checked.value.supplier,checked.value.po_date,checked.value.expected_on,
-         checked.value.additional_information,JSON.stringify(checked.value.lines),req.user?.username||null]);
+      const made=[];
+      for(const checked of checkedOrders){
+        const {rows:numberRows}=await client.query("select nextval('purchase_order_no_seq') as n");
+        const no=`PO-${checked.po_date.slice(0,4)}-${String(numberRows[0].n).padStart(6,"0")}`;
+        const {rows}=await client.query(`insert into purchase_orders
+          (po_no,supplier,po_date,expected_on,additional_information,lines,created_by)
+          values ($1,$2,$3,$4,$5,$6,$7)
+          returning po_no,supplier,po_date,expected_on,status,additional_information,lines,created_by,created_at`,
+          [no,checked.supplier,checked.po_date,checked.expected_on,
+           checked.additional_information,JSON.stringify(checked.lines),req.user?.username||null]);
+        made.push(poRow(rows[0]||{...checked,po_no:no,status:"open",created_by:req.user?.username},[]));
+      }
       await client.query("commit");
-      return res.status(201).json(poRow(rows[0]||{...checked.value,po_no:no,status:"open",created_by:req.user?.username},[]));
+      return res.status(201).json(bulk?{purchase_orders:made}:made[0]);
     }catch(error){try{await client.query("rollback");}catch(_){}throw error;}finally{client.release();}
   }
 

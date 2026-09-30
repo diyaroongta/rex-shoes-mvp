@@ -3773,7 +3773,7 @@ function ProcurementTab({state,role="admin",onStockChanged}){
   const counts=list.reduce((a,r)=>{const u=urgencyOf(r,leadDays);a[u]=(a[u]||0)+1;return a;},{});
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
-    <PurchaseOrders materials={list}
+    <PurchaseOrders materials={list} allMaterials={state.netted}
       canCreate={role==="admin"||role==="procurement"}
       canReceive={role==="admin"||role==="procurement"||role==="store"}
       onStockChanged={onStockChanged}/>

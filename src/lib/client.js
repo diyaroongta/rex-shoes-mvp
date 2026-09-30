@@ -174,6 +174,8 @@ export const patchReference = patch     => j("/api/reference", {
 export const listPurchaseOrders = () => j("/api/reference?resource=purchase_orders");
 export const createPurchaseOrder = order => post("/api/reference?resource=purchase_orders",
   { ...order, resource:"purchase_orders" });
+export const createPurchaseOrders = purchase_orders => post("/api/reference?resource=purchase_orders",
+  { resource:"purchase_orders", purchase_orders });
 export const receivePurchaseOrder = (po_no,received_on,lines,note="") => j(
   "/api/reference?resource=purchase_orders", {method:"PATCH",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({resource:"purchase_orders",action:"receive",po_no,received_on,lines,note})});

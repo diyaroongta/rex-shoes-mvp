@@ -53,6 +53,35 @@ describe("database API contracts",()=>{
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 
+  it("creates every PO in an Excel upload in one database transaction",async()=>{
+    dbMocks.q.mockResolvedValue({rows:[{value:{articles:{},materials:{
+      "MESH||MTR":{name:"MESH",uom:"MTR",stock:0},
+      "EVA||SHEET":{name:"EVA",uom:"SHEET",stock:0}}}}]});
+    let sequence=10;
+    const client={query:vi.fn(async (sql,params=[])=>{
+      const text=String(sql);
+      if(text.includes("nextval('purchase_order_no_seq')"))return {rows:[{n:String(sequence++)}]};
+      if(text.includes("insert into purchase_orders"))return {rows:[{po_no:params[0],supplier:params[1],
+        po_date:params[2],expected_on:params[3],status:"open",additional_information:params[4],
+        lines:JSON.parse(params[5]),created_by:"tester",created_at:"2026-09-30T00:00:00.000Z"}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);const res=response();
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference?resource=purchase_orders",
+      query:{resource:"purchase_orders"},body:{resource:"purchase_orders",purchase_orders:[
+        {supplier:"ABC",po_date:"2026-09-30",additional_information:"First",
+          lines:[{material_key:"MESH||MTR",name:"ignored",uom:"KG",ordered_qty:100}]},
+        {supplier:"XYZ",po_date:"2026-09-30",additional_information:"Second",
+          lines:[{material_key:"EVA||SHEET",name:"ignored",uom:"KG",ordered_qty:50}]},
+      ]}},res);
+    expect(res.statusCode).toBe(201);expect(res.body.purchase_orders).toHaveLength(2);
+    expect(res.body.purchase_orders[0].lines[0]).toMatchObject({name:"MESH",uom:"MTR"});
+    expect(res.body.purchase_orders[1].po_no).toBe("PO-2026-000011");
+    expect(client.query).toHaveBeenCalledWith("begin");
+    expect(client.query).toHaveBeenCalledWith("commit");
+    expect(client.query.mock.calls.filter(([sql])=>String(sql).includes("insert into purchase_orders"))).toHaveLength(2);
+  });
+
   it("receives a PO and adds the same quantity to Stock atomically",async()=>{
     const po={po_no:"PO-2026-000007",supplier:"ABC Materials",po_date:"2026-09-30",
       expected_on:"2026-10-05",status:"open",additional_information:"",
