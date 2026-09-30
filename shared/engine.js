@@ -507,6 +507,11 @@ export function shortfallByPi(byOrder){
    it — or silently dropping it — are both worse than saying so. */
 export function overridesForUnits(units, overrides={}){
   const map={}, notes=[]; const told=new Set();
+  const countByParent={};
+  for(const u of units||[]){
+    const key=u.unit_key||u.order_no, parent=u.source_order_no||key;
+    if(key!==parent) countByParent[parent]=(countByParent[parent]||0)+1;
+  }
   for(const u of units||[]){
     const key=u.unit_key||u.order_no, parent=u.source_order_no||key;
     if(overrides[key]){ map[key]=overrides[key]; continue; }
@@ -514,8 +519,16 @@ export function overridesForUnits(units, overrides={}){
     const n=normalizeOverride(overrides[parent]);
     const machine=Object.keys(n.machine).length?n.machine:null;
     const days=Object.keys(n.days).length?n.days:null;
-    if(machine||days) map[key]={...(machine?{machine}:{}),...(days?{days}:{})};
-    if((n.seq!=null||n.start_on!=null)&&!told.has(parent)){
+    /* With exactly ONE released card, an order-level queue/start decision is
+       unambiguous and belongs to that card. Only a multi-card order needs the
+       planner to choose which card is being moved. */
+    const single=countByParent[parent]===1;
+    if(machine||days||single&&(n.seq!=null||n.start_on!=null)) map[key]={
+      ...(machine?{machine}:{}), ...(days?{days}:{}),
+      ...(single&&n.seq!=null?{seq:n.seq}:{}),
+      ...(single&&n.start_on!=null?{start_on:n.start_on}:{}),
+    };
+    if(!single&&(n.seq!=null||n.start_on!=null)&&!told.has(parent)){
       told.add(parent);
       const what=[n.seq!=null?"queue position":null,n.start_on!=null?`start date ${n.start_on}`:null]
         .filter(Boolean).join(" and ");
@@ -575,10 +588,11 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
 
      Units come from shared/production-units.js (which the engine cannot
      import — it is pure and import-free by design, so the caller builds them
-     and passes them in). An order with no job cards is ONE unit keyed by its
-     own order number, so everything below is unchanged for it, plan overrides
-     included. The units of an order always add up to the order, never more,
-     so material demand and the pair count do not move. */
+     and passes them in). An order with no job cards arrives as one BALANCE
+     unit: it remains real demand for procurement and the Order Book, but it
+     occupies no machine until the floor explicitly releases a job card. The
+     units of an order always add up to the order, never more, so material
+     demand and the pair count do not move. */
   const ownUnit=o=>({...o,unit_key:o.order_no,unit_kind:"order",source_order_no:o.order_no});
   const live=new Set(planned.map(o=>o.order_no));
   const supplied=(Array.isArray(opts.units)?opts.units:[])
@@ -752,6 +766,27 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       pending_pairs: waiting?waiting.pairs:0,
       pending_lines: waiting?waiting.lines:[],
     };
+    /* A PI has been issued but production has not released a card. This is a
+       valid Order Book row, not a schedule row: zero on cards, the complete
+       order waiting, and no invented release/dispatch/SLA dates. */
+    if(!views.length){
+      const art=articles[o.article_code];
+      return {
+        order_no:o.order_no, party:o.party, article:o.article_code, article_code:o.article_code,
+        ...(seenNoBom.has(o.article_code) ? { bom_missing:true } : {}),
+        unit_key:o.order_no, unit_kind:"order", card_no:null, fabricator:null, job_id:null,
+        override:normalizeOverride(overrides[o.order_no]), overridden:false,
+        plan_warnings:sched.warnings.filter(w=>w.order_no===o.order_no),
+        sole_type:art.sole_type, pi:o.pi||{},
+        stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",
+        printing:!!(o.printing||((o.pi||{}).printing)),
+        qty:0, priority:o.priority, order_date:o.order_date, lines:o.lines||[],
+        unknown_combos:(o.lines||[]).filter(l=>!art.combos[l.combo]).map(l=>l.combo),
+        release_date:null, release_delay_days:null,
+        dispatch_date:null, dispatch_day:null, lead_days:null, sla:null, stages:[],
+        batches:[], batch_count:0, ...waitingFields,
+      };
+    }
     if(views.length===1 && views[0].unit_key===o.order_no)
       return {...views[0], lines:o.lines, batches, batch_count:1, ...waitingFields};
     const stageRows=new Map();
@@ -774,7 +809,12 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       dispatch_date:fromDay(dispatchDay,origin), dispatch_day:dispatchDay,
       lead_days:dispatchDay-releaseDay, sla:worst, stages,
       batches, batch_count:views.length, ...waitingFields};
-  }).sort((a,b)=>a.dispatch_day-b.dispatch_day);
+  }).sort((a,b)=>{
+    const ad=Number.isFinite(a.dispatch_day)?a.dispatch_day:Infinity;
+    const bd=Number.isFinite(b.dispatch_day)?b.dispatch_day:Infinity;
+    return ad-bd || String(a.order_date||"").localeCompare(String(b.order_date||""))
+      || String(a.order_no||"").localeCompare(String(b.order_no||""));
+  });
 
   /* Orphans are put back at the TOP of the board, not dropped. An order that
      quietly disappears from the sheet is worse than one that cannot be
@@ -805,6 +845,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       busy_days:act.length,avg_util_pct:round2(100*booked/(wc.capacity_per_day*span),1)});
   }
   loadSummary.sort((a,b)=>b.avg_util_pct-a.avg_util_pct);
+  const dispatchDays=orderViews.map(o=>o.dispatch_day).filter(Number.isFinite);
   return {orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,data_gaps:dataGaps,daily_load:sched.load,
     plan_warnings:sched.warnings, forced_load:sched.forced_load,
     /* Every batch as its own row, for the screens that plan work rather than
@@ -815,7 +856,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     pending_release:pendingRelease,
     procurement_by_order:byOrder, procurement_by_unit:byUnit, procurement_by_pi:shortfallByPi(byOrder),
     totals:{orders:orders.length,total_pairs:orders.reduce((s,o)=>s+o.lines.reduce((a,l)=>a+l.qty,0),0),
-      last_dispatch:orderViews.length?fromDay(Math.max(...orderViews.map(o=>o.dispatch_day)),origin):null,
+      last_dispatch:dispatchDays.length?fromDay(Math.max(...dispatchDays),origin):null,
       batches:unitViews.length,
       pending_pairs:pendingRelease.reduce((a,r)=>a+r.pairs,0),
       pending_orders:pendingRelease.length,

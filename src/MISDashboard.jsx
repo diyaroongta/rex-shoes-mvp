@@ -6,6 +6,7 @@ import { fromDay } from "../shared/engine.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 
 const STATUS = {
+  waiting: { label:"Waiting for job card", color:"#475569", pale:"#F1F5F9" },
   on_track: { label:"On time", color:"#047857", pale:"#ECFDF5" },
   at_risk: { label:"At risk", color:"#B45309", pale:"#FFFBEB" },
   breach: { label:"Delayed", color:"#BE123C", pale:"#FFF1F2" },
@@ -74,6 +75,10 @@ function Drill({metric,snapshot,fmt,pct,niceDate}){
     at_risk:{ title:"Orders at risk", rows:all.filter(o=>o.status==="at_risk"),
       sum:`${all.filter(o=>o.status==="at_risk").length} order(s) within days of missing their target`,
       empty:"Nothing at risk.", cols:["Pairs","Slips","Bottleneck"], cell:o=>[o.qty,`${o.slip_days}d`,o.bottleneck||"—"] },
+    waiting:{ title:"Orders waiting for a job card", rows:all.filter(o=>o.status==="waiting"),
+      sum:`${all.filter(o=>o.status==="waiting").length} order(s) have not been released into production`,
+      empty:"Every live order has a job card.", cols:["Pairs","Status","Planned dispatch"],
+      cell:o=>[o.qty,"Not released",o.dispatch_date?niceDate(o.dispatch_date):"—"] },
   };
   const v=VIEWS[metric];
   if(!v) return null;
@@ -163,6 +168,7 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
     </div>}
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
       <Kpi label="Total live orders" value={fmt(snapshot.total_orders)} detail={`${fmt(snapshot.total_pairs)} ordered pairs`} testId="kpi-total-orders" />
+      <Kpi label="Waiting for job card" drill="waiting" onDrill={setDrill} open={drill==="waiting"} value={fmt(snapshot.status.waiting.count)} detail="PI issued, not released to production" tone={STATUS.waiting.color} pale={STATUS.waiting.pale} testId="kpi-waiting" />
       <Kpi label="Orders on time" value={fmt(snapshot.status.on_track.count)} detail={dateRange(snapshot.status.on_track)} tone={STATUS.on_track.color} pale={STATUS.on_track.pale} testId="kpi-on-time" />
       <Kpi label="Orders at risk" drill="at_risk" onDrill={setDrill} open={drill==="at_risk"} value={fmt(snapshot.status.at_risk.count)} detail={dateRange(snapshot.status.at_risk)} tone={STATUS.at_risk.color} pale={STATUS.at_risk.pale} testId="kpi-at-risk" />
       <Kpi label="Delayed orders" drill="breach" onDrill={setDrill} open={drill==="breach"} value={fmt(snapshot.status.breach.count)} detail={dateRange(snapshot.status.breach)} tone={STATUS.breach.color} pale={STATUS.breach.pale} testId="kpi-delayed" />
@@ -243,14 +249,14 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
         <div><b className="text-slate-800">Average dispatch days</b><br/>For fully dispatched or deliberately closed orders: calendar days from order date to completed dispatch date, added together ÷ completed orders. Open and partially dispatched orders are excluded.</div>
         <div><b className="text-slate-800">Average production days</b><br/>Sum of the planner&rsquo;s scheduled release-to-dispatch lead days ÷ live scheduled orders.</div>
         <div><b className="text-slate-800">Capacity utilisation</b><br/>Average of each active work centre&rsquo;s planned utilisation percentage. It is planned capacity until actual shop-floor output is connected.</div>
-        <div><b className="text-slate-800">On time / at risk / delayed</b><br/>Uses the current production schedule&rsquo;s SLA status for each live order. The displayed date range is the earliest to latest planned dispatch date in that status.</div>
+        <div><b className="text-slate-800">Waiting / on time / at risk / delayed</b><br/>An order stays Waiting until a job card releases it. Once scheduled, its delivery health is calculated from the current production plan. The displayed date range is the earliest to latest planned dispatch date in that status.</div>
       </div>
     </details>
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
         <div className="flex items-start justify-between gap-3 mb-3">
-          <div><h2 className="serif text-lg font-semibold">Orders needing attention</h2><p className="text-xs text-slate-500 mt-1">Delayed first, then at-risk orders by planned dispatch date.</p></div>
+          <div><h2 className="serif text-lg font-semibold">Orders needing attention</h2><p className="text-xs text-slate-500 mt-1">Unreleased orders first, then delayed and at-risk orders by planned dispatch date.</p></div>
           <span className="mono text-xs rounded-full bg-rose-50 text-rose-700 px-2 py-1">{attention.length} shown</span>
         </div>
         {attention.length ? <table className="w-full text-xs" style={{minWidth:620}}>
@@ -264,7 +270,7 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
             <td className="mono">{niceDate(order.dispatch_date)}</td>
             <td className="mono text-right font-semibold">{fmt(order.pending)}</td>
           </tr>)}</tbody>
-        </table> : <div className="rounded-lg bg-emerald-50 text-emerald-800 text-sm p-4">No orders are currently marked at risk or delayed.</div>}
+        </table> : <div className="rounded-lg bg-emerald-50 text-emerald-800 text-sm p-4">No orders are waiting for release, at risk or delayed.</div>}
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
@@ -288,7 +294,7 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
         <div><h2 className="serif text-lg font-semibold">Complete order health</h2><p className="text-xs text-slate-500 mt-1">One management row per order with delivery outlook and dispatch completion.</p></div>
         <div className="ml-auto flex gap-2 flex-wrap items-center">
           <input aria-label="Search executive orders" value={search} onChange={event=>setSearch(event.target.value)} placeholder="Order, PI, customer, article…" className="border border-slate-300 rounded-lg px-3 py-1.5 text-xs" style={{width:220}} />
-          {[["all","All",snapshot.total_orders],["on_track","On time",snapshot.status.on_track.count],["at_risk","At risk",snapshot.status.at_risk.count],["breach","Delayed",snapshot.status.breach.count]].map(([key,label,count])=><button key={key} onClick={()=>setFilter(key)} aria-pressed={filter===key} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold" style={{background:filter===key?"#0F2233":"#fff",color:filter===key?"#fff":"#52606D",borderColor:filter===key?"#0F2233":"#D7DEE6"}}>{label} · {count}</button>)}
+          {[["all","All",snapshot.total_orders],["waiting","Waiting",snapshot.status.waiting.count],["on_track","On time",snapshot.status.on_track.count],["at_risk","At risk",snapshot.status.at_risk.count],["breach","Delayed",snapshot.status.breach.count]].map(([key,label,count])=><button key={key} onClick={()=>setFilter(key)} aria-pressed={filter===key} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold" style={{background:filter===key?"#0F2233":"#fff",color:filter===key?"#fff":"#52606D",borderColor:filter===key?"#0F2233":"#D7DEE6"}}>{label} · {count}</button>)}
         </div>
       </div>
       <table className="w-full text-xs" style={{minWidth:1000}}>

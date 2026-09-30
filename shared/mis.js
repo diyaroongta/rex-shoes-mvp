@@ -18,10 +18,19 @@ const fromDayNumber = day => new Date(day * DAY).toISOString().slice(0, 10);
 
 const sumObject = value => Object.values(value || {}).reduce((sum, item) => sum + (Number(item) || 0), 0);
 
-const orderQuantity = order => Number(order && order.qty) || (order && order.lines || [])
-  .reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
+const orderQuantity = order => {
+  /* Engine rows split the commercial order into pairs ON cards (`qty`) and
+     pairs WAITING for a card (`pending_pairs`). Both are ordered pairs. Raw
+     database rows have no pending_pairs and keep their original qty/lines. */
+  if(order && order.pending_pairs != null)
+    return (Number(order.qty) || 0) + (Number(order.pending_pairs) || 0);
+  if(order && order.qty != null && !isNaN(Number(order.qty))) return Number(order.qty);
+  return (order && order.lines || [])
+    .reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
+};
 
 const STATUS = {
+  waiting: { key: "waiting", label: "Waiting for job card" },
   on_track: { key: "on_track", label: "On time" },
   at_risk: { key: "at_risk", label: "At risk" },
   breach: { key: "breach", label: "Delayed" },
@@ -96,7 +105,7 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     const rawBalance = Math.max(0, qty - dispatched);
     const pending = shipment.closesOrder ? 0 : rawBalance;
     const shortage = shipment.closesOrder ? rawBalance : 0;
-    const health = STATUS[order.sla] || STATUS.on_track;
+    const health = STATUS[order.sla] || STATUS.waiting;
     const bottleneck = worstStage(order);
     const completed=shipment.closesOrder||dispatched>=qty;
     const completedOn=completed?(shipment.closedDate||shipment.latestDate):null;
@@ -194,7 +203,7 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     trend: fiveDayBuckets(todayDay, orders, dispatchEvents),
     machines: machineRows,
     orders: orderRows.sort((a, b) => {
-      const rank = { breach: 0, at_risk: 1, on_track: 2 };
+      const rank = { waiting: 0, breach: 1, at_risk: 2, on_track: 3 };
       return rank[a.status] - rank[b.status]
         || String(a.dispatch_date || "").localeCompare(String(b.dispatch_date || ""))
         || String(a.order_no).localeCompare(String(b.order_no));

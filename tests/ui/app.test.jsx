@@ -50,6 +50,14 @@ import { REF } from "../../src/lib/refdata.js";
 import ArticleRulesTab from "../../src/ArticleRulesTab.jsx";
 import PartiesTab from "../../src/PartiesTab.jsx";
 
+const issuedJob=(order,id=1)=>({
+  id, order_no:order.order_no, article:order.article_code, stage:"CUTTING & STITCHING",
+  fabricator:"Rex Internal", qty:(order.lines||[]).reduce((n,l)=>n+(Number(l.qty)||0),0),
+  received:0, issued_on:order.order_date, status:"issued",
+  card:{card_no:`JC${id}`,date:order.order_date,start_on:order.order_date,
+    lines:(order.lines||[]).map(l=>({...l,sizes:l.sizes?{...l.sizes}:{}}))},
+});
+
 beforeEach(()=>{
   vi.clearAllMocks();
   mocks.listOrders.mockResolvedValue([]);
@@ -524,10 +532,12 @@ describe("critical UI contracts",()=>{
      was — while both claimed to describe the same plan. */
   it("shows production-plan utilisation against the saved capacity, not the seed",async()=>{
     mocks.getSettings.mockResolvedValue({capacities:{CUTTING:100}});
-    mocks.listOrders.mockResolvedValue([{
+    const planned={
       order_no:"JO6001",order_date:"2026-08-20",article_code:"SPIKE",priority:2,party:"Buyer",
       lines:[{combo:"7X10S",qty:100,label:"7X10S"}],pi:{},
-    }]);
+    };
+    mocks.listOrders.mockResolvedValue([planned]);
+    mocks.listJobWork.mockResolvedValue([issuedJob(planned,6001)]);
     const user=userEvent.setup();
     render(<App/>);
     await goTo(user, "Production plan");
@@ -1053,6 +1063,7 @@ describe("the production plan can be overruled by hand",()=>{
     // the next read, which is what makes the board settle on the new plan.
     let rows=twoOrders.map(o=>({...o}));
     mocks.listOrders.mockImplementation(async()=>rows);
+    mocks.listJobWork.mockResolvedValue(rows.map((o,i)=>issuedJob(o,700+i)));
     mocks.setPlanOverride.mockImplementation(async(no,ov)=>{
       rows=rows.map(o=>o.order_no===no?{...o,plan_override:ov}:o); return {};
     });
@@ -1062,7 +1073,8 @@ describe("the production plan can be overruled by hand",()=>{
 
     // Rows are drawn in queue order, so the Adjust buttons ARE the queue.
     const queue=()=>screen.getAllByRole("button",{name:/Adjust the plan for/})
-      .map(b=>b.getAttribute("aria-label").replace("Adjust the plan for ",""));
+      .map(b=>b.getAttribute("aria-label").replace("Adjust the plan for ",""))
+      .filter(label=>!label.startsWith("card "));
     // Same priority and same date, so the order number decides: JOA runs first.
     expect(queue()).toEqual(["JOA","JOB"]);
 
@@ -1073,12 +1085,15 @@ describe("the production plan can be overruled by hand",()=>{
       expect.objectContaining({seq:1})));
     // The board is recomputed from the override, not merely recorded.
     await waitFor(()=>expect(queue()).toEqual(["JOB","JOA"]));
-    expect(screen.getAllByText("manual").length).toBe(1);
+    expect(screen.getAllByText("manual").length).toBe(2,
+      "the order row and its only scheduled card both show the manual decision");
   });
 
   it("carries out a forced stage duration and prints what it cost",async()=>{
-    mocks.listOrders.mockResolvedValue([{...twoOrders[0],
-      lines:[{combo:"7X10S",qty:20000}], plan_override:{days:{CUTTING:1}}}]);
+    const forced={...twoOrders[0],lines:[{combo:"7X10S",qty:20000}],
+      plan_override:{days:{CUTTING:1}}};
+    mocks.listOrders.mockResolvedValue([forced]);
+    mocks.listJobWork.mockResolvedValue([issuedJob(forced,710)]);
     const user=userEvent.setup();
     render(<App/>);
     await goTo(user, "Schedule");
@@ -1265,6 +1280,25 @@ describe("live orders exclude completed work",()=>{
     expect(row).toHaveTextContent("575 to go");
   });
 
+  it("keeps a newly issued PI completely off job cards until a card is created",async()=>{
+    mocks.listOrders.mockResolvedValue([{order_no:"JO2171",order_date:"2026-09-29",
+      article_code:"SPIKE",priority:2,party:"K.P. Gurgaon",
+      lines:[{combo:"7X10S",qty:288,sizes:{"7s":72,"8s":72,"9s":72,"10s":72}}],
+      pi:{pi_no:"PI/2171"},version:1}]);
+    mocks.listJobWork.mockResolvedValue([]);
+
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user,"Order Book");
+
+    const row=(await screen.findByText("JO2171")).closest("tr");
+    expect(row).toHaveTextContent("288");
+    expect(row).toHaveTextContent("0");
+    expect(row).toHaveTextContent("288 waiting for a card");
+    expect(row).not.toHaveTextContent("all of it");
+    expect(row).not.toHaveTextContent("Breach");
+  });
+
   /* THE ORDER BOOK CAN LEAVE THE SCREEN. Completed orders go into the export
      whether or not the screen is showing them — an export that silently drops
      finished work is a worse answer than none. */
@@ -1392,6 +1426,7 @@ describe("the schedule opens on the floor",()=>{
 
   it("names each machine, what it is running and why that job",async()=>{
     mocks.listOrders.mockResolvedValue([order]);
+    mocks.listJobWork.mockResolvedValue([issuedJob(order,800)]);
     const user=userEvent.setup();
     render(<App/>);
     await goTo(user, "Schedule");

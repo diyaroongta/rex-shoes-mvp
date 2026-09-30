@@ -12,11 +12,10 @@
  *
  *   job      one issued job card. Released on the card's OWN date, carrying
  *            the card's own size-wise quantities.
- *   balance  the pairs of an order that no job card has claimed yet. Still
- *            planned, because the customer is owed them and procurement has
- *            to buy for them — it is work waiting to be released.
- *   order    an order with no job cards at all. One unit, the whole order:
- *            exactly what the planner did before job cards existed.
+ *   balance  the pairs of an order that no job card has claimed yet. They are
+ *            NOT put on machines, because the floor has not released them,
+ *            but procurement still has to buy for them and the Order Book
+ *            must show them as waiting.
  *
  * The three kinds add up to the order, never more, so material demand and the
  * pair count are unchanged by the split.
@@ -119,8 +118,11 @@ export function productionUnits(orders = [], jobs = []){
     const mine = all.filter(job => String(job && job.order_no || "") === String(order.order_no || ""));
     const carded = mine.filter(carriesCard);
     if(!carded.length){
-      units.push(base(order, { unit_key: order.order_no, unit_kind: "order",
-                               order_date: isoDate(order.order_date), lines: order.lines || [] }));
+      /* Issuing a PI creates an ORDER, not a production release. Previously
+         this fallback silently treated the full order as a scheduled unit,
+         which made a brand-new PI read "all of it" under On job cards. The
+         whole quantity is a balance until a real, size-wise job card exists. */
+      units.push(balanceUnit(order, order.lines || []));
       continue;
     }
     for(const job of carded) units.push(jobUnit(order, job));
