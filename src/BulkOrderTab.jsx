@@ -8,6 +8,8 @@ const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
 
 /* Bulk order entry from a spreadsheet. Nothing is written until the whole file
    parses — a half-imported batch is worse than a rejected one. */
+const plural=(n,word)=>`${n} ${word}${n===1?"":"s"}`;
+
 export default function BulkOrderTab({ onImported }){
   const [result,setResult]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -104,7 +106,7 @@ export default function BulkOrderTab({ onImported }){
     {result && (
       <div className="border border-indigo-200 bg-indigo-50/50 rounded-xl p-4">
         <div className="text-sm font-semibold text-indigo-900 mb-2">
-          {result.orders.length} orders · {fmt(totalPairs)} pairs · {result.rowCount} rows read
+          {plural(result.orders.length,"order")} · {fmt(totalPairs)} pairs · {plural(result.rowCount,"row")} read
         </div>
 
         {!!result.errors.length && (
@@ -122,7 +124,10 @@ export default function BulkOrderTab({ onImported }){
           <div className="mb-3">
             <div className="text-xs font-semibold text-amber-800 mb-1">{result.warnings.length} warning{result.warnings.length>1?"s":""} (recognised rows can still be imported):</div>
             <div className="max-h-40 overflow-y-auto text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-              {result.warnings.map((e,i)=><div key={i}>Row {e.row}: {e.error}</div>)}
+              {/* The Order Book layout reports its warnings as whole sentences;
+                  the other layouts as {row, error}. Printing a sentence as
+                  `Row ${e.row}` gave an empty "Row :". */}
+              {result.warnings.map((e,i)=><div key={i}>{typeof e==="string"?e:`Row ${e.row}: ${e.error}`}</div>)}
             </div>
           </div>
         )}
@@ -155,7 +160,7 @@ export default function BulkOrderTab({ onImported }){
             </div>
           : <button disabled={busy||!result.orders.length} onClick={commit}
               className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
-              {busy?"Importing…":`Import ${result.orders.length} orders`}</button>}
+              {busy?"Importing…":`Import ${plural(result.orders.length,"order")}`}</button>}
       </div>
     )}
   </div>;

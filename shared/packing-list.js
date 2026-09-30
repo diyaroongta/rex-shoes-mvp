@@ -201,8 +201,11 @@ export function draftFromOrder(order, sizesForCombo, dispatched = {}){
   return {
     customer: (order && order.party) || "",
     order_no: (order && order.order_no) || "",
-    order_qty: null,
-    date: null,
+    /* The ORDER's own total, which the sheet prints beside what is leaving —
+       a known figure, so the header no longer prints it blank. Null only when
+       the order carries no quantities at all. */
+    order_qty: ((order && order.lines) || []).reduce((a, l) => a + Math.round(num(l.qty)), 0) || null,
+    date: null,     // stamped by the screen; this module takes no clock
     lines,
   };
 }

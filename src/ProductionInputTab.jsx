@@ -34,6 +34,8 @@ export const mondayOf=value=>{
 };
 export const plusDays=(iso,n)=>{const d=new Date(`${iso}T00:00:00`);if(isNaN(d))return "";d.setDate(d.getDate()+n);return isoLocal(d);};
 const fmt=n=>Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:0});
+const STAGE_WORD={CUTTING:"Cutting",PREPARATION:"Preparation",STITCHING:"Stitching",UPPER_QC:"Upper QC",
+  MOLDING:"Molding",PACKING:"Packing",DISPATCH:"Dispatch",TRANSIT:"Transit"};
 
 export function workbookFor(rows, weekStart){
   const wb=XLSX.utils.book_new();
@@ -329,12 +331,20 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
           {" "}· {typed.filled} of {typed.rows} rows
         </span>
       </div>}
-      <table className="w-full text-xs" style={{minWidth:950}}><thead><tr className="sign text-slate-500">
-        {['Date','Work centre','Stage','Job card / Order','Article','Size range','Party','Plan','Achievement'].map(h=><th key={h} className={`py-2 px-2 ${['Plan','Achievement'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
-      </tr></thead><tbody>{visible.map(row=><tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100">
-        <td className="py-2 px-2 mono">{row.production_on}</td><td className="px-2">{(INPUTS.workcenters[row.work_center]||{}).name||row.work_center}</td>
-        <td className="px-2">{row.stage}</td><td className="px-2"><div className="mono font-semibold">{row.job_card_no||'Whole order'}</div><div className="mono text-slate-400">{row.order_no}</div></td><td className="px-2">{row.article}</td>
-        <td className="px-2">{row.size_ranges||'—'}</td><td className="px-2">{row.party||'—'}</td><td className="px-2 mono text-right">{fmt(row.planned_pairs)}
+      {/* SIX COLUMNS, NOT NINE. At nine, with a 950px floor, the Achievement
+          box — the only thing this table is for — sat off the right edge on a
+          laptop. Nothing is dropped: the stage sits under its machine, the
+          party under the order, the size range under the article. */}
+      <table className="w-full text-xs" style={{minWidth:620}}><thead><tr className="sign text-slate-500">
+        {['Date','Where','Job card / Order','Article','Plan','Achievement'].map(h=><th key={h} className={`py-2 px-2 ${['Plan','Achievement'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
+      </tr></thead><tbody>{visible.map(row=><tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100 align-top">
+        <td className="py-2 px-2 mono whitespace-nowrap">{row.production_on}</td>
+        <td className="py-2 px-2"><div>{(INPUTS.workcenters[row.work_center]||{}).name||row.work_center}</div>
+          <div className="text-slate-400">{STAGE_WORD[row.stage]||row.stage}</div></td>
+        <td className="py-2 px-2"><div className="mono font-semibold">{row.job_card_no?`Card ${row.job_card_no}`:'Whole order'}</div>
+          <div className="text-slate-400"><span className="mono">{row.order_no}</span>{row.party?` · ${row.party}`:''}</div></td>
+        <td className="py-2 px-2"><div>{row.article}</div><div className="mono text-slate-400">{row.size_ranges||'—'}</div></td>
+        <td className="py-2 px-2 mono text-right">{fmt(row.planned_pairs)}
           {/* A row the plan no longer carries, because recording it is what
               took it off the plan. It is history and stays visible, so the day
               it was entered against does not read as empty. */}
@@ -396,6 +406,7 @@ function Metric({label,value}){return <div className="rounded-xl bg-slate-50 bor
 function ImpactPanel({impact,onClose}){
   const n=v=>Number(v||0).toLocaleString("en-IN");
   const date=iso=>!iso?"—":new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN",{day:"numeric",month:"short"});
+  const span=(a,b)=>a===b?date(a):`${date(a)}–${date(b)}`;
   return <section className="bg-white border-2 border-indigo-300 rounded-2xl p-4 shadow-sm">
     <div className="flex items-baseline gap-2 flex-wrap">
       <div className="text-sm font-semibold text-slate-800">What this entry changed</div>
@@ -444,6 +455,20 @@ function ImpactPanel({impact,onClose}){
         </div>))}
       <div className="text-[11px] text-slate-400 mt-0.5">
         The pairs still to make are re-planned from the next working day — the balance cannot be made again yesterday.
+      </div>
+    </div>}
+
+    {/* Stage by stage — the re-plan a dispatch date can absorb without moving. */}
+    {!!(impact.stage_moves||[]).length && <div className="mt-3">
+      <div className="text-xs font-semibold text-slate-600 mb-1">Stages re-planned</div>
+      {impact.stage_moves.slice(0,8).map(m=>(
+        <div key={m.unit_key+m.stage} className="text-xs text-slate-600">
+          <span className="mono">{m.card_no?`card ${m.card_no}`:m.order_no}</span> · <b>{STAGE_WORD[m.stage]||m.stage}</b> —{" "}
+          {span(m.start_before,m.end_before)} → <b className="mono">{span(m.start_after,m.end_after)}</b>
+        </div>))}
+      {impact.stage_moves.length>8 && <div className="text-[11px] text-slate-400">…and {impact.stage_moves.length-8} more.</div>}
+      <div className="text-[11px] text-slate-400 mt-0.5">
+        What was not made is planned from the next day, and every stage behind it moves back to make room.
       </div>
     </div>}
 

@@ -5,6 +5,7 @@ import { planImpact, storedRows } from "../shared/input-impact.js";
 import { compute } from "../shared/engine.js";
 import { progressFrom } from "../shared/production-progress.js";
 import { INPUTS } from "../shared/inputs.js";
+import { productionUnits } from "../shared/production-units.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
 let passed = 0, failed = 0;
@@ -70,6 +71,43 @@ test("recording MORE than planned reads as ahead, not as an error", () => {
   assert.equal(impact.ahead_rows, 0, "1,000 of 1,000 is neither ahead nor behind");
   assert.equal(impact.pairs_recorded, 1000);
 });
+
+console.log("\nD — a re-plan the dispatch date absorbed is still reported");
+/* The client demo, exactly: a 500-pair card, 425 cut on its first day. The
+   75 move to the next day and preparation is pushed back — but slack meant
+   the card still shipped on the same day, and the panel used to say "No job
+   card's own dates moved" over a schedule that had just moved twice. */
+{
+  const order = { order_no:"JO-DEMO", order_date:"2026-09-01", party:"Demo", article_code:"ARMOUR (LACE)",
+                  priority:2, lines:[{ combo:"2X5", qty:1000 }] };
+  const card = { order_no:"JO-DEMO", id:1, created_on:"2026-09-10", qty:500,
+                 card:{ card_no:"9", lines:[{ combo:"2X5", qty:500, sizes:{ "2":125, "3":125, "4":125, "5":125 } }] } };
+  const plan = progress => compute([order], articles, materials, wcs, origin,
+                                   { units: productionUnits([order],[card]), progress });
+  const was = plan({});
+  const job = was.units.find(u => u.unit_kind === "job");
+  const cut = job.stages.find(s => s.stage === "CUTTING");
+  const planned = Object.values(cut.alloc)[0];
+  const saved = [{ production_on:cut.start_date, work_center:cut.work_center, stage:"CUTTING",
+                   order_no:"JO-DEMO", unit_key:job.unit_key, planned_pairs:planned,
+                   actual_pairs:Math.round(planned*0.85) }];
+  const now = plan(progressFrom(saved));
+  const impact = planImpact(was, now, saved);
+  test("the cutting stage is reported as running a day longer", () => {
+    const m = impact.stage_moves.find(s => s.unit_key === job.unit_key && s.stage === "CUTTING");
+    assert.ok(m, "cutting's balance moved to the next day");
+    assert.ok(m.end_after > m.end_before);
+    assert.equal(m.card_no, "9");
+  });
+  test("and the stage behind it is pushed back, not left overlapping", () => {
+    const next = impact.stage_moves.find(s => s.unit_key === job.unit_key && s.stage !== "CUTTING");
+    assert.ok(next, "a later stage moved too");
+    assert.ok(next.start_after > next.start_before);
+  });
+  test("so the panel does not claim the card's dates stood still", () => {
+    assert.ok(!impact.unchanged.some(u => /job card's own dates/.test(u)));
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

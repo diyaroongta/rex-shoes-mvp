@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 const apiMocks=vi.hoisted(()=>({saveProductionActuals:vi.fn(),listProductionActuals:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>apiMocks);
 
-import ProductionInputTab, { workbookFor, mondayOf } from "../../src/ProductionInputTab.jsx";
+import ProductionInputTab, { workbookFor, mondayOf, plusDays } from "../../src/ProductionInputTab.jsx";
 import { INPUTS } from "../../shared/inputs.js";
 import { dayIndex } from "../../shared/engine.js";
 import { todayIso } from "../../src/lib/today.js";
@@ -82,6 +82,23 @@ it("records production typed straight into the table, and says what it changed",
   expect(rows[0].unit_key).toBe("JO9500#JC41");
   /* Not just "saved" — the screen reports the consequence. */
   expect(await screen.findByText("What this entry changed")).toBeInTheDocument();
+});
+
+/* The re-plan a dispatch date can absorb. The card still ships the same day,
+   so the panel used to say "No job card's own dates moved" while cutting's
+   balance had just gone to the next day. */
+it("names the stages the entry re-planned even when dispatch did not move", async () => {
+  const user = userEvent.setup();
+  const NEXT = plusDays(MONDAY, 1);
+  const AFTER = { ...STATE, units:[{ ...STATE.units[0],
+    stages:[{ ...STATE.units[0].stages[0], start:DAY+1, end:DAY+1, alloc:{ [DAY+1]:75 },
+              start_date:NEXT, end_date:NEXT }] }] };
+  render(<ProductionInputTab state={STATE} actuals={[]} onChanged={vi.fn()} replan={()=>AFTER} />);
+  await user.type(await screen.findByLabelText(/Pairs achieved for JC41/), "425");
+  await user.click(screen.getByRole("button",{ name:"Save today's production" }));
+  expect(await screen.findByText("Stages re-planned")).toBeInTheDocument();
+  expect(screen.getByText(/card JC41/)).toBeInTheDocument();
+  expect(screen.queryByText("No job card's own dates moved.")).toBeNull();
 });
 
 it("cannot be saved until something has been typed", async () => {

@@ -185,6 +185,16 @@ test("the draft carries the article, closure and colour so they are not re-keyed
   assert.deepEqual(d.lines[0].groups.map(g=>g.sizes[0].size), ["8","9","10"]);
 });
 
+/* The demo sheet printed "Order Quantity :-" blank for a 1,000-pair order.
+   It is the order's own figure, not something to invent or leave empty. */
+test("the draft prints the order's total quantity, and blank only when there is none", () => {
+  const order = { order_no:"JO2173", party:"DEMO", article_code:"ARMOUR", pi:{},
+                  lines:[{ combo:"2X5", qty:1000 }] };
+  assert.equal(draftFromOrder(order, () => ["2","3","4","5"], { "2X5":425 }).order_qty, 1000);
+  assert.equal(draftFromOrder({ ...order, lines:[] }, () => [], {}).order_qty, null,
+    "no quantities on the order is unknown, not zero");
+});
+
 test("the draft leaves the carton count at zero — that is the number to count", () => {
   const order = { order_no:"JO1", party:"P", article_code:"BOLT", pi:{} };
   const d = draftFromOrder(order, () => ["8"], { "8X10":28 });

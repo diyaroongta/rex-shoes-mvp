@@ -406,36 +406,19 @@ export default function App({ user=null, onSignOut=null }={}){
   /* A PI waiting for its first job card has no SLA yet. It is visible as
      Waiting on the MIS, but must not be painted red as a late order. */
   const lateCount = state.orders.filter(o=>o.sla==="at_risk"||o.sla==="breach").length;
+  /* THE MENU RUNS IN THE ORDER A PAIR MOVES THROUGH THE FACTORY.
+     It used to be split by department: Orders held the PI, the Order Book AND
+     the Dispatch Book, while job orders and the day's production sat in a
+     separate Production group — so walking one order from PI to lorry meant
+     going Orders → Production → back to Orders. The four numbered groups are
+     that walk, one step each; `FLOW` is the single definition, shared with
+     the step strip under the header. */
   const nav = [
     ["Overview", [
       ["mis","Executive MIS", {n:state.totals.sla.breach, tone:"#BE123C"}],
     ]],
-    ["Orders", [
-      /* Bulk upload is no longer a top-level entry — it is a second way of
-         doing the same job as PI generation (getting orders in), so it lives
-         inside that screen rather than beside it. */
-      ["intake","PI generation"],
-      ["pis","PI database"],
-      ["orders","Order Book", {n:lateCount, tone:"#BE123C"}],
-      /* Repair is the last thing that happens to a shoe before the lorry, so
-         it sits beside the book that ships it. Both were briefly moved into a
-         group of their own; the factory already knows them here. */
-      ["repair","Repair"],
-      ["dispatch","Dispatch Book"],
-    ]],
-    ["Production", [
-      /* A job order is the release of an Order Book row to the floor, so both
-         job-order screens begin the production flow rather than ending the
-         commercial Orders menu. */
-      ["jobs","Create Job Order"],
-      ["jobwork","Job Orders Database"],
-      ["schedule","Schedule"],
-      ["production_input","Daily plan vs achievement"],
-      ["status","Production status"],
-      ["plan","Production plan"],
-      ["machines","Machine load"],
-    ]],
-
+    ...FLOW.map(({group, tabs}) => [group, tabs.map(([k,label]) =>
+      k==="orders" ? [k,label,{n:lateCount, tone:"#BE123C"}] : [k,label])]),
     ["Materials", [
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
       ["stock","Stock"],
@@ -491,7 +474,11 @@ export default function App({ user=null, onSignOut=null }={}){
         /* Top menu bar. The screens are the same; the sidebar spent 212px of
            every page on a list that is mostly not being used, and the groups
            were already the right shape for a menu. */
-        .menubar{display:flex;align-items:stretch;background:#0F2233;position:sticky;top:0;z-index:40}
+        /* WRAPS rather than overflowing: on a narrow window the bar ran off the
+           right edge and the whole page scrolled sideways. It cannot scroll
+           itself instead — overflow on the bar would clip the dropdowns. */
+        .menubar{display:flex;flex-wrap:wrap;align-items:stretch;background:#0F2233;position:sticky;top:0;z-index:40}
+        @media (max-width:900px){ .menubtn{padding:0 11px;font-size:13px} .menustatus{display:none!important} }
         .menubtn{display:flex;align-items:center;gap:6px;padding:0 15px;height:44px;border:none;
           background:transparent;color:#C6D3E1;font-size:13.5px;font-weight:600;cursor:pointer;
           font-family:inherit;white-space:nowrap}
@@ -531,11 +518,17 @@ export default function App({ user=null, onSignOut=null }={}){
               <div style={{fontSize:12,color:"#6B7C90",marginTop:1}}>{(VIEWS[tab]||{}).sub || ""}</div>
             </div>
             <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap",alignItems:"center"}}>
-              <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
-              {tab==="mis" && <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
-                    tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />}
-              <Stat label="To procure" value={state.procurement.length}
-                    tone={state.procurement.length?"#B45309":"#047857"} />
+              {/* Factory-wide figures are the OVERVIEW's business. On every
+                  other screen they were three more numbers competing with the
+                  one the screen is about — and "to procure" is already a badge
+                  on the Materials menu. */}
+              {tab==="mis" && <>
+                <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
+                <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
+                      tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />
+                <Stat label="To procure" value={state.procurement.length}
+                      tone={state.procurement.length?"#B45309":"#047857"} />
+              </>}
               {user && (
                 <div style={{display:"flex",alignItems:"center",gap:9,paddingLeft:16,
                              borderLeft:"1px solid #E4E9F0"}}>
@@ -573,6 +566,8 @@ export default function App({ user=null, onSignOut=null }={}){
               Ask an administrator if you need to make a change.
             </div>
           )}
+
+          <FlowStrip tab={tab} setTab={setTab} role={role} />
 
           {errBanner}
 
@@ -616,7 +611,11 @@ export default function App({ user=null, onSignOut=null }={}){
             <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} jobs={jobs} />
           </div>
           {intakeMode==="sheet" &&
-            <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("schedule"); }} />}
+            <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("orders"); }} />}
+          {/* An imported order lands in the ORDER BOOK. It used to jump to the
+              Schedule, where it is not yet — nothing is planned until a job
+              order releases it — so the first thing shown after an upload was
+              "not on the plan yet". */}
         </div>
         {tab==="mis" && <MISDashboard state={state} dispatches={dispatches} productionActuals={productionActuals} dispatchLoading={dispatchLoading} dispatchError={dispatchErr}
           onRefresh={syncAll} />}
@@ -2202,6 +2201,54 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[]}){
 }
 /* One line of orientation per view — what this screen is for, in the user's
    terms rather than the system's. */
+/* The order-to-lorry walk, in the order it happens. The menu groups and the
+   step strip are both built from this, so they cannot drift apart.
+   Bulk upload is not listed: it is a second way of doing PI generation and
+   lives inside that screen. Repair sits under Dispatch because it is the
+   last thing that can happen to a shoe before the lorry — but it is the
+   exception path, so the Dispatch Book leads the step. */
+const FLOW = [
+  { step:1, group:"Orders",     tabs:[["intake","PI generation"],["pis","PI database"],["orders","Order Book"]] },
+  { step:2, group:"Job orders", tabs:[["jobs","Create Job Order"],["jobwork","Job Orders Database"]] },
+  { step:3, group:"Production", tabs:[["schedule","Schedule"],["production_input","Daily plan vs achievement"],
+                                      ["status","Production status"],["plan","Production plan"],["machines","Machine load"]] },
+  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["repair","Repair"]] },
+];
+const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
+
+/* Where this screen sits in the walk — one quiet line, four steps. The menu
+   already lists every screen; repeating them here only doubled the clutter,
+   so a step jumps to its FIRST screen the role may open. A step the role
+   cannot open is still named (the walk has four steps whoever is looking)
+   but is not a link. */
+function FlowStrip({ tab, setTab, role }){
+  const here = FLOW.find(f => f.tabs.some(([k]) => k === tab));
+  if(!here) return null;
+  return <nav data-noprint aria-label="Order flow"
+    style={{margin:"12px 22px 0",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center",fontSize:12}}>
+    {FLOW.map((f, i) => {
+      const on = f === here;
+      const first = f.tabs.find(([k]) => canSeeTab(role, k));
+      const style = {display:"inline-flex",alignItems:"center",gap:6,padding:"3px 10px 3px 4px",
+        borderRadius:99,border:"none",fontFamily:"inherit",fontSize:12,fontWeight:on?700:500,
+        background:on?"#E3EEFB":"transparent",color:on?"#0B4F98":first?"#52667C":"#A7B4C2",
+        cursor:first&&!on?"pointer":"default"};
+      const body = <>
+        <span className="mono" style={{width:18,height:18,borderRadius:99,display:"inline-flex",
+          alignItems:"center",justifyContent:"center",fontSize:10.5,fontWeight:700,
+          background:on?"#0B6BCB":"#E4E9F0",color:on?"#fff":"#52667C"}}>{f.step}</span>
+        {f.group}</>;
+      return <React.Fragment key={f.group}>
+        {i > 0 && <span aria-hidden="true" style={{color:"#C3CDD9",margin:"0 2px"}}>›</span>}
+        {first
+          ? <button style={style} aria-current={on?"step":undefined} aria-label={`Step ${f.step}: ${f.group}`}
+              onClick={()=>{ if(!on) setTab(first[0]); }}>{body}</button>
+          : <span style={style}>{body}</span>}
+      </React.Fragment>;
+    })}
+  </nav>;
+}
+
 const VIEWS = {
   mis:         {title:"Executive MIS",       sub:"Live order health, delivery outlook, dispatch gap and planned capacity"},
   intake:      {title:"PI generation",      sub:"Read an order slip or PI, check it, raise the invoice"},
@@ -2212,6 +2259,7 @@ const VIEWS = {
   status:      {title:"Production status",   sub:"Where every job card actually is — recorded movements first, the plan where nothing is recorded"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
+  production_input:{title:"Daily plan vs achievement",sub:"Enter what was made against the day's plan; the balance re-plans from the next day"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
   procurement: {title:"Procurement",        sub:"What to buy, netted against stock"},
@@ -2315,56 +2363,91 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
           Show archived
         </label>
       </div>
-      <p className="text-xs text-slate-500 mb-3">Issued PIs are snapshotted here independently of the live production queue. Revisions made through Edit are retained with their revision number.</p>
+      <p className="text-xs text-slate-500 mb-3">Every PI as issued. Open one to see the invoice or edit its orders.</p>
       {!pis.length ? <div className="text-sm text-slate-400 py-6 text-center">No PIs have been issued yet.</div> :
-      <table className="w-full text-sm" style={{minWidth:720}}>
-        <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
-          <th className="text-left py-2">PI</th><th className="text-left">Date</th><th className="text-left">Party</th>
-          <th className="text-left">Articles</th><th className="text-right">Pairs</th><th className="text-center">Revision</th>
-          <th className="text-left">Status</th><th className="text-left">Materials</th><th className="text-left">Schedule</th><th></th>
+      /* FIVE COLUMNS, NOT TEN. Ten columns in a laptop-width card broke the PI
+         number and the date mid-word, wrapped article names to four lines and
+         put two different badges and a red Delete on every row — the list could
+         not be read at a glance. Nothing is dropped: the date and status sit
+         under the PI, the articles under the customer, the material position
+         under the production position, and the revision appears only once a
+         PI has actually been revised. */
+      <table className="w-full text-sm" style={{minWidth:560,borderCollapse:"collapse"}}>
+        <thead><tr className="text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+          <th className="text-left py-2 pr-3 font-semibold">PI</th>
+          <th className="text-left py-2 pr-3 font-semibold">Customer</th>
+          <th className="text-right py-2 pr-4 font-semibold">Pairs</th>
+          <th className="text-left py-2 pr-3 font-semibold">Production</th>
+          <th></th>
         </tr></thead>
         <tbody>{pis.map(p=>{const os=(p.snapshot&&p.snapshot.orders)||[];
           const owed=outstandingFor(p);
           const owedPairs=owed.reduce((a,r)=>a+r.remaining,0);
-          return <tr key={p.pi_no} className="border-t border-slate-100">
-          <td className="py-2 mono font-semibold">{p.pi_no}</td><td className="mono text-slate-600">{p.pi_date}</td>
-          <td>{p.party||"—"}</td><td className="text-xs text-slate-600">{[...new Set(os.map(o=>o.article_code))].join(", ")}</td>
-          <td className="text-right mono">{fmt(os.reduce((a,o)=>a+(o.lines||[]).reduce((b,l)=>b+(Number(l.qty)||0),0),0))}</td>
-          <td className="text-center mono">{p.revision||0}</td><td className="capitalize">{p.status}</td>
-          {/* Shortfall for THIS PI, after every PI ahead of it in the queue has
-              taken its stock. An order that cannot be made is worth knowing
-              about on the commercial record, not only on the buying list. */}
-          <td>{(()=>{
-            const g=(shortfall||{})[p.pi_no];
-            if(!g) return <span className="text-xs text-slate-400">—</span>;
-            if(g.can_run) return <span className="text-xs font-semibold text-emerald-700">In stock</span>;
-            return <button onClick={()=>setShortfallPi(shortfallPi===p.pi_no?null:p.pi_no)}
-              className="text-xs font-semibold text-orange-800 border border-orange-300 bg-orange-50 rounded-lg px-2 py-0.5">
-              {g.short_count} short</button>;
-          })()}</td>
-          {/* Owed pairs, not "is it on the schedule". A PI half-released still
-              has work to send, and the old existence check called it Linked.
-              Creating the job order itself is a shop-floor decision and now
-              has its own screen; this column only REPORTS the position. */}
-          <td>{owedPairs>0
-            ? <button onClick={()=>onGoToJobs&&onGoToJobs()}
-                aria-label={`${fmt(owedPairs)} pairs of ${p.pi_no} still to release`}
-                className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded-lg px-2 py-1">
-                {fmt(owedPairs)} pr owed</button>
-            : <span className="text-xs font-semibold text-emerald-700">Fully released</span>}</td>
-          <td className="text-right whitespace-nowrap">
-            <button onClick={()=>{setSelectedPi(selectedPi===p.pi_no?null:p.pi_no);setEditingOrder(null);}} className="text-xs font-semibold text-indigo-700 hover:underline">{selectedPi===p.pi_no?"Close":"View / edit"}</button>
+          const articles=[...new Set(os.map(o=>o.article_code))];
+          /* Shortfall for THIS PI, after every PI ahead of it in the queue has
+             taken its stock — a second line, not a second badge. */
+          const g=(shortfall||{})[p.pi_no];
+          const open=selectedPi===p.pi_no;
+          return <tr key={p.pi_no} className="border-t border-slate-100 align-top"
+                     style={{background:open?"#F5F9FE":undefined}}>
+          <td className="py-2.5 pr-3 whitespace-nowrap">
+            <div className="mono font-semibold text-slate-800">{p.pi_no}</div>
+            <div className="text-[11px] text-slate-500">
+              {/* The year only when it is not this one: the database holds
+                  historical PIs, and "12 Mar" alone would read as this March. */}
+              {p.pi_date && String(p.pi_date).slice(0,4)!==String(new Date().getFullYear())
+                ? `${niceDate(p.pi_date)} ${String(p.pi_date).slice(0,4)}` : niceDate(p.pi_date)}
+              {p.status && <span className="capitalize"> · {p.status}</span>}
+              {p.revision>0 && <span> · rev {p.revision}</span>}
+            </div>
+          </td>
+          {/* width:100% + maxWidth:0 makes this the column that GIVES — it
+              takes what the others leave and truncates the article line, so
+              the actions never get pushed off the card. */}
+          <td className="py-2.5 pr-3" style={{width:"100%",maxWidth:0}}>
+            <div className="font-medium text-slate-800">{p.party||"—"}</div>
+            {/* "+N more" sits OUTSIDE the truncation, or a long first name
+                hides the only sign that the PI carries a second article. */}
+            <div className="text-[11px] text-slate-500 flex gap-1 min-w-0" title={articles.join(", ")}>
+              <span className="truncate">{articles[0]||"—"}</span>
+              {articles.length>1 && <span className="text-slate-400 shrink-0">+{articles.length-1} more</span>}
+            </div>
+          </td>
+          <td className="py-2.5 pr-4 text-right mono text-slate-800">
+            {fmt(os.reduce((a,o)=>a+(o.lines||[]).reduce((b,l)=>b+(Number(l.qty)||0),0),0))}</td>
+          {/* Owed pairs, not "is it on the schedule": a PI half-released still
+              has work to send. Creating the job order is a shop-floor decision
+              with its own screen; this only REPORTS the position. */}
+          <td className="py-2.5 pr-3 whitespace-nowrap">
+            {owedPairs>0
+              ? <button onClick={()=>onGoToJobs&&onGoToJobs()}
+                  aria-label={`${fmt(owedPairs)} pairs of ${p.pi_no} still to release`}
+                  className="text-xs font-semibold text-amber-800 bg-amber-50 rounded-full px-2.5 py-0.5 hover:bg-amber-100">
+                  {fmt(owedPairs)} pairs to release</button>
+              : <span className="text-xs font-semibold text-emerald-700">Fully released</span>}
+            <div className="text-[11px] mt-0.5">
+              {!g ? null
+                : g.can_run ? <span className="text-slate-500">Materials in stock</span>
+                : <button onClick={()=>setShortfallPi(shortfallPi===p.pi_no?null:p.pi_no)}
+                    className="text-orange-700 hover:underline">{g.short_count} materials short</button>}
+            </div>
+          </td>
+          <td className="py-2.5 text-right whitespace-nowrap">
+            <button onClick={()=>{setSelectedPi(open?null:p.pi_no);setEditingOrder(null);}}
+              className="text-xs font-semibold text-indigo-700 hover:underline">{open?"Close":"View / edit"}</button>
             {showArchived
               ? <button disabled={busyPi===p.pi_no} onClick={()=>runPiAction(p.pi_no,"restore")}
-                  className="ml-2 text-xs font-semibold text-emerald-700 hover:underline disabled:opacity-40">
+                  className="ml-3 text-xs text-slate-500 hover:text-emerald-700 hover:underline disabled:opacity-40">
                   {busyPi===p.pi_no?"…":"Restore"}</button>
               : <button disabled={busyPi===p.pi_no} onClick={()=>runPiAction(p.pi_no,"archive")}
                   title="Hide this PI and take its orders off the schedule. Fully reversible."
-                  className="ml-2 text-xs font-semibold text-slate-600 hover:underline disabled:opacity-40">
+                  className="ml-3 text-xs text-slate-500 hover:text-slate-800 hover:underline disabled:opacity-40">
                   {busyPi===p.pi_no?"…":"Archive"}</button>}
+            {/* Grey until pointed at: a red word on every row read as an alarm,
+                and the confirmation below is where the red belongs. */}
             <button disabled={busyPi===p.pi_no} onClick={()=>setDeletePi(deletePi===p.pi_no?null:p.pi_no)}
               title="Permanently remove this PI and its orders"
-              className="ml-2 text-xs font-semibold text-rose-600 hover:underline disabled:opacity-40">Delete</button>
+              className="ml-3 text-xs text-slate-400 hover:text-rose-600 hover:underline disabled:opacity-40">Delete</button>
           </td>
         </tr>;})}</tbody>
       </table>}
@@ -2734,6 +2817,10 @@ function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
                used; hovering onto a closed bar and having it spring open is
                not. */
             onMouseEnter={()=>{ if(open!==null) setOpen(gi); }}>
+            {FLOW_STEP[group] && <span aria-hidden="true" className="mono"
+              style={{fontSize:10.5,fontWeight:700,color:"#0F2233",background:"#9CC3EC",borderRadius:99,
+                      width:17,height:17,display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+              {FLOW_STEP[group]}</span>}
             <span>{group}</span><span className="caret">▼</span>
             {items.some(([,,b])=>b&&b.n>0) &&
               <span className="navbadge" style={{background:(items.find(([,,b])=>b&&b.n>0)[2]).tone}}>
@@ -2764,12 +2851,15 @@ function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
       {/* Kept from the sidebar: which build is running, and whether the last
           refresh actually reached the server. Without these a fix that is not
           deployed and a fix that does not work look identical. */}
-      <div className="mono" style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,
-                                    padding:"0 16px",fontSize:9.5,color:"#5C7A99"}}>
-        <span>{fmt(totals.orders)} live · {fmt(totals.total_pairs)} pairs</span>
-        <span title="Build currently running">build {typeof __BUILD__==="undefined"?"dev":__BUILD__}</span>
+      {/* One quiet status on the right. The build still matters — without it a
+          fix that is not deployed and a fix that does not work look identical —
+          but it is a diagnostic, so it lives in the tooltip, not on the bar. */}
+      <div className="mono menustatus" style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,
+                                    padding:"0 16px",fontSize:10,color:"#5C7A99"}}>
         <span style={{color:syncFailed?"#E08947":"#5C7A99"}}
-          title={syncFailed?"The last automatic refresh did not reach the server":"Last successful refresh"}>
+          title={`${syncFailed?"The last automatic refresh did not reach the server":"Last successful refresh"}`
+            + ` · ${fmt(totals.orders)} live orders, ${fmt(totals.total_pairs)} pairs`
+            + ` · build ${typeof __BUILD__==="undefined"?"dev":__BUILD__}`}>
           {syncFailed ? "refresh failed" : syncedAt
             ? `synced ${syncedAt.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}` : "synced"}
         </span>

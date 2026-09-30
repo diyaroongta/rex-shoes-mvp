@@ -57,7 +57,13 @@ export function lineBreakdown(line, rateFor = () => null){
    not fill a box of their own. Returns null when there is nothing left over,
    because offering an empty carton is worse than offering none. */
 export function suggestMixedCarton(line, rateFor = () => null){
-  const sizes = lineBreakdown(line, rateFor)
+  /* Only the ORDINARY size rows — the ones moveToMixedCarton takes from.
+     Counting the mixed box already made read its own contents as loose, so
+     after 2+4+4+1 went into a box the screen still said "11 pairs will not
+     fill a carton" and offered to add it again; pressing it would have cut a
+     second mixed box out of full cartons. */
+  const ordinary = { ...line, groups: ((line && line.groups) || []).filter(g => !g.mixed && !g.carton_group) };
+  const sizes = lineBreakdown(ordinary, rateFor)
     .filter(r => r.loose_pairs > 0)
     .map(r => ({ size: r.size, pairs: r.loose_pairs }));
   if(!sizes.length) return null;

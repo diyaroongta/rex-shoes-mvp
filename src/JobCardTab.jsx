@@ -15,8 +15,12 @@ import StockAtHand from "./StockAtHand.jsx";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const today = () => todayIso();
-const shortDate = iso => {
-  const d=new Date(iso);
+/* A bare YYYY-MM-DD is a calendar DAY. `new Date("2026-09-30")` is UTC
+   midnight, which is still the 29th anywhere west of Greenwich — so an order
+   dated the 30th read "29 Sept" on a machine set to US time. */
+export const shortDate = iso => {
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso||""));
+  const d=m ? new Date(+m[1], +m[2]-1, +m[3]) : new Date(iso);
   return isNaN(d) ? String(iso).slice(0,10)
     : d.toLocaleDateString("en-IN",{day:"numeric",month:"short"});
 };
@@ -264,8 +268,10 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm mb-3">
       <div className="serif text-base font-semibold mb-2">2 · Select article and quantity to issue</div>
       <div className="flex gap-3 flex-wrap items-end">
-        <label className="text-xs text-slate-600">Article / style
-          <select value={orderNo} aria-label="Current Order" onChange={e=>chooseOrder(e.target.value)} className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-60" disabled={!who}>
+        {/* Fills the card and no wider: sized to its longest option, the
+            select ran past the card and pushed the whole page sideways. */}
+        <label className="text-xs text-slate-600 w-full min-w-0">Article / style
+          <select value={orderNo} aria-label="Current Order" onChange={e=>chooseOrder(e.target.value)} className="block mt-1 w-full max-w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm" disabled={!who}>
             <option value="">{who?"— choose from Order Book —":"choose a fabricator first"}</option>
             {/* The PARTY and the DATE are on the row because two live orders
                 for the same article are otherwise indistinguishable — "REX

@@ -114,4 +114,29 @@ const skipped=parseOrderWorkbook([
 ],INPUTS,INPUTS.packing);
 assert.ok(skipped.warnings.some(w=>/Mystery Data: skipped/.test(w)),"unread sheets must be surfaced, not silently ignored");
 
+/* A SINGLE-SIZE RANGE SPELT LIKE A SIZE. SMART BOY carries ranges called `11`
+   and `5.5`, so the downloadable template's plain `11` size column read as a
+   range column, the sheet was taken for the wide layout, and every Order Book
+   row failed "Enter pairs in at least one size column" — the demo PI of 1,000
+   ARMOUR pairs could not be uploaded at all. */
+{
+  const ref=JSON.parse(JSON.stringify(INPUTS));
+  const donor=Object.keys(ref.articles).find(a=>a!=="ARMOUR (LACE)");
+  ref.articles["SMART BOY TEST"]={...ref.articles[donor],
+    combos:{"11":ref.articles[donor].combos[Object.keys(ref.articles[donor].combos)[0]]},combo_order:["11"]};
+  const template=["PI NO","ORDER DATE","CUSTOMER NAME","CITY","ARTICLE NAME","COLOUR","SOLE COLOUR","CLOSURE (LACE/VELCRO)","DISPATCH TIMELINE","SOLE","CURRENT STATUS 2.0","PRINT",
+    "5s","6s","7s","8s","9s","10s","11s","12s","13s","1","2","3","4","5","6","7","8","9","10","11","12","TOTAL"];
+  const armour=["PI/DEMO-01","2026-09-30","Demo buyer","Demo","ARMOUR (LACE)","Black","Black","Lace","30 days","","","No",
+    0,0,0,0,0,0,0,0,0,0,250,250,250,250,0,0,0,0,0,0,0,1000];
+  const read=parseOrderSheet([template,armour],ref,ref.packing);
+  assert.deepEqual(read.errors,[],"a bare size heading is a size column, whatever ranges exist");
+  assert.equal(read.orders[0].lines.reduce((n,l)=>n+l.qty,0),1000);
+  assert.deepEqual(read.orders[0].lines.map(l=>l.combo),["2X5"]);
+  // The wide template's own spelling still reaches the one-size range.
+  const wideHdr=["Party","Order Date","Article","Order Nature","Sole Colour","Upper Colour","Pairs 11"];
+  const wideRead=parseOrderSheet([wideHdr,["B","2026-09-30","SMART BOY TEST","MTO","Black","Black",24]],ref,ref.packing);
+  assert.deepEqual(wideRead.errors,[]);
+  assert.deepEqual(wideRead.orders[0].lines.map(l=>[l.combo,l.qty]),[["11",24]]);
+}
+
 console.log("\norder import: uploaded Order Book, wide and legacy formats passed\n");

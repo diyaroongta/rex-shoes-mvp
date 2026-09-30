@@ -8,6 +8,7 @@ import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import GatePass from "./GatePass.jsx";
+import { todayIso } from "./lib/today.js";
 import { buildGatePass, pairsFromCartons } from "../shared/gate-pass.js";
 import { singlePackQty } from "../shared/bridge.js";
 import { suggestMixedCarton, withMixedCarton, moveToMixedCarton, describeCartons, packingSummary,
@@ -162,8 +163,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
   const editSheet=next=>{ setSheet(next); touched(); };
 
   function generate(rec){
-    const built=sheet?buildPackingList({...sheet,dispatch_pairs:enteredPairs()}):null;
-    setPreview({order_no:rec.order.order_no, sheet, built});
+    /* The preview is the sheet as it will print TODAY; a recorded one is
+       reprinted with the day it actually shipped. A blank Date on a document
+       that is checked at the customer's gate reads as unfinished. */
+    const dated=sheet?{...sheet,date:sheet.date||todayIso()}:null;
+    const built=dated?buildPackingList({...dated,dispatch_pairs:enteredPairs()}):null;
+    setPreview({order_no:rec.order.order_no, sheet:dated, built});
     setStale(false);
   }
   const enteredPairs=()=>Object.values(draft).reduce((a,v)=>a+(Number(v)||0),0);

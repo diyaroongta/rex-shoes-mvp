@@ -1,12 +1,12 @@
 import React from "react";
-import { render, screen as screen_, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen as screen_, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Production","Job Orders Database":"Production","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Orders","Dispatch Book":"Orders","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
+const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -42,6 +42,7 @@ vi.mock("../../src/lib/client.js",()=>({
   listDispatchesWithHidden:mocks.listDispatches,addDispatch:vi.fn(),deleteDispatch:vi.fn(),
   uploadBom:vi.fn(),putCatalogue:vi.fn(),deleteCatalogue:vi.fn(),removeParty:vi.fn(),
   readOrderPhoto:vi.fn(),readPi:mocks.readPi,askCopilot:vi.fn(),
+  listRepairs:vi.fn().mockResolvedValue([]),
 }));
 
 import App from "../../src/App.jsx";
@@ -198,15 +199,60 @@ describe("critical UI contracts",()=>{
     const user = userEvent.setup();
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
-    /* Both books live in the Orders group, under the names the factory uses.
-       ONE group is open at a time, and clicking a second one while another is
-       open HOVERS it open and then toggles it shut, so this uses fireEvent
-       rather than userEvent's full pointer sequence. */
+    /* The Order Book opens the walk and the Dispatch Book ends it, each under
+       the name the factory uses. ONE group is open at a time, and clicking a
+       second one while another is open HOVERS it open and then toggles it
+       shut, so this uses fireEvent rather than userEvent's full pointer
+       sequence. */
     fireEvent.click(await screen.findByRole("button",{name:"Orders menu"}));
     expect(screen.getByRole("menuitem",{name:"Order Book"})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Dispatch menu"}));
     expect(screen.getByRole("menuitem",{name:"Dispatch Book"})).toBeInTheDocument();
     expect(screen.queryByRole("menuitem",{name:"Orders & dispatch"})).toBeNull();
     expect(screen.queryByRole("menuitem",{name:"Dispatch & packing"})).toBeNull();
+  });
+
+  it("shows where a screen sits in the order-to-lorry walk, and jumps between steps", async ()=>{
+    const user = userEvent.setup();
+    render(<App user={{username:"a",role:"admin"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+    await goTo(user, "Order Book");
+    const strip = await screen.findByRole("navigation",{name:"Order flow"});
+    expect(strip.textContent).toMatch(/1Orders.*2Job orders.*3Production.*4Dispatch/);
+    expect(strip.querySelector('[aria-current="step"]').getAttribute("aria-label")).toBe("Step 1: Orders");
+    // A step opens its FIRST screen: Dispatch starts at the Dispatch Book.
+    fireEvent.click(within(strip).getByRole("button",{name:"Step 4: Dispatch"}));
+    expect(await screen.findByRole("heading",{name:"Dispatch Book"})).toBeInTheDocument();
+    // The overview is not a step, so it carries no strip.
+    await goTo(user, "Executive MIS");
+    expect(screen.queryByRole("navigation",{name:"Order flow"})).toBeNull();
+  });
+
+  /* The PI list had ten columns in a laptop-width card: PI numbers broke
+     mid-word, articles wrapped to four lines, and every row carried two badges
+     and a red Delete. Five columns now, with the detail stacked under each. */
+  it("lists PIs in five readable columns without dropping anything", async ()=>{
+    const user = userEvent.setup();
+    mocks.listPis.mockResolvedValue([
+      { pi_no:"PI-9", pi_date:"2026-09-29", party:"K.P. Gurgaon", status:"produced", revision:0,
+        snapshot:{ orders:[{ order_no:"S1", article_code:"SPIKE", lines:[{combo:"7X10S", qty:288}] },
+                           { order_no:"S2", article_code:"GLAMOUR", lines:[{combo:"2X5", qty:234}] }] } },
+      { pi_no:"PI-8", pi_date:"2025-03-12", party:"Old buyer", status:"edited", revision:2,
+        snapshot:{ orders:[{ order_no:"S3", article_code:"SPIKE", lines:[{combo:"7X10S", qty:60}] }] } },
+    ]);
+    render(<App user={{username:"a",role:"admin"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+    await goTo(user, "PI database");
+    const table = (await screen.findByText("PI-9")).closest("table");
+    expect([...table.querySelectorAll("th")].map(th=>th.textContent).filter(Boolean))
+      .toEqual(["PI","Customer","Pairs","Production"]);
+    const row9 = screen.getByText("PI-9").closest("tr");
+    expect(within(row9).getByText("+1 more")).toBeInTheDocument();
+    expect(within(row9).getByText("522")).toBeInTheDocument();
+    expect(row9.textContent).not.toMatch(/rev /);             // an unrevised PI says nothing about it
+    const row8 = screen.getByText("PI-8").closest("tr");
+    expect(row8.textContent).toMatch(/rev 2/);
+    expect(row8.textContent).toMatch(/2025/);                 // an old PI keeps its year
   });
 
   it("places the two job-order screens immediately after the Order Book", async ()=>{
@@ -217,27 +263,25 @@ describe("critical UI contracts",()=>{
     render(<App user={{username:"a",role:"admin"}} />);
     await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
 
-    /* Only one group is open at a time, so the order is asserted where it
-       actually lives: the GROUPS run in the order work does, and the
-       job-order screens open the Production group. */
+    /* The groups ARE the walk a pair takes, in order: Orders, then the job
+       order that releases it, then the floor, then the lorry. The Dispatch
+       Book used to sit in Orders, before production — backwards. */
     const groups=screen.getAllByRole("button",{name:/ menu$/})
       .map(b=>b.getAttribute("aria-label").replace(/ menu$/,""));
-    expect(groups.indexOf("Production")).toBe(groups.indexOf("Orders")+1);
+    const walk=["Orders","Job orders","Production","Dispatch"].map(g=>groups.indexOf(g));
+    expect(walk.every((at,i)=>at>=0&&(i===0||at===walk[i-1]+1))).toBe(true);
 
     const itemsOf=name=>{
       fireEvent.click(screen.getByRole("button",{name:`${name} menu`}));
       return screen.getAllByRole("menuitem").map(item=>item.textContent.trim());
     };
-    /* Releasing work to the floor is the step straight after the Order Book,
-       so the two job-order screens come first in Production and in that order. */
-    const production=itemsOf("Production");
-    expect(production[0]).toBe("Create Job Order");
-    expect(production[1]).toBe("Job Orders Database");
-    /* Repair is the last thing that happens to a shoe before the lorry, so it
-       sits immediately before the Dispatch Book. */
-    const orders=itemsOf("Orders");
-    expect(orders.indexOf("Dispatch Book")).toBe(orders.indexOf("Repair")+1);
-    expect(orders).toContain("Order Book");
+    /* Releasing work to the floor is the step straight after the Order Book. */
+    expect(itemsOf("Orders")).toEqual(["PI generation","PI database","Order Book"]);
+    expect(itemsOf("Job orders")).toEqual(["Create Job Order","Job Orders Database"]);
+    expect(itemsOf("Production")[0]).toBe("Schedule");
+    /* Repair is the last thing that can happen to a shoe before the lorry,
+       so it sits under Dispatch — after the book, being the exception path. */
+    expect(itemsOf("Dispatch")).toEqual(["Dispatch Book","Repair"]);
     /* The copilot was never on the factory's change list, so it is not on the
        menu bar either. */
     expect(screen.queryByRole("button",{name:"Copilot"})).toBeNull();
@@ -245,6 +289,7 @@ describe("critical UI contracts",()=>{
     expect(screen.queryByRole("menuitem",{name:"Job work"})).toBeNull();
 
     // The commercial record reports what is owed but no longer releases it.
+    fireEvent.keyDown(window,{key:"Escape"});   // shut the menu itemsOf left open
     await goTo(user, "PI database");
     expect(await screen.findByRole("button",{name:/still to release/})).toBeInTheDocument();
     expect(screen.queryByRole("button",{name:"Release production runs for PI77"})).toBeNull();

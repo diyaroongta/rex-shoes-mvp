@@ -8,7 +8,7 @@ const mocks=vi.hoisted(()=>({
 vi.mock("../../src/lib/client.js",()=>({
   listFabricators:mocks.listFabricators, listJobWork:mocks.listJobWork,
   issueJobWork:mocks.issueJobWork }));
-import JobCardTab from "../../src/JobCardTab.jsx";
+import JobCardTab, { shortDate } from "../../src/JobCardTab.jsx";
 
 const ORDER = { order_no:"JO1", party:"Buyer", article_code:"SPIKE", article:"SPIKE",
   order_date:"2026-09-01",
@@ -92,3 +92,15 @@ it("prints the pasting and packing cards from the same job order",async()=>{
   expect(screen.getAllByText("60").length).toBeGreaterThan(0);
 });
 
+
+/* An order dated the 30th listed as "30 Sept" read "29 Sept" on a machine set
+   to US time: `new Date("2026-09-30")` is UTC midnight, still the 29th there. */
+it("prints an order's calendar date as that day in any time zone", () => {
+  const was = process.env.TZ;
+  try{
+    for(const tz of ["America/Los_Angeles","Asia/Kolkata","UTC"]){
+      process.env.TZ = tz;
+      expect(shortDate("2026-09-30")).toMatch(/^30 /);
+    }
+  } finally { if(was===undefined) delete process.env.TZ; else process.env.TZ = was; }
+});

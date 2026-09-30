@@ -79,6 +79,33 @@ export function planImpact(before, after, saved = []){
     });
   }
 
+  /* STAGE BY STAGE. Comparing only the dispatch date missed the whole
+     re-plan whenever slack absorbed it: 425 of 500 cut on the 30th put the
+     other 75 on the 1st and pushed preparation from the 1st to the 2nd, yet
+     the card still shipped on the 7th — and the panel said "No job card's own
+     dates moved" over a schedule that had just moved twice. A stage with no
+     dates after the entry is FINISHED, not moved, and is left out. */
+  const stageMoves = [];
+  const unitsOf = plan => ((plan || {}).units && (plan || {}).units.length) ? plan.units : (plan || {}).orders || [];
+  const wasByKey = new Map(unitsOf(before).map(u => [u.unit_key || u.order_no, u]));
+  for(const now of unitsOf(after)){
+    const was = wasByKey.get(now.unit_key || now.order_no);
+    if(!was) continue;
+    const wasStages = new Map((was.stages || []).map(s => [s.stage, s]));
+    for(const s of now.stages || []){
+      const w = wasStages.get(s.stage);
+      if(!w || s.instant || !s.start_date || !w.start_date) continue;
+      if(w.start_date === s.start_date && w.end_date === s.end_date) continue;
+      stageMoves.push({
+        unit_key: now.unit_key || now.order_no, order_no: now.order_no, card_no: now.card_no || null,
+        stage: s.stage,
+        start_before: w.start_date, end_before: w.end_date,
+        start_after: s.start_date, end_after: s.end_date,
+        days_moved: dayDiff(w.end_date, s.end_date),
+      });
+    }
+  }
+
   /* Work that left the machine board because it is finished, and work that
      appeared on it because it is not. */
   const load = [];
@@ -112,14 +139,14 @@ export function planImpact(before, after, saved = []){
     behind_pairs: behind.reduce((a, r) => a + Math.abs(r.gap), 0),
     ahead_rows: ahead.length,
     ahead_pairs: ahead.reduce((a, r) => a + r.gap, 0),
-    orders, cards, load,
+    orders, cards, stage_moves: stageMoves, load,
     procurement: { short_before: shortBefore, short_after: shortAfter,
                    changed: shortBefore !== shortAfter },
     /* SAID OUT LOUD, not omitted. Each of these is a thing a person might
        reasonably fear the entry silently changed. */
     unchanged: [
       orders.length ? null : "No order's dispatch date or delivery status moved.",
-      cards.length ? null : "No job card's own dates moved.",
+      cards.length || stageMoves.length ? null : "No job card's own dates moved.",
       load.length ? null : "Machine loading is unchanged.",
       shortBefore === shortAfter ? "The buying list is unchanged — recording production does not change what was ordered." : null,
       "Nothing was written to the order book, the PI or the dispatch book.",

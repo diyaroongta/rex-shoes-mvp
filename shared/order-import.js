@@ -263,8 +263,19 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
   (rows[headerRow]||[]).forEach((c,i) => { const k = HEADER_ALIASES[norm(c)]; if(k) map[k] = i; });
   const allCombos=[...new Set(Object.values(articles).flatMap(a=>a.combo_order||Object.keys(a.combos||{})))];
   const comboCols=[];
+  /* A header that is only a SIZE ("11", "5.5", "8s") is the Order Book's size
+     column, not a range column — even when some article has a single-size
+     range spelt the same way. SMART BOY's `11` and `5.5` ranges made the
+     template's own `11` column read as a range, flipped the whole sheet into
+     the wide layout, and every Order Book row came back "Enter pairs in at
+     least one size column". The wide template writes `Pairs 11`, so a bare
+     size counts as a range only with that prefix. */
+  const BARE_SIZE=/^\d+(\.5)?S?$/;
   (rows[headerRow]||[]).forEach((c,i)=>{
-    const token=String(c||"").toUpperCase().trim().replace(/^PAIRS?\s*[:\-]?\s*/,"").replace(/\s+/g,"");
+    const raw=String(c||"").toUpperCase().trim();
+    const prefixed=/^PAIRS?\s*[:\-]?\s*/.test(raw);
+    const token=raw.replace(/^PAIRS?\s*[:\-]?\s*/,"").replace(/\s+/g,"");
+    if(!prefixed && BARE_SIZE.test(token)) return;
     if(allCombos.includes(token)) comboCols.push({combo:token,index:i});
   });
   const wide=comboCols.length>0 && map.combo==null;

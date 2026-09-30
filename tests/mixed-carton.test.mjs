@@ -155,5 +155,22 @@ test("the sheet still refuses to disagree with the dispatch", () => {
     `expected the mixed carton's pairs to be reconciled, got ${JSON.stringify(built.problems)}`);
 });
 
+/* The live demo: 425 pairs of ARMOUR 2X5 at 18 a carton, split 110/112/112/91.
+   After the 11 loose pairs went into one mixed box, the screen still offered
+   "11 pairs will not fill a carton" — it counted the mixed box's own contents
+   as loose, and a second press would have cut another box out of full ones. */
+test("once the leftovers are boxed, nothing more is offered", () => {
+  const line = { groups: [["2",110],["3",112],["4",112],["5",91]]
+    .map(([size, pairs]) => ({ sizes:[{ size, pairs }], cartons:0 })) };
+  const eighteen = () => 18;
+  const first = suggestMixedCarton(line, eighteen);
+  assert.deepEqual(first.sizes, [{size:"2",pairs:2},{size:"3",pairs:4},{size:"4",pairs:4},{size:"5",pairs:1}]);
+  const boxed = moveToMixedCarton({ lines:[line] }, 0, first);
+  assert.equal(suggestMixedCarton(boxed.lines[0], eighteen), null,
+    "the mixed box's own pairs are not loose");
+  const pairs = boxed.lines[0].groups.flatMap(g => g.sizes).reduce((a, s) => a + s.pairs, 0);
+  assert.equal(pairs, 425, "moving the leftovers invents and loses nothing");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;
