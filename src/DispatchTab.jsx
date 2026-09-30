@@ -687,8 +687,15 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
         shoe keeps its own pairs, so the order book's balance stays right. */}
     {sheet.lines.length > 1 && <SharedCartonBuilder sheet={sheet} setSheet={setSheet} built={built} />}
 
+    {/* ONE LIST, NOT TWO. The same problems were printed here in amber and
+        again immediately below in red, so a sheet with five boxes left to
+        count showed ten identical-looking complaints and read as a fault in
+        the app. The red panel under the buttons is the one that explains why
+        Record is disabled, so it keeps the list; this says how much is left,
+        where the rows are. */}
     {!built.ok && <div className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">
-      {built.problems.slice(0,4).map((p,i)=><div key={i}>{p}</div>)}
+      <b>{built.problems.length} thing{built.problems.length===1?"":"s"} still to settle</b>
+      {" "}before this sheet can be recorded — listed under the buttons below.
     </div>}
   </div>;
 }

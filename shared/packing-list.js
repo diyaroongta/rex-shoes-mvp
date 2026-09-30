@@ -97,7 +97,14 @@ export function buildPackingList(input = {}){
       if(!sizes.length) problems.push(`Line ${sno}: no sizes entered`);
       /* A part of a shared box legitimately carries pairs and no cartons of
          its own — the box was counted where it was opened. */
-      if(pairs > 0 && cartons === 0 && !shares) problems.push(`Line ${sno}: ${pairs} pairs but no cartons counted`);
+      /* NAME THE SIZES, or two rows of the same size read as the same
+         complaint twice. A 6X7 line drafted as 27 pairs of 6s and 27 of 7s
+         produced "Line 1: 27 pairs but no cartons counted" verbatim twice,
+         which looks like a repeating bug rather than two boxes to count. */
+      if(pairs > 0 && cartons === 0 && !shares){
+        const named = sizes.map(x => x.size).filter(Boolean).join(", ");
+        problems.push(`Line ${sno}${named ? ` · ${named}` : ""}: ${pairs} pairs but no cartons counted`);
+      }
       if(cartons > 0 && pairs === 0) problems.push(`Line ${sno}: ${cartons} carton(s) but no pairs`);
 
       return { sizes, pairs, cartons,

@@ -215,6 +215,23 @@ test("an indivisible range still adds up, with the remainder on the earliest siz
   assert.equal(pairs.reduce((a,b)=>a+b,0), 18, "nothing is lost or invented in the rounding");
 });
 
+/* THE COMPLAINT HAS TO SAY WHICH BOX TO COUNT.
+   A 6X7 line drafted as 27 pairs of 6s and 27 of 7s produced
+   "Line 1: 27 pairs but no cartons counted" word for word twice — which reads
+   as a repeating bug rather than as two separate boxes still to count. */
+test("an uncounted line names its sizes, so two rows do not read alike", () => {
+  const out = buildPackingList({ customer:"C", order_no:"O", lines:[
+    { article:"GLAMOUR", groups:[
+      { sizes:[{size:"6s",pairs:27}], cartons:0 },
+      { sizes:[{size:"7s",pairs:27}], cartons:0 },
+    ]}]});
+  const uncounted = out.problems.filter(p => /no cartons counted/.test(p));
+  assert.equal(uncounted.length, 2, "one per box still to count");
+  assert.equal(new Set(uncounted).size, 2, "and they are distinguishable");
+  assert.ok(uncounted.some(p => p.includes("6s")), uncounted.join(" | "));
+  assert.ok(uncounted.some(p => p.includes("7s")), uncounted.join(" | "));
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes
    its coverage file, so a suite that passed reported 0% and dragged the whole
