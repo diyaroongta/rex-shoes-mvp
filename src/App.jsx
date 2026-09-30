@@ -30,6 +30,7 @@ import JobCardTab from "./JobCardTab.jsx";
 import RepairTab from "./RepairTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import ProductionInputTab from "./ProductionInputTab.jsx";
+import PurchaseOrders from "./PurchaseOrders.jsx";
 import ProfilesTab from "./ProfilesTab.jsx";
 import ChangePassword from "./ChangePassword.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
@@ -649,7 +650,8 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals}
           replan={replan} onChanged={refreshProductionActuals} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={setPlanOverride} />}
-        {tab==="procurement" && <ProcurementTab state={state} />}
+        {tab==="procurement" && <ProcurementTab state={state} role={role}
+          onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="stock" && <StockTab state={state} jobs={jobs} onChanged={()=>setRefTick(t=>t+1)} />}
@@ -3754,7 +3756,7 @@ function ScheduleTab({state,setPlanOverride}){
    actually asks, which is "what is short AND needed on Thursday". A small
    shortfall due tomorrow and a huge one due in three weeks look identical
    sorted by quantity, and they are not the same problem. */
-function ProcurementTab({state}){
+function ProcurementTab({state,role="admin",onStockChanged}){
   const [showAll,setShowAll]=useState(false);
   const [leadDays,setLeadDays]=useState(7);
   const today=todayIso();
@@ -3771,6 +3773,10 @@ function ProcurementTab({state}){
   const counts=list.reduce((a,r)=>{const u=urgencyOf(r,leadDays);a[u]=(a[u]||0)+1;return a;},{});
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
+    <PurchaseOrders materials={list}
+      canCreate={role==="admin"||role==="procurement"}
+      canReceive={role==="admin"||role==="procurement"||role==="store"}
+      onStockChanged={onStockChanged}/>
     <div className="flex items-center gap-3 flex-wrap mb-2">
       <div className="text-sm font-semibold text-slate-700">
         {showAll?`All materials · ${state.netted.length}`:`To buy · ${list.length}`}</div>

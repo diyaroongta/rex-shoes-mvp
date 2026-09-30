@@ -30,6 +30,57 @@ function response(){
 beforeEach(()=>vi.resetAllMocks());
 
 describe("database API contracts",()=>{
+  it("generates a supplier PO and stores Additional information",async()=>{
+    dbMocks.q.mockResolvedValue({rows:[{value:{articles:{},materials:{
+      "MESH||MTR":{name:"MESH",uom:"MTR",stock:0}}}}]});
+    const client={query:vi.fn(async sql=>{
+      const text=String(sql);
+      if(text.includes("nextval('purchase_order_no_seq')"))return {rows:[{n:"7"}]};
+      if(text.includes("insert into purchase_orders"))return {rows:[{po_no:"PO-2026-000007",
+        supplier:"ABC Materials",po_date:"2026-09-30",expected_on:"2026-10-05",status:"open",
+        additional_information:"Deliver before noon",lines:[{material_key:"MESH||MTR",name:"MESH",uom:"MTR",ordered_qty:100}],
+        created_by:"tester",created_at:"2026-09-30T00:00:00.000Z"}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"POST",url:"/api/reference?resource=purchase_orders",
+      query:{resource:"purchase_orders"},body:{resource:"purchase_orders",supplier:"ABC Materials",
+        po_date:"2026-09-30",expected_on:"2026-10-05",additional_information:"Deliver before noon",
+        lines:[{material_key:"MESH||MTR",name:"MESH",uom:"MTR",ordered_qty:100}]}},res);
+    expect(res.statusCode).toBe(201);expect(res.body.po_no).toBe("PO-2026-000007");
+    expect(res.body.additional_information).toBe("Deliver before noon");
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
+  it("receives a PO and adds the same quantity to Stock atomically",async()=>{
+    const po={po_no:"PO-2026-000007",supplier:"ABC Materials",po_date:"2026-09-30",
+      expected_on:"2026-10-05",status:"open",additional_information:"",
+      lines:[{material_key:"MESH||MTR",name:"MESH",uom:"MTR",ordered_qty:100}]};
+    const reference={articles:{},materials:{"MESH||MTR":{name:"MESH",uom:"MTR",stock:100}},stock_meta:{}};
+    const client={query:vi.fn(async sql=>{
+      const text=String(sql);
+      if(text.includes("from purchase_orders where po_no")&&text.includes("for update"))return {rows:[po]};
+      if(text.includes("from purchase_order_receipts"))return {rows:[]};
+      if(text.includes("from reference_data where id=1 for update"))return {rows:[{value:reference}]};
+      if(text.includes("insert into purchase_order_receipts"))return {rows:[{id:1,po_no:po.po_no,
+        received_on:"2026-10-01",lines:[{material_key:"MESH||MTR",quantity:40}],note:"GRN 9",
+        received_by:"tester",created_at:"2026-10-01T00:00:00.000Z"}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);dbMocks.q.mockResolvedValue({rows:[]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"PATCH",url:"/api/reference?resource=purchase_orders",
+      query:{resource:"purchase_orders"},body:{resource:"purchase_orders",action:"receive",po_no:po.po_no,
+        received_on:"2026-10-01",note:"GRN 9",lines:[{material_key:"MESH||MTR",quantity:40}]}},res);
+    expect(res.statusCode).toBe(201);expect(res.body.status).toBe("partial");
+    const stockWrite=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data (id,value)"));
+    const stored=JSON.parse(stockWrite[1][0]);
+    expect(stored.stock_meta["MESH||MTR"].rec).toBe(40);
+    expect(stored.materials["MESH||MTR"].stock).toBe(140);
+    expect(client.query).toHaveBeenCalledWith("commit");
+  });
+
   it("allocates collision-resistant PI numbers from a database sequence",async()=>{
     dbMocks.q.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{n:"42"}]});
     const res=response();

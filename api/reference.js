@@ -7,6 +7,8 @@ import { resolveArticleSizeIn, splitScopedSizeKey, scopedSizeKey } from "../shar
 import { planRemoval, applyRemoval, ordersAtRisk } from "../shared/bom-removal.js";
 import { assignCodes } from "../shared/product-codes.js";
 import { colouredMaterialName } from "../shared/bom-import.js";
+import { validatePurchaseOrder, validatePurchaseReceipt,
+         purchaseOrderProgress } from "../shared/purchase-orders.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -183,7 +185,163 @@ function applyMrp(ref,mrp){
   return touched;
 }
 
+/* Supplier purchase orders share the reference endpoint so the deployment
+   stays inside Vercel's twelve-function limit. They are NOT reference data:
+   their own tables hold the commercial document and an immutable receipt log.
+   A receipt also books the same quantity into the stock register, in the same
+   transaction, so PO tracking and physical stock cannot disagree. */
+async function ensurePurchaseOrderTables(client=null){
+  const run=client?client.query.bind(client):q;
+  await run("create sequence if not exists purchase_order_no_seq start 1");
+  await run(`create table if not exists purchase_orders (
+    po_no text primary key,
+    supplier text not null,
+    po_date date not null,
+    expected_on date,
+    status text not null default 'open' check (status in ('open','partial','received','cancelled')),
+    additional_information text not null default '',
+    lines jsonb not null,
+    created_by text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`);
+  await run(`create table if not exists purchase_order_receipts (
+    id bigserial primary key,
+    po_no text not null references purchase_orders(po_no) on delete restrict,
+    received_on date not null,
+    lines jsonb not null,
+    note text not null default '',
+    received_by text,
+    created_at timestamptz not null default now()
+  )`);
+  await run("create index if not exists purchase_order_receipts_po_idx on purchase_order_receipts (po_no, received_on, id)");
+}
+
+const isoDate=value=>value instanceof Date?value.toISOString().slice(0,10):String(value||"").slice(0,10);
+const poRow=(row,receipts=[])=>purchaseOrderProgress({
+  po_no:row.po_no,supplier:row.supplier,po_date:isoDate(row.po_date),
+  expected_on:row.expected_on?isoDate(row.expected_on):"",status:row.status,
+  additional_information:row.additional_information||"",lines:row.lines||[],
+  created_by:row.created_by||"",created_at:row.created_at instanceof Date?row.created_at.toISOString():String(row.created_at||""),
+  receipts:receipts.map(r=>({id:r.id,received_on:isoDate(r.received_on),lines:r.lines||[],
+    note:r.note||"",received_by:r.received_by||"",created_at:r.created_at instanceof Date?r.created_at.toISOString():String(r.created_at||"")})),
+});
+
+async function purchaseOrders(req,res){
+  if(req.method==="GET"){
+    await ensurePurchaseOrderTables();
+    const {rows:orders}=await q(`select po_no, supplier, po_date, expected_on, status,
+      additional_information, lines, created_by, created_at
+      from purchase_orders order by po_date desc, po_no desc`);
+    const {rows:receipts}=await q(`select id, po_no, received_on, lines, note, received_by, created_at
+      from purchase_order_receipts order by received_on, id`);
+    const by={};for(const receipt of receipts)(by[receipt.po_no]=by[receipt.po_no]||[]).push(receipt);
+    return res.status(200).json(orders.map(order=>poRow(order,by[order.po_no]||[])));
+  }
+
+  if(req.method==="POST"){
+    const checked=validatePurchaseOrder(req.body||{});
+    if(!checked.ok)return fail(res,400,checked.error);
+    /* Names and units come from the material master, never from the browser.
+       Otherwise a direct request could put an invented material on an
+       official PO even though Stock could never receive it. */
+    const ref=await current();
+    for(const line of checked.value.lines){
+      const material=ref.materials?.[line.material_key];
+      if(!material)return fail(res,409,`${line.material_key} is not in the material register`);
+      line.name=material.name;line.uom=material.uom;
+    }
+    const client=await db().connect();
+    try{
+      await client.query("begin");await ensurePurchaseOrderTables(client);
+      const {rows:numberRows}=await client.query("select nextval('purchase_order_no_seq') as n");
+      const no=`PO-${checked.value.po_date.slice(0,4)}-${String(numberRows[0].n).padStart(6,"0")}`;
+      const {rows}=await client.query(`insert into purchase_orders
+        (po_no,supplier,po_date,expected_on,additional_information,lines,created_by)
+        values ($1,$2,$3,$4,$5,$6,$7)
+        returning po_no,supplier,po_date,expected_on,status,additional_information,lines,created_by,created_at`,
+        [no,checked.value.supplier,checked.value.po_date,checked.value.expected_on,
+         checked.value.additional_information,JSON.stringify(checked.value.lines),req.user?.username||null]);
+      await client.query("commit");
+      return res.status(201).json(poRow(rows[0]||{...checked.value,po_no:no,status:"open",created_by:req.user?.username},[]));
+    }catch(error){try{await client.query("rollback");}catch(_){}throw error;}finally{client.release();}
+  }
+
+  if(req.method==="PATCH"){
+    const body=req.body||{}, action=String(body.action||"receive"), no=String(body.po_no||"").trim();
+    if(!no)return fail(res,400,"PO number is required");
+    await ensurePurchaseOrderTables();
+    if(action==="cancel"){
+      const {rows}=await q(`update purchase_orders set status='cancelled',updated_at=now()
+        where po_no=$1 and status in ('open','partial')
+        returning po_no,status`,[no]);
+      if(!rows.length)return fail(res,404,`No open purchase order ${no} was found`);
+      return res.status(200).json({po_no:no,status:"cancelled"});
+    }
+    if(action==="update"){
+      const {rows:found}=await q("select * from purchase_orders where po_no=$1",[no]);
+      if(!found.length)return fail(res,404,`No purchase order ${no} was found`);
+      const merged={...found[0],...body,lines:found[0].lines,
+        po_date:body.po_date||isoDate(found[0].po_date),
+        expected_on:Object.prototype.hasOwnProperty.call(body,"expected_on")?body.expected_on:isoDate(found[0].expected_on)};
+      const checked=validatePurchaseOrder(merged);
+      if(!checked.ok)return fail(res,400,checked.error);
+      const {rows}=await q(`update purchase_orders set supplier=$2,po_date=$3,expected_on=$4,
+        additional_information=$5,updated_at=now() where po_no=$1
+        returning po_no,supplier,po_date,expected_on,status,additional_information,lines,created_by,created_at`,
+        [no,checked.value.supplier,checked.value.po_date,checked.value.expected_on,checked.value.additional_information]);
+      return res.status(200).json(poRow(rows[0],[]));
+    }
+    if(action!=="receive")return fail(res,400,"action must be receive, update or cancel");
+
+    const client=await db().connect();
+    try{
+      await client.query("begin");await ensurePurchaseOrderTables(client);
+      const {rows:orders}=await client.query("select * from purchase_orders where po_no=$1 for update",[no]);
+      if(!orders.length){await client.query("rollback");return fail(res,404,`No purchase order ${no} was found`);}
+      if(orders[0].status==="cancelled"){await client.query("rollback");return fail(res,409,`${no} is cancelled`);}
+      const {rows:prior}=await client.query(`select id,po_no,received_on,lines,note,received_by,created_at
+        from purchase_order_receipts where po_no=$1 order by received_on,id`,[no]);
+      const order=poRow(orders[0],prior), checked=validatePurchaseReceipt(body,order);
+      if(!checked.ok){await client.query("rollback");return fail(res,400,checked.error);}
+
+      const {rows:refs}=await client.query("select value from reference_data where id=1 for update");
+      const ref=JSON.parse(JSON.stringify(refs.length?refs[0].value:INPUTS));
+      const before=JSON.stringify(ref);
+      ref.stock_meta=ref.stock_meta||{};
+      for(const received of checked.value.lines){
+        if(!ref.materials?.[received.material_key]){
+          await client.query("rollback");
+          return fail(res,409,`${received.material_key} is no longer in the material register`);
+        }
+        const material=ref.materials[received.material_key];
+        const meta={...(ref.stock_meta[received.material_key]||{})};
+        if(meta.opening==null&&meta.rec==null&&meta.issue==null)meta.opening=Number(material.stock)||0;
+        meta.rec=(Number(meta.rec)||0)+received.quantity;
+        ref.stock_meta[received.material_key]=meta;
+        material.stock=(Number(meta.opening)||0)+(Number(meta.rec)||0)-(Number(meta.issue)||0);
+      }
+      await client.query(`insert into reference_data_history (change_type,article_code,value)
+                          values ('purchase-order-receipt',null,$1)`,[before]);
+      await client.query(`insert into reference_data (id,value) values (1,$1)
+                          on conflict (id) do update set value=$1,updated_at=now()`,[JSON.stringify(ref)]);
+      const {rows:made}=await client.query(`insert into purchase_order_receipts
+        (po_no,received_on,lines,note,received_by) values ($1,$2,$3,$4,$5)
+        returning id,po_no,received_on,lines,note,received_by,created_at`,
+        [no,checked.value.received_on,JSON.stringify(checked.value.lines),checked.value.note,req.user?.username||null]);
+      const next=poRow(orders[0],[...prior,made[0]]);
+      await client.query("update purchase_orders set status=$2,updated_at=now() where po_no=$1",[no,next.status]);
+      await client.query("commit");
+      return res.status(201).json(next);
+    }catch(error){try{await client.query("rollback");}catch(_){}throw error;}finally{client.release();}
+  }
+  return fail(res,405,`${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
+  if(String((req.query||{}).resource||"")==="purchase_orders"
+     || String((req.body||{}).resource||"")==="purchase_orders")
+    return purchaseOrders(req,res);
   if(req.method === "GET"){
     /* The revision log, so a wrong upload can actually be undone. Snapshots
        nobody can restore are not a safety net. Values are omitted here — the

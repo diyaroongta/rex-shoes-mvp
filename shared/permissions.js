@@ -93,13 +93,13 @@ export const ROLE_DEFS = {
     label:"Procurement Officer",
     summary:"Works the buying list and records what has come in. Cannot change a BOM.",
     tabs:["mis","procurement","stock","orders","schedule"],
-    writes:[], reference:"stock",
+    writes:[], reference:"stock", purchase_orders:"all",
   },
   store: {
     label:"Store / Inventory Keeper",
     summary:"Stock in, stock out and physical counts. Nothing else.",
     tabs:["stock","procurement"],
-    writes:[], reference:"stock",
+    writes:[], reference:"stock", purchase_orders:"receive",
   },
   data: {
     label:"Catalogue & BOM Data Manager",
@@ -180,6 +180,19 @@ export function can(role, method, url, body){
 
   if(READ_METHODS.has(verb)) return { allowed:true };
   if(def.writes === "all") return { allowed:true };
+
+  /* Purchase orders ride on /api/reference only to avoid a thirteenth Vercel
+     function. They are separately authorised: Procurement raises, edits,
+     receives and cancels; Store may only receive goods against an existing
+     PO. Neither permission grants access to BOM or MRP changes. */
+  if(endpoint === "reference" && /(?:\?|&)resource=purchase_orders(?:&|$)/.test(String(url||""))){
+    if(def.purchase_orders === "all") return {allowed:true};
+    if(def.purchase_orders === "receive" && verb === "PATCH" && body?.action === "receive")
+      return {allowed:true};
+    return {allowed:false,reason:def.purchase_orders === "receive"
+      ? "The Store can receive goods against a purchase order, but Procurement must raise, edit or cancel it."
+      : `${def.label} cannot change purchase orders.`};
+  }
 
   if(endpoint === "reference"){
     if(def.reference === "all") return { allowed:true };

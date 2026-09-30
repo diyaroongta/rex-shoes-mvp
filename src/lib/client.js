@@ -168,6 +168,21 @@ export const referenceHistory = ()   => j("/api/reference?history=1");
 export const restoreReference = id   => post("/api/reference", { restore_revision:id });
 export const patchReference = patch     => j("/api/reference", {
   method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(patch) });
+/* Supplier purchase orders live beside procurement while reusing the
+   reference endpoint to keep the deployment inside its serverless-function
+   limit. Receiving a PO also books those quantities into the stock register. */
+export const listPurchaseOrders = () => j("/api/reference?resource=purchase_orders");
+export const createPurchaseOrder = order => post("/api/reference?resource=purchase_orders",
+  { ...order, resource:"purchase_orders" });
+export const receivePurchaseOrder = (po_no,received_on,lines,note="") => j(
+  "/api/reference?resource=purchase_orders", {method:"PATCH",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({resource:"purchase_orders",action:"receive",po_no,received_on,lines,note})});
+export const updatePurchaseOrder = (po_no,patch) => j("/api/reference?resource=purchase_orders", {
+  method:"PATCH",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({resource:"purchase_orders",action:"update",po_no,...patch})});
+export const cancelPurchaseOrder = po_no => j("/api/reference?resource=purchase_orders", {
+  method:"PATCH",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({resource:"purchase_orders",action:"cancel",po_no})});
 /* Bulk BOM removal. `selection` is {articles, ranges, materials} in any mix.
    Always preview first: the same pure function produces both answers, so the
    preview is exactly what the removal will do. `confirm_in_use` is the

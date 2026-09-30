@@ -120,6 +120,21 @@ test("a store keeper cannot smuggle a BOM change in beside a stock change", () =
     "one disallowed key must sink the whole request");
 });
 
+test("Procurement manages POs while Store can only receive them", () => {
+  const url="/api/reference?resource=purchase_orders";
+  assert.equal(allow("procurement","POST",url,{resource:"purchase_orders",supplier:"ABC"}),true);
+  assert.equal(allow("procurement","PATCH",url,{resource:"purchase_orders",action:"cancel"}),true);
+  assert.equal(allow("store","PATCH",url,{resource:"purchase_orders",action:"receive"}),true);
+  assert.equal(allow("store","POST",url,{resource:"purchase_orders",supplier:"ABC"}),false);
+  assert.equal(allow("store","PATCH",url,{resource:"purchase_orders",action:"cancel"}),false);
+  assert.equal(allow("viewer","PATCH",url,{resource:"purchase_orders",action:"receive"}),false);
+});
+
+test("PO permission does not grant a BOM or MRP change", () => {
+  assert.equal(allow("procurement","PATCH","/api/reference",{packing:{}}),false);
+  assert.equal(allow("store","PATCH","/api/reference",{mrp:{}}),false);
+});
+
 test("an empty body does not sail through on a technicality", () => {
   assert.equal(allow("store","PATCH","/api/reference",{}), false);
   assert.equal(allow("store","PATCH","/api/reference"), false);

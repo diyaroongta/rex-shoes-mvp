@@ -101,6 +101,39 @@ create table if not exists reference_data_history (
 create index if not exists reference_data_history_created_idx
   on reference_data_history (created_at desc);
 
+-- ---------------------------------------------------------------------------
+-- Supplier purchase orders and their immutable goods-receipt history.
+-- Status is open / partial / received / cancelled. Receiving through the app
+-- also updates reference_data.stock_meta in the same transaction, so the PO
+-- register and Stock cannot report different deliveries.
+create sequence if not exists purchase_order_no_seq start 1;
+
+create table if not exists purchase_orders (
+  po_no                  text primary key,
+  supplier               text        not null,
+  po_date                date        not null,
+  expected_on            date,
+  status                 text        not null default 'open'
+                           check (status in ('open','partial','received','cancelled')),
+  additional_information text        not null default '',
+  lines                   jsonb       not null,
+  created_by              text,
+  created_at              timestamptz not null default now(),
+  updated_at              timestamptz not null default now()
+);
+
+create table if not exists purchase_order_receipts (
+  id          bigserial primary key,
+  po_no       text        not null references purchase_orders(po_no) on delete restrict,
+  received_on date        not null,
+  lines       jsonb       not null,
+  note        text        not null default '',
+  received_by text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists purchase_order_receipts_po_idx
+  on purchase_order_receipts (po_no, received_on, id);
+
 -- Product catalogue: one row per article. Images are stored as resized data
 -- URLs, which is fine at this scale; move to Vercel Blob if they get large.
 create table if not exists catalogue (
