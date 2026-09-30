@@ -91,3 +91,4 @@ it("prints the pasting and packing cards from the same job order",async()=>{
   /* 60 pairs on the order, and the card totals them. */
   expect(screen.getAllByText("60").length).toBeGreaterThan(0);
 });
+

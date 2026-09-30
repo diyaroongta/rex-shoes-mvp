@@ -45,6 +45,7 @@ vi.mock("../../src/lib/client.js",()=>({
 }));
 
 import App from "../../src/App.jsx";
+import { todayIso } from "../../src/lib/today.js";
 import { REF } from "../../src/lib/refdata.js";
 import ArticleRulesTab from "../../src/ArticleRulesTab.jsx";
 import PartiesTab from "../../src/PartiesTab.jsx";
@@ -1360,5 +1361,40 @@ describe("the schedule draws every stage",()=>{
     expect(new Set(used).size).toBe(used.length);
     // PRINTING is not a stage and must not be offered as one.
     expect(STAGE_COLOR.PRINTING).toBeUndefined();
+  });
+});
+
+/* THE SCHEDULE ANSWERS "WHAT IS THIS MACHINE MAKING, AND WHY".
+   The board used to be one row per order across the entire horizon — on live
+   data a hundred days crushed into ~750px, where the stage bars go sub-pixel.
+   It now opens on today's machines, with a two-week window under it. */
+describe("the schedule opens on the floor",()=>{
+  const order={order_no:"JO-S1",order_date:todayIso(),article_code:"SPIKE",priority:1,party:"Bansal",
+    lines:[{combo:"7X10S",qty:48}],pi:{},version:1};
+
+  it("names each machine, what it is running and why that job",async()=>{
+    mocks.listOrders.mockResolvedValue([order]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Schedule");
+
+    expect(await screen.findByText("On the floor today")).toBeInTheDocument();
+    // The reason a planner can act on — this order is P1.
+    expect(screen.getAllByText(/Marked urgent \(P1\)/).length).toBeGreaterThan(0);
+    // A machine with nothing on it says so rather than showing a blank card.
+    expect(screen.getAllByText(/Nothing scheduled today/).length).toBeGreaterThan(0);
+  });
+
+  it("opens on a two-week window and can be zoomed out",async()=>{
+    mocks.listOrders.mockResolvedValue([order]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Schedule");
+
+    const twoWeeks=await screen.findByRole("button",{name:"Next 2 weeks"});
+    expect(twoWeeks).toHaveAttribute("aria-pressed","true");
+    await user.click(screen.getByRole("button",{name:"Everything"}));
+    expect(screen.getByRole("button",{name:"Everything"})).toHaveAttribute("aria-pressed","true");
+    expect(twoWeeks).toHaveAttribute("aria-pressed","false");
   });
 });

@@ -9,6 +9,8 @@ import { remainingForPi, sourceOrderOf } from "../shared/pi-split.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
 import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
+import { floorToday } from "../shared/floor-today.js";
+import StockAtHand from "./StockAtHand.jsx";
 import { withStockBalances } from "../shared/stock.js";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
@@ -1939,6 +1941,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0}){
                   return {...cc, lines:merged};
                 }))} />
             </div>
+            <StockAtHand article={c.article} lines={c.lines} />
             <details className="mt-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
               <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
               <div className="mt-2"><ArticleRules article={c.article} compact /></div>
@@ -3308,14 +3311,105 @@ function PlanOverrideEditor({order, queue, onChange, onClose}){
   </div>;
 }
 
+/* WHAT EACH MACHINE IS MAKING TODAY — the question the schedule is actually
+   opened to answer, and the one the old board could not.
+   It drew one row per order across the whole horizon: good for "when does
+   JO2112 ship", useless for "what is the rotary running right now, and why
+   that order". Every figure was already computed; shared/floor-today.js joins
+   them the other way round, by machine, for one day. */
+function FloorToday({state}){
+  const units = (state.units && state.units.length) ? state.units : state.orders;
+  const queue = React.useMemo(
+    () => [...units].sort((a,b)=>a.priority-b.priority
+      ||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)
+      ||String(a.unit_key||a.order_no).localeCompare(String(b.unit_key||b.order_no)))
+      .map(u=>u.unit_key||u.order_no), [units]);
+  const board = React.useMemo(
+    () => floorToday({ units, workcenters:INPUTS.workcenters, queue,
+                       today:todayIso(), origin:INPUTS.origin }),
+    [units, queue]);
+
+  return <div className="mb-4">
+    <div className="flex items-baseline gap-2 flex-wrap mb-2">
+      <div className="serif text-base font-semibold text-slate-800">On the floor today</div>
+      <div className="text-xs text-slate-500">{niceDate(board.date)}</div>
+      <div className="text-xs text-slate-500 ml-auto">
+        <b className="mono text-slate-700">{board.busy}</b> of {board.centres.length} machines running
+        {board.pairs_today>0 && <> · <b className="mono text-slate-700">{fmt(board.pairs_today)}</b> pairs planned today</>}
+      </div>
+    </div>
+    <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))"}}>
+      {board.centres.map(c=>{
+        const first=c.running[0];
+        return <div key={c.code} className="rounded-xl border bg-white px-3 py-2.5"
+          style={{borderColor:c.over_capacity?"#fca5a5":c.idle?"#e2e8f0":"#c7d2fe"}}>
+          <div className="flex items-baseline gap-2">
+            <div className="text-sm font-semibold text-slate-800 truncate">{c.name}</div>
+            <div className="mono text-[10px] ml-auto whitespace-nowrap"
+                 style={{color:c.over_capacity?"#b91c1c":"#94a3b8"}}>
+              {/* An unknown capacity is not 0%. Most centres still carry a
+                  placeholder, and a made-up utilisation reads as a measurement. */}
+              {c.util_pct==null ? "capacity not set" : `${c.util_pct}% of ${fmt(c.capacity_per_day)}`}</div>
+          </div>
+          {c.idle
+            ? <div className="text-xs text-slate-400 mt-1.5">
+                Nothing scheduled today.
+                {c.next && <> Next: <b className="text-slate-600">{c.next.card_no||c.next.order_no}</b>{" "}
+                  in {c.next.days_away} day{c.next.days_away===1?"":"s"} ({niceDate(c.next.starts_on)}).</>}
+              </div>
+            : <>
+                <div className="mt-1.5">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="mono text-sm font-semibold text-slate-800">
+                      {first.card_no||first.order_no}</span>
+                    <span className="mono text-xs text-indigo-700">{fmt(first.pairs_today)} pr</span>
+                    {first.pct_through!=null &&
+                      <span className="text-[10px] text-slate-400 ml-auto">{first.pct_through}% done</span>}
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate">{first.article} · {first.party||"—"}</div>
+                  {/* THE "WHY". A job is on a machine for exactly one reason a
+                      planner can act on, so it is named rather than left to be
+                      inferred from row order. */}
+                  <div className="text-[11px] mt-1 rounded px-1.5 py-0.5"
+                       style={{background:first.reason.kind==="manual"?"#eef2ff"
+                         :first.reason.kind==="urgent"?"#fef2f2":"#f8fafc",
+                         color:first.reason.kind==="manual"?"#3730a3"
+                         :first.reason.kind==="urgent"?"#b91c1c":"#475569"}}>
+                    {first.reason.text}</div>
+                </div>
+                {c.running.length>1 && <div className="text-[11px] text-slate-400 mt-1.5">
+                  {c.running.slice(1).filter(r=>r.waiting).length>0
+                    ? `${c.running.slice(1).filter(r=>r.waiting).length} more waiting for this machine`
+                    : `${c.running.length-1} more on it today`}</div>}
+              </>}
+        </div>;
+      })}
+    </div>
+  </div>;
+}
+
 function ScheduleTab({state,setPlanOverride}){
   const [editing,setEditing]=React.useState(null);
   const PRI_STYLE = {1:{bg:"#fee2e2",fg:"#b91c1c"},2:{bg:"#f1f5f9",fg:"#475569"},3:{bg:"#f8fafc",fg:"#94a3b8"}};
   const overrides=Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]));
   const rows=queueOrder(state.orders, overrides);
-  const maxDay=Math.max(...rows.map(o=>o.dispatch_day),1);
-  const minDay=Math.min(...rows.map(o=>Math.min(...o.stages.map(s=>s.start))),0);
-  const span=maxDay-minDay+1;
+  /* A DATE WINDOW, NOT THE WHOLE HORIZON.
+     The board drew every order across every day it spanned — on live data a
+     100-day range squeezed into ~750px, which is 7px a day: the stage bars
+     went sub-pixel and the thing became a stripe. It opens on the next two
+     weeks from today, which is the span a planner actually works to, and
+     zooms out on request. */
+  const WINDOWS = { "2w":14, "6w":42, all:null };
+  const [zoom,setZoom]=React.useState("2w");
+  const planMax=Math.max(...rows.map(o=>o.dispatch_day),1);
+  const planMin=Math.min(...rows.map(o=>Math.min(...o.stages.map(s=>s.start))),0);
+  const todayDay=dayIndex(todayIso(), INPUTS.origin);
+  const width=WINDOWS[zoom];
+  /* Clamped to the plan: a window starting after the last order would show an
+     empty board and look broken. */
+  const minDay=width==null?planMin:Math.max(planMin,Math.min(todayDay,planMax-width+1));
+  const maxDay=width==null?planMax:Math.min(planMax,minDay+width-1);
+  const span=Math.max(1,maxDay-minDay+1);
   const days=Array.from({length:span},(_,i)=>minDay+i);
   const todayIdx=dayIndex(todayIso(), INPUTS.origin);
   const showToday=todayIdx>=minDay&&todayIdx<=maxDay;
@@ -3420,6 +3514,17 @@ function ScheduleTab({state,setPlanOverride}){
         className="font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white">
         {showBatches?"Hide job cards":"Show job cards"}</button>
     </div>}
+    <FloorToday state={state}/>
+    <div className="flex items-center gap-2 flex-wrap mb-2">
+      <div className="serif text-base font-semibold text-slate-800">The plan ahead</div>
+      <div className="inline-flex rounded-lg bg-slate-100 p-0.5 ml-auto">
+        {[["2w","Next 2 weeks"],["6w","6 weeks"],["all","Everything"]].map(([k,label])=>
+          <button key={k} onClick={()=>setZoom(k)} aria-pressed={zoom===k}
+            className="text-xs font-semibold rounded-md px-2.5 py-1"
+            style={zoom===k?{background:"#fff",color:"#1e293b"}:{background:"transparent",color:"#64748b"}}>
+            {label}</button>)}
+      </div>
+    </div>
     <p className="text-sm text-slate-500 mb-1"><b>Press Adjust on any row</b> to overrule the plan for that order — run it first or later, pin its start date, move a stage to another machine, or force a stage to finish in a set number of days. <b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
     <details className="mb-3">
       <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>

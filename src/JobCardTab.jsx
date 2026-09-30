@@ -11,6 +11,7 @@ import { optionLabel, TYPES, TYPE_LABEL, TYPE_HELP, RULES, validateFabricator } 
 import { prefixOf } from "../shared/product-codes.js";
 import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
 import { jobCardIssueRows, issuePatch } from "../shared/stock.js";
+import StockAtHand from "./StockAtHand.jsx";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const today = () => todayIso();
@@ -130,6 +131,11 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   const ready=!!order&&!!who&&totalPairs>0&&!over.length&&!overTotal;
 
   function touched(){ if(card)setStale(true); }
+  /* NO EVEN SPLIT HERE, DELIBERATELY. A line that carries a size breakdown
+     shows one box per size and no range total at all, and those sizes come
+     from the Order Book's actual REMAINING per size — a truer figure than any
+     split we could derive. A line without a breakdown has no sizes to fill.
+     So the rule that governs a carton has nothing to do on this screen. */
   function setRange(combo,value){ setQty(q=>({...q,[combo]:value})); touched(); }
   function setSize(combo,size,value){
     setSizes(current=>{
@@ -308,6 +314,11 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         This card totals {fmt(totalPairs)} pairs but only {fmt(cap)} can be issued
         {remake?" including the remake":""}.</div>}
       {!article&&<div className="mt-2 text-[11px] rounded-lg bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5"><b>{order.article_code} has no BOM loaded</b>, so material rows will be blank until its BOM is loaded.</div>}
+      {/* WHETHER THE STORE CAN COVER THIS CARD, BEFORE IT IS ISSUED.
+          Issuing already books the materials OUT of the register; until now
+          nothing said beforehand whether they were there to book. Same check
+          the PI screen makes, so the two cannot give different answers. */}
+      <StockAtHand article={order&&order.article_code} lines={lines}/>
       <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 
