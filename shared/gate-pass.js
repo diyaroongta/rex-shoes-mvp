@@ -116,9 +116,14 @@ export function gatePassRows(built, opts = {}){
     }
 
   let sno = 0;
+  const packFor = opts.packFor || (() => null);
   for(const line of (built && built.lines) || []){
     for(const group of line.groups || []){
-      const g = describeGroup(group, opts);
+      /* The LINE goes with the size. A pack quantity is looked up per size
+         within its range — asked without the range, the live master answers
+         "no figure" for ARMOUR's 2..5, and every full carton on the demo
+         dispatch printed a blank STD. PAC. */
+      const g = describeGroup(group, { ...opts, packFor: (size, grp) => packFor(size, grp, line) });
       const label = String(group.carton_group ?? "").trim();
       const box = label ? boxes.get(label) : null;
       sno += 1;

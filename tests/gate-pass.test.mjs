@@ -188,5 +188,29 @@ test("an empty shipment is empty, not an error", () => {
   assert.equal(pass.ok, true);
 });
 
+/* The live demo dispatch: ARMOUR 2X5, 23 full cartons and one mixed box.
+   The live master answers a pack quantity only when asked WITH the range —
+   the screen asked without it, and every full carton printed a blank
+   STD. PAC. The line now travels with the size. */
+test("each row's pack quantity is asked for within its own line's range", () => {
+  const built = buildPackingList({ customer:"DEMO", order_no:"JO2173", lines:[{
+    article:"ARMOUR LACE BLACK", closure:"Lace", colour:"Black", combo:"2X5", groups:[
+      { sizes:[{ size:"2", pairs:108 }], cartons:6 },
+      { sizes:[{ size:"3", pairs:108 }], cartons:6 },
+      { sizes:[{ size:"4", pairs:108 }], cartons:6 },
+      { sizes:[{ size:"5", pairs:90 }],  cartons:5 },
+      { sizes:[{ size:"2", pairs:2 },{ size:"3", pairs:4 },{ size:"4", pairs:4 },{ size:"5", pairs:1 }], cartons:1, mixed:true },
+    ]}]});
+  const liveLike = (size, group, line) => line && line.combo === "2X5" ? 18 : null;
+  const pass = buildGatePass({ packing_list: built, packFor: liveLike, order_qty: 1000 });
+  assert.deepEqual(pass.rows.map(r => r.std_pack), [18, 18, 18, 18, 11]);
+  assert.deepEqual(pass.rows.map(r => r.pairs), [108, 108, 108, 90, 11]);
+  assert.equal(pass.missing_pack, 0, "no blank STD. PAC. on a known range");
+  assert.equal(pass.total_cartons, 24);
+  assert.equal(pass.total_pairs, 425);
+  assert.equal(pass.rows[4].contents, "2 x 2, 3 x 4, 4 x 4, 5 x 1");
+  assert.equal(pass.ok, true);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

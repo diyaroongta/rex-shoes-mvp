@@ -52,6 +52,11 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      transporter, and the destination city. */
   const [showGate,setShowGate]=useState(false);
   const [gate,setGate]=useState({serial_no:"",transporter:"",city:""});
+  /* The document opens ABOVE the report history, so on a full book the click
+     at the bottom opened it a screen away and looked like nothing happened. */
+  const viewerRef=useRef(null);
+  useEffect(()=>{ if(viewing&&viewerRef.current&&viewerRef.current.scrollIntoView)
+    viewerRef.current.scrollIntoView({behavior:"smooth",block:"start"}); },[viewing,showGate]);
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
@@ -445,7 +450,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
     </div>
 
     {viewing && (
-      <div className="mb-4 rounded-2xl border border-slate-300 bg-white p-3 shadow-sm">
+      <div ref={viewerRef} className="mb-4 rounded-2xl border border-slate-300 bg-white p-3 shadow-sm">
         <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
           <div className="text-sm font-semibold text-slate-800">
             <span className="mono">{viewing.order_no}</span>
@@ -473,6 +478,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
               className="block mt-0.5 w-44 text-sm border border-slate-300 rounded px-2 py-1" /></label>
           <label className="text-xs text-slate-600">City
             <input value={gate.city} aria-label="Destination city"
+              placeholder={((((orders||[]).find(o=>o.order_no===viewing.order_no)||{}).pi)||{}).customer_city||""}
               onChange={e=>setGate(g=>({...g,city:e.target.value}))}
               className="block mt-0.5 w-36 text-sm border border-slate-300 rounded px-2 py-1" /></label>
         </div>}
@@ -483,13 +489,16 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
               const article=order.article_code||order.article||"";
               return <GatePass data={buildGatePass({
                 packing_list:built, ...gate,
+                /* The PI already records where the goods are going; typing it
+                   again on every slip is how the two stop agreeing. */
+                city:gate.city||((order.pi||{}).customer_city)||"",
                 order_no:viewing.order_no, date:viewing.dispatched_on||built.date,
                 party:built.customer||order.party,
                 order_qty:(order.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0)||null,
                 /* Per SIZE, off the article master — blank where there is no
                    figure on record rather than a zero. */
                 mrpFor:size=>mrpForSize((INPUTS.mrp&&INPUTS.mrp[article])||{},"",size),
-                packFor:size=>singlePackQty(article,size,"",""),
+                packFor:(size,group,line)=>singlePackQty((line&&line.article)||article,size,"",(line&&line.combo)||""),
               })} />;
             })()
           : <PackingList data={viewing.sheet} />}
@@ -530,9 +539,16 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                 <td className="text-slate-500">{d.note||""}</td>
                 <td className="text-right whitespace-nowrap pr-3">
                   {d.packing_list && <button
-                    onClick={()=>setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}})}
+                    onClick={()=>{setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}});setShowGate(false);}}
                     aria-label={`Packing list for ${d.order_no}`}
                     className="font-semibold text-indigo-700 hover:underline mr-2">View report</button>}
+                  {/* The gate pass goes with the lorry as the packing list does,
+                      so it is one click from the report — not a toggle found
+                      only after opening the packing list. */}
+                  {d.packing_list && <button
+                    onClick={()=>{setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}});setShowGate(true);}}
+                    aria-label={`Gate pass for ${d.order_no}`}
+                    className="font-semibold text-indigo-700 hover:underline mr-2">Gate pass</button>}
                   {confirmDel===d.id
                     ? <span className="inline-flex gap-1.5 items-center flex-wrap justify-end">
                         <span className="text-slate-700">Which one?</span>

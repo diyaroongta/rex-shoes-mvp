@@ -190,3 +190,30 @@ it("removing from history does NOT put the pairs back",async()=>{
   expect(mocks.undoDispatch).not.toHaveBeenCalled();
   expect((await screen.findAllByText(/still counts those pairs as dispatched/)).length).toBeGreaterThan(0);
 });
+
+/* THE GATE PASS, ONE CLICK FROM THE REPORT. It was only reachable by opening
+   the packing list and finding a toggle, the city was typed again although
+   the PI records it, and every full carton printed a blank STD. PAC. because
+   the pack quantity was asked for without its size range. */
+it("opens the gate pass straight from a report, with the PI's city and the range's pack",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO2173",party:"DEMO",article:"ARMOUR (LACE)",article_code:"ARMOUR (LACE)",
+               pi:{customer_city:"Ludhiana"},lines:[{combo:"2X5",qty:1000}]};
+  const dispatched=[{id:15,order_no:"JO2173",dispatched:{"2X5":425},cartons:{"2X5":24},
+    kind:"partial",dispatched_on:"2026-09-30",closes_order:false,
+    packing_list:{customer:"DEMO",order_no:"JO2173",lines:[{article:"ARMOUR (LACE)",closure:"Lace",colour:"Black",combo:"2X5",
+      groups:[{sizes:[{size:"2",pairs:108}],cartons:6},{sizes:[{size:"3",pairs:108}],cartons:6},
+              {sizes:[{size:"4",pairs:108}],cartons:6},{sizes:[{size:"5",pairs:90}],cartons:5},
+              {sizes:[{size:"2",pairs:2},{size:"3",pairs:4},{size:"4",pairs:4},{size:"5",pairs:1}],cartons:1,mixed:true}]}]}}];
+  render(<DispatchTab orders={[order]} dispatches={dispatched} onChanged={()=>{}}/>);
+
+  await user.click(screen.getByRole("button",{name:"Gate pass for JO2173"}));
+
+  const slip=(await screen.findByText("GATE PASS SLIP")).closest(".gate-pass");
+  expect(slip.textContent).toMatch(/LUDHIANA/);                    // from the PI, not retyped
+  expect(slip.textContent).toMatch(/2 x 2, 3 x 4, 4 x 4, 5 x 1/);  // what the mixed box holds
+  expect(slip.textContent).toMatch(/425/);
+  expect(slip.textContent).not.toMatch(/no standard pack on record/);
+  const rows=[...slip.querySelectorAll("tbody tr")].filter(r=>/^\d+$/.test(r.children[0]?.textContent||"")&&r.children[9]?.textContent);
+  expect(rows.slice(0,4).map(r=>r.children[8].textContent)).toEqual(["18","18","18","18"]);
+});
