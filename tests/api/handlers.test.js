@@ -218,6 +218,64 @@ describe("database API contracts",()=>{
     expect(res.body.error).toMatch(/REMAKE/);
   });
 
+  /* TWO DIFFERENT INTENTIONS, TWO DIFFERENT ACTIONS — the split the dispatch
+     book already makes. "This challan was mis-keyed" and "take this finished
+     job off my screen" are opposite instructions: the first hands the pairs
+     back to the Order Book, the second must not, because the work was done. */
+  const jobRow = row => dbMocks.q.mockImplementation(async sql => {
+    const t=String(sql);
+    if(t.includes("from job_work")) return {rows:[row]};
+    if(t.startsWith("update job_work")) return {rows:[{id:row.id,order_no:row.order_no,status:row.status}]};
+    return {rows:[]};
+  });
+  const del = (id, mode) => { const res=response();
+    return dispatchHandler({headers:AUTH,method:"DELETE",
+      url:`/api/dispatches?resource=job_work&id=${id}&mode=${mode}`,
+      query:{resource:"job_work",id:String(id),mode}},res).then(()=>res); };
+
+  it("archives a closed job order and keeps every balance counting it",async()=>{
+    jobRow({id:7,status:"closed",received:500,qty:500,order_no:"JO1",archived:false});
+    const res=await del(7,"archive");
+    expect(res.statusCode).toBe(200);
+    expect(res.body.archived).toBe(true);
+    expect(res.body.note).toMatch(/still counts these pairs as issued/i);
+    expect(dbMocks.q.mock.calls.some(([sql])=>String(sql).startsWith("delete from job_work"))).toBe(false);
+  });
+
+  it("refuses to archive a job that is still out",async()=>{
+    jobRow({id:7,status:"issued",received:0,qty:500,order_no:"JO1",archived:false});
+    const res=await del(7,"archive");
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/still issued/i);
+  });
+
+  /* The dangerous one. Deleting gives the pairs back as never issued, so it is
+     refused on anything real — only a challan nothing came back against. */
+  it("refuses to delete a job that has received pairs against it",async()=>{
+    jobRow({id:7,status:"closed",received:400,qty:500,order_no:"JO1",archived:false});
+    const res=await del(7,"delete");
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/400 pairs received/i);
+    expect(res.body.error).toMatch(/Archive it instead/i);
+    expect(dbMocks.q.mock.calls.some(([sql])=>String(sql).startsWith("delete from job_work"))).toBe(false);
+  });
+
+  it("deletes a mis-keyed challan and says the pairs go back",async()=>{
+    jobRow({id:7,status:"closed",received:0,qty:500,order_no:"JO1",archived:false});
+    const res=await del(7,"delete");
+    expect(res.statusCode).toBe(200);
+    expect(res.body.deleted).toBe(true);
+    expect(res.body.note).toMatch(/500 pairs return to JO1 as un-issued/i);
+    expect(dbMocks.q.mock.calls.some(([sql])=>String(sql).startsWith("delete from job_work"))).toBe(true);
+  });
+
+  it("a job order that is already gone reads as stale, not broken",async()=>{
+    dbMocks.q.mockImplementation(async()=>({rows:[]}));
+    const res=await del(7,"archive");
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error).toMatch(/may already have been removed/i);
+  });
+
   it("allows exactly the lost pairs when the remake is asked for",async()=>{
     shortOrder();
     const res=await issue({qty:100,remake:true,card:{lines:[{combo:"6X8",qty:100,sizes:{"6":100}}]}});

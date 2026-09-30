@@ -137,7 +137,16 @@ export const deleteDispatch  = undoDispatch;
 /* ---- job work: what is out with a line or a fabricator ----
    Served by /api/dispatches to stay within Vercel's 12-function limit — a job
    work issue and a dispatch are the same shape of movement. */
-export const listJobWork = ()   => j("/api/dispatches?resource=job_work");
+export const listJobWork = (withArchived=false) =>
+  j(`/api/dispatches?resource=job_work${withArchived?"&archived=1":""}`);
+/* Two different intentions, kept apart: archiving takes a finished job off the
+   working list and every balance goes on counting it; deleting says the
+   challan should never have existed and hands its pairs back to the Order
+   Book. The server refuses a delete on anything already received against. */
+export const archiveJobWork = id =>
+  j(`/api/dispatches?resource=job_work&id=${encodeURIComponent(id)}&mode=archive`, {method:"DELETE"});
+export const deleteJobWork = id =>
+  j(`/api/dispatches?resource=job_work&id=${encodeURIComponent(id)}&mode=delete`, {method:"DELETE"});
 export const issueJobWork = job => post("/api/dispatches?resource=job_work",
                                         { ...job, resource:"job_work" });
 /* Cumulative: a partial return is normal. `close` accepts the balance as never

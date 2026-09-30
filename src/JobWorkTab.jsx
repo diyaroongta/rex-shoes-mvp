@@ -1,3 +1,4 @@
+import * as XLSX from "xlsx";
 import React, { useEffect, useMemo, useState } from "react";
 import * as api from "./lib/client.js";
 import { REF as INPUTS } from "./lib/refdata.js";
@@ -30,10 +31,15 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   const [receiving, setReceiving] = useState(null);   // {id, qty, received}
   const [gotBack, setGotBack] = useState("");
   const [slipFor_, setSlip] = useState(null);         // a job opened as a printable slip
+  /* Archived rows are off the working list by default and one click away.
+     They are still counted in every balance — archiving is housekeeping, not
+     an undo. */
+  const [showArchived, setShowArchived] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null);
 
   async function reload(){
     try{
-      const [f, j] = await Promise.all([api.listFabricators(), api.listJobWork()]);
+      const [f, j] = await Promise.all([api.listFabricators(), api.listJobWork(showArchived)]);
       setFabricators(f); setJobs(j); setErr("");
     }catch(e){ setErr(e.message||String(e)); setFabricators([]); }
   }
@@ -41,7 +47,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     reload();
     const timer=setInterval(reload,60000);
     return()=>clearInterval(timer);
-  },[refreshKey]);
+  },[refreshKey, showArchived]);
 
   const articles = Object.keys(INPUTS.articles||{});
   const chosen = (fabricators||[]).find(f => f.name === form.fabricator) || null;
@@ -92,6 +98,35 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     try{ await api.setSampleStatus(id, status); await reload(); setMsg(`Sample marked ${SAMPLE_LABEL[status]}.`); }
     catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
+  }
+
+  async function archive(id){
+    setBusy(true); setErr(""); setMsg("");
+    try{ const r=await api.archiveJobWork(id); setMsg(r.note||"Archived."); await reload(); }
+    catch(e){ setErr(e.message||String(e)); }
+    finally{ setBusy(false); }
+  }
+  async function remove(id){
+    setBusy(true); setErr(""); setMsg("");
+    try{ const r=await api.deleteJobWork(id); setMsg(r.note||"Deleted."); setConfirmDel(null); await reload(); }
+    catch(e){ setErr(e.message||String(e)); }
+    finally{ setBusy(false); }
+  }
+
+  /* THE HISTORY, AS A SPREADSHEET. Every issued job order with what came back,
+     what was short and what it cost — the question "what did we send out last
+     month" had no answer on this screen that could leave it. */
+  function exportHistory(){
+    const header=["Slip","Issued on","Sent to","Type","Article","Order","Stage",
+      "Issued","Received","Short","Status","Rate","Payable","Amount","Sample","Note","Archived"];
+    const body=rows.map(r=>[r.slip,r.issued_on,r.fabricator,r.fabricator_type,r.article,
+      r.order_no||"",r.stage,r.issued,r.received,r.shortage,r.status,
+      Number(r.rate)||0,r.payable?"Yes":"No",r.payable?(r.amount||0):"",
+      r.sample?(r.sample_status||"pending"):"",r.note||"",r.archived?"Yes":"No"]);
+    const ws=XLSX.utils.aoa_to_sheet([header,...body]);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"JOB ORDERS");
+    XLSX.writeFile(wb,"job-orders-history.xlsx");
   }
 
   function printSlip(){
@@ -225,12 +260,25 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
       receiving={receiving} gotBack={gotBack} setGotBack={setGotBack}
       onConfirm={takeBack} onCancel={()=>setReceiving(null)} />
 
-    {!!done.length && <Register title={`Completed (${done.length})`} rows={done} onSlip={setSlip} closed />}
+    {(!!done.length || showArchived) && <Register title={`Completed (${done.length})`} rows={done}
+      onSlip={setSlip} closed busy={busy}
+      onArchive={archive} onDelete={id=>setConfirmDel(id)}
+      confirmDel={confirmDel} onCancelDelete={()=>setConfirmDel(null)} onReallyDelete={remove} />}
+    <div className="flex items-center gap-3 flex-wrap mt-2">
+      <label className="text-xs text-slate-600 flex items-center gap-1.5">
+        <input type="checkbox" checked={showArchived} onChange={e=>setShowArchived(e.target.checked)} />
+        Show archived job orders
+      </label>
+      <button onClick={exportHistory} disabled={!rows.length}
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-40">
+        Export history to Excel</button>
+    </div>
   </div>;
 }
 
 function Register({ title, rows, empty, onReceive, onSlip, onVerdict, busy,
-                    receiving, gotBack, setGotBack, onConfirm, onCancel, closed }){
+                    receiving, gotBack, setGotBack, onConfirm, onCancel, closed,
+                    onArchive, onDelete, confirmDel, onCancelDelete, onReallyDelete }){
   return <div className="mb-4">
     <div className="text-xs font-semibold text-slate-700 mb-1">{title}</div>
     <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
@@ -277,8 +325,37 @@ function Register({ title, rows, empty, onReceive, onSlip, onVerdict, busy,
                     <button key={sst} onClick={()=>onVerdict(r.id, sst)} disabled={busy}
                       className="ml-1 text-[10.5px] text-slate-600 hover:underline">{SAMPLE_LABEL[sst]}</button>)}
                 </span>}
+                {/* TWO DIFFERENT INTENTIONS, KEPT APART. Archiving tidies a
+                    finished job off the list and every balance goes on
+                    counting it. Deleting says the challan should never have
+                    existed and gives its pairs back to the Order Book — right
+                    for a mis-key, catastrophic for real work, so the server
+                    refuses it once anything has been received. */}
+                {closed && onArchive && !r.archived && <button onClick={()=>onArchive(r.id)} disabled={busy}
+                  className="ml-2 text-slate-600 hover:underline disabled:opacity-40"
+                  title="Take this finished job off the list. Every balance still counts it.">Archive</button>}
+                {closed && r.archived && <span className="ml-2 text-[10.5px] text-slate-400">archived</span>}
+                {closed && onDelete && Number(r.received)===0 && <button onClick={()=>onDelete(r.id)} disabled={busy}
+                  className="ml-2 text-rose-600 hover:underline disabled:opacity-40"
+                  title="Only for a challan that should never have existed.">Delete</button>}
               </td>
             </tr>
+            {confirmDel === r.id && (
+              <tr className="bg-rose-50"><td colSpan={8} className="px-3 py-2">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="text-xs text-rose-900">
+                    Delete <b className="mono">{r.slip}</b>? Its <b>{fmt(r.issued)}</b> pairs go back to{" "}
+                    <b className="mono">{r.order_no||"the Order Book"}</b> as never issued, and it will be
+                    planned again. Only do this if the challan was raised by mistake.
+                  </div>
+                  <div className="ml-auto flex gap-2">
+                    <button onClick={onCancelDelete}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
+                    <button onClick={()=>onReallyDelete(r.id)} disabled={busy}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-600 text-white disabled:opacity-40">
+                      Delete the challan</button>
+                  </div>
+                </div></td></tr>)}
             {receiving && receiving.id === r.id && (
               <tr className="bg-indigo-50/50"><td colSpan={8} className="px-3 py-2">
                 <div className="flex items-end gap-2 flex-wrap">

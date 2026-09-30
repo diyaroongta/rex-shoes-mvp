@@ -28,8 +28,11 @@ async function jobWork(req, res){
     const { rows } = await q(
       `select id, fabricator, fabricator_type, article, stage, order_no, qty,
               received, shortage, status, slip, sample, sample_status, rate,
-              payable, note, issued_on, card
-         from job_work order by status, issued_on desc, id desc`);
+              payable, note, issued_on, card, archived
+         from job_work
+        where ($1::boolean is true or archived = false)
+        order by status, issued_on desc, id desc`,
+      [String((req.query||{}).archived||"") === "1"]);
     return res.status(200).json(rows.map(r => ({ ...r,
       qty:Number(r.qty), received:Number(r.received),
       shortage:Number(r.shortage), rate:Number(r.rate) })));
@@ -160,6 +163,49 @@ async function jobWork(req, res){
       [id, out.received, out.shortage, out.status]);
     return res.status(200).json({ ...rows[0], qty:Number(rows[0].qty),
       received:Number(rows[0].received), shortage:Number(rows[0].shortage) });
+  }
+
+  /* TWO DIFFERENT INTENTIONS, TWO DIFFERENT ACTIONS — the same split the
+     dispatch book already makes, for the same reason.
+
+       archive   the work was done; take the finished job off the working list.
+                 Every balance goes on counting it, so the Order Book does not
+                 suddenly believe those pairs were never issued.
+       delete    this challan should never have existed. The row goes, and the
+                 pairs return to the Order Book as un-issued — which is right
+                 for a mis-key and catastrophic for real work, so it is refused
+                 on anything that has been received against. */
+  if(req.method === "DELETE"){
+    const id = Number((req.query||{}).id ?? (req.body||{}).id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const mode = String((req.query||{}).mode ?? (req.body||{}).mode ?? "archive");
+    const { rows:[job] } = await q(
+      `select id, status, received, qty, order_no, archived from job_work where id = $1`, [id]);
+    if(!job) return fail(res, 404,
+      `no such job order: ${id}. It may already have been removed — reload the list.`);
+
+    if(mode === "archive"){
+      if(job.status !== "closed") return fail(res, 400,
+        `job ${id} is still ${job.status}. Only a closed job order can be archived — `
+        + `receive what came back, or close it short, first.`);
+      const { rows } = await q(
+        `update job_work set archived = true, updated_at = now() where id = $1
+         returning id, order_no, status`, [id]);
+      return res.status(200).json({ ...rows[0], archived:true,
+        note:"Archived. Every balance still counts these pairs as issued." });
+    }
+
+    if(mode === "delete"){
+      if(Number(job.received) > 0) return fail(res, 400,
+        `job ${id} has ${job.received} pairs received against it, so it is a real job and not `
+        + `a mis-key. Deleting it would hand those pairs back to the Order Book as never issued. `
+        + `Archive it instead.`);
+      await q(`delete from job_work where id = $1`, [id]);
+      return res.status(200).json({ id, deleted:true, order_no:job.order_no,
+        note:`Deleted. ${job.qty} pairs return to ${job.order_no || "the Order Book"} as un-issued.` });
+    }
+
+    return fail(res, 400, `unknown mode: ${mode} — use archive or delete`);
   }
 
   return fail(res, 405, `${req.method} not allowed`);

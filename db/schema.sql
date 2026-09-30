@@ -286,6 +286,15 @@ create table if not exists job_work (
 );
 create index if not exists job_work_open_idx on job_work (status, fabricator, issued_on desc);
 
+/* ARCHIVED, NOT DELETED — the dispatch book's lesson, applied here.
+   "This challan was mis-keyed" and "I do not want this finished job on my
+   screen any more" are OPPOSITE instructions. The first must give the pairs
+   back to the Order Book, because they were never really issued; the second
+   must NOT, because the work was done. One button cannot mean both.
+   Archiving takes a CLOSED job off the working list while every balance keeps
+   counting it. Deleting is the other action, and only a mis-key earns it. */
+alter table job_work add column if not exists archived boolean not null default false;
+
 -- Immutable copy of the editable size-wise card that was actually issued.
 -- This is also what lets Job Orders calculate a reliable range/size balance.
 alter table job_work add column if not exists card jsonb;
