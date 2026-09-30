@@ -190,6 +190,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
     setEntry(current=>{
       const next={...current};
       for(const row of visible){
+        if(row.recorded_only) continue;        // already reported; not work to fill in
         const key=productionActualKey(row);
         const planned=Number(row.planned_pairs)||0;
         next[key]=String(Math.round(planned*(Number(factorPct)||0)/100));
@@ -333,7 +334,11 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
       </tr></thead><tbody>{visible.map(row=><tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100">
         <td className="py-2 px-2 mono">{row.production_on}</td><td className="px-2">{(INPUTS.workcenters[row.work_center]||{}).name||row.work_center}</td>
         <td className="px-2">{row.stage}</td><td className="px-2"><div className="mono font-semibold">{row.job_card_no||'Whole order'}</div><div className="mono text-slate-400">{row.order_no}</div></td><td className="px-2">{row.article}</td>
-        <td className="px-2">{row.size_ranges||'—'}</td><td className="px-2">{row.party||'—'}</td><td className="px-2 mono text-right">{fmt(row.planned_pairs)}</td>
+        <td className="px-2">{row.size_ranges||'—'}</td><td className="px-2">{row.party||'—'}</td><td className="px-2 mono text-right">{fmt(row.planned_pairs)}
+          {/* A row the plan no longer carries, because recording it is what
+              took it off the plan. It is history and stays visible, so the day
+              it was entered against does not read as empty. */}
+          {row.recorded_only && <div className="text-[10px] text-slate-400 font-normal">recorded</div>}</td>
         <td className="px-2 text-right">
           {/* What was recorded stands until it is deliberately typed over —
               the box shows the saved figure rather than an empty field that
@@ -353,11 +358,11 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
               className={`w-24 border rounded px-1.5 py-1 mono text-right ${
                 row.actual_pairs==null?"border-slate-300":"border-emerald-300 text-emerald-800"}`} />
             {/* One click for the commonest entry of all. */}
-            <button type="button" disabled={busy}
+            {!row.recorded_only && <button type="button" disabled={busy}
               title={`This row ran to plan — ${fmt(row.planned_pairs)} pairs`}
               aria-label={`${row.job_card_no||row.order_no} ${row.stage} ran to plan`}
               onClick={()=>setEntry(d=>({...d,[productionActualKey(row)]:String(Number(row.planned_pairs)||0)}))}
-              className="text-[10px] font-semibold text-slate-500 hover:text-indigo-700 disabled:opacity-40">=plan</button>
+              className="text-[10px] font-semibold text-slate-500 hover:text-indigo-700 disabled:opacity-40">=plan</button>}
           </div>
         </td>
       </tr>)}</tbody></table>

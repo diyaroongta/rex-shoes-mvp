@@ -2411,6 +2411,15 @@ function PiDatabaseTab({orders=[],shortfall,onScheduled,onChanged,onGoToJobs}){
           <button onClick={()=>setDeletePi(null)}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
         </div>
+        {/* THE ANSWER WHERE THE QUESTION WAS ASKED.
+            The refusal and the confirmation both render at the TOP of this
+            screen, and this panel sits under the whole PI table — on a full
+            book that is a thousand pixels away, so pressing Delete and being
+            told "PI/590 cannot be deleted, JO2112 has recorded dispatches"
+            looked exactly like the button doing nothing at all. The same
+            fault the PI screen already fixed once for Save. */}
+        {err && <div role="alert" className="mt-2 text-xs rounded-lg border border-rose-300 bg-white text-rose-800 px-3 py-2">
+          {err}</div>}
       </div>}
     </div>
     {chosen&&items.length>0&&<div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm mt-4">

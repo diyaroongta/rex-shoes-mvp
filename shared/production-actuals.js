@@ -34,13 +34,48 @@ export function plannedProductionRows(state, origin, fromDay){
     ||a.work_center.localeCompare(b.work_center)||a.order_no.localeCompare(b.order_no));
 }
 
+/* WHAT WAS PLANNED, WITH WHAT WAS ACHIEVED AGAINST IT — AND WHAT WAS ACHIEVED
+   WHERE THERE IS NO LONGER A PLAN.
+   The planned rows come from `stage.alloc`, which is the work still TO DO.
+   Recording production is exactly what empties it: the engine marks the
+   recorded pairs done and re-plans only the balance, from a later day. So the
+   moment 765 pairs were saved against today, today's planned row disappeared —
+   and this function, which only ever walked the planned rows, dropped the
+   record with it. The screen then said "0 pairs · 0 of 0 rows" on the very day
+   somebody had just reported 765.
+   A recorded actual is a FACT that happened, not a projection, so it survives
+   its plan row. Each one carries the figures it was saved with (the table
+   stores planned_pairs, article, party and the rest), which is what it was
+   measured against at the time. */
 export function withProductionActuals(planned, actuals){
   const byKey=new Map((actuals||[]).map(row=>[productionActualKey(row),row]));
-  return (planned||[]).map(row=>{
+  const out=(planned||[]).map(row=>{
     const actual=byKey.get(productionActualKey(row));
     return {...row, id:actual&&actual.id, actual_pairs:actual==null?null:Number(actual.actual_pairs),
       note:actual&&actual.note||"", recorded_by:actual&&actual.created_by||""};
   });
+  const seen=new Set((planned||[]).map(productionActualKey));
+  for(const actual of actuals||[]){
+    const key=productionActualKey(actual);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      production_on:iso(actual.production_on)||"", work_center:String(actual.work_center||""),
+      stage:String(actual.stage||""), order_no:actual.order_no||"",
+      unit_key:actual.unit_key||actual.order_no||"", job_card_no:actual.job_card_no||"",
+      article:actual.article||"", party:actual.party||"", size_ranges:actual.size_ranges||"",
+      planned_pairs:Math.round(Number(actual.planned_pairs)||0),
+      id:actual.id, actual_pairs:Number(actual.actual_pairs),
+      note:actual.note||"", recorded_by:actual.created_by||"",
+      /* This row is history, not a thing still to make — a screen that offers
+         it as an editable plan row would be inviting work to be entered
+         against a day the planner has already moved on from. */
+      recorded_only:true,
+    });
+  }
+  return out.sort((a,b)=>String(a.production_on).localeCompare(String(b.production_on))
+    ||String(a.work_center).localeCompare(String(b.work_center))
+    ||String(a.order_no).localeCompare(String(b.order_no)));
 }
 
 export function validateProductionActuals(rows, planned){

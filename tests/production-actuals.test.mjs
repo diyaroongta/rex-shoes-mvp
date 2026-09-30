@@ -35,4 +35,52 @@ test("today's dashboard summary uses plan and recorded achievement",()=>{
   assert.ok(Math.abs(out.achievement_pct-(55/60*100))<1e-9);
 });
 
+/* RECORDED PRODUCTION DOES NOT VANISH WHEN THE PLAN MOVES ON.
+ *
+ * Planned rows come from `stage.alloc` — the work still TO DO. Recording
+ * production is exactly what empties it: the engine marks the recorded pairs
+ * done and re-plans only the balance, from a later day. So the moment 765
+ * pairs were saved against today, today's planned row disappeared, the record
+ * was dropped with it, and the screen read "0 pairs · 0 of 0 rows" on the very
+ * day somebody had just reported 765. A record is a fact that happened, not a
+ * projection, so it outlives its plan row. */
+{
+  const recorded={id:12,production_on:"2026-09-29",work_center:"UPPER_QC",stage:"UPPER_QC",
+    order_no:"JO2161",unit_key:"JO2161#JC7",job_card_no:"JC7",article:"GOLA PLUS VELCRO BLACK",
+    party:"Jyoti The School Mall",size_ranges:"11X1, 2X5",planned_pairs:900,actual_pairs:765,note:""};
+  /* The plan AFTER saving: the 29th is gone, the 135-pair balance sits later. */
+  const planAfter=[{production_on:"2026-10-01",work_center:"UPPER_QC",stage:"UPPER_QC",
+    order_no:"JO2161",unit_key:"JO2161#JC7",job_card_no:"JC7",article:"GOLA PLUS VELCRO BLACK",
+    party:"Jyoti The School Mall",size_ranges:"11X1, 2X5",planned_pairs:135}];
+
+  test("a record outlives the plan row it was entered against",()=>{
+    const joined=withProductionActuals(planAfter,[recorded]);
+    assert.equal(joined.length,2);
+    const kept=joined.find(r=>r.production_on==="2026-09-29");
+    assert.equal(kept.actual_pairs,765);
+    assert.equal(kept.planned_pairs,900,"against what it was measured at the time");
+    assert.equal(kept.recorded_only,true,"marked history, not work still to do");
+  });
+
+  test("the day's tiles show what was reported, not 0 of 0",()=>{
+    const out=productionActualSummary(planAfter,[recorded],"2026-09-29");
+    assert.equal(out.actual_pairs,765);
+    assert.equal(out.planned_pairs,900);
+    assert.equal(out.recorded_rows,1);
+    assert.equal(out.planned_rows,1);
+  });
+
+  test("and the balance still reads as work to do on the day it moved to",()=>{
+    const out=productionActualSummary(planAfter,[recorded],"2026-10-01");
+    assert.equal(out.planned_pairs,135);
+    assert.equal(out.actual_pairs,0);
+  });
+
+  test("a record that still matches its plan row is not duplicated",()=>{
+    const both=withProductionActuals([{...recorded}],[recorded]);
+    assert.equal(both.length,1);
+    assert.equal(both[0].actual_pairs,765);
+  });
+}
+
 console.log(`\n${passed} passed, 0 failed\n`);
