@@ -1501,3 +1501,53 @@ describe("removing a packing report",()=>{
     expect(client.query.mock.calls.some(([s])=>String(s).startsWith("delete from dispatches"))).toBe(false);
   });
 });
+
+/* The hand-written part of the gate pass is kept with its dispatch, so a
+   reprint reads the same as the slip that left. Nothing else on the slip can
+   be written this way — every figure comes from the stored packing list. */
+describe("saving a gate pass",()=>{
+  it("stores the SR. No, transporter and city, and who saved them",async()=>{
+    dbMocks.q.mockImplementation(async (sql,params)=>{
+      const t=String(sql);
+      if(t.startsWith("update dispatches set gate_pass")) return {rows:[{id:15,order_no:"JO2173",gate_pass:JSON.parse(params[1])}]};
+      return {rows:[]};
+    });
+    const res=response();
+    await dispatchHandler({headers:AUTH,method:"PATCH",url:"/api/dispatches?id=15",query:{id:"15"},
+      body:{gate_pass:{serial_no:" 15946 ",transporter:"A.B.C. Transport",city:"Ludhiana"}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.gate_pass).toMatchObject({serial_no:"15946",transporter:"A.B.C. Transport",city:"Ludhiana"});
+    expect(res.body.gate_pass.saved_by).toBeTruthy();
+    const ran=dbMocks.q.mock.calls.map(([s])=>String(s));
+    expect(ran.some(s=>s.includes("add column if not exists gate_pass"))).toBe(true);
+  });
+
+  it("refuses an SR. No already on another slip",async()=>{
+    dbMocks.q.mockImplementation(async sql=>String(sql).includes("gate_pass ->> 'serial_no' as serial_no")
+      ? {rows:[{order_no:"JO2112",dispatched_on:"2026-09-19",serial_no:"15941"}]} : {rows:[]});
+    const res=response();
+    await dispatchHandler({headers:AUTH,method:"PATCH",url:"/api/dispatches?id=15",query:{id:"15"},
+      body:{gate_pass:{serial_no:"15941"}}},res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/15941 is already on the gate pass for JO2112/);
+    expect(dbMocks.q.mock.calls.some(([s])=>String(s).startsWith("update dispatches"))).toBe(false);
+  });
+
+  it("changes nothing else on a dispatch",async()=>{
+    dbMocks.q.mockResolvedValue({rows:[]});
+    const res=response();
+    await dispatchHandler({headers:AUTH,method:"PATCH",url:"/api/dispatches?id=15",query:{id:"15"},
+      body:{gate_pass:{serial_no:"1"},dispatched:{"2X5":9999}}},res);
+    expect(res.statusCode).toBe(400);
+    expect(dbMocks.q.mock.calls.some(([s])=>String(s).startsWith("update dispatches"))).toBe(false);
+  });
+
+  it("reads gate_pass in a way that survives the column not existing yet",async()=>{
+    dbMocks.q.mockResolvedValue({rows:[]});
+    const res=response();
+    await dispatchHandler({headers:AUTH,method:"GET",url:"/api/dispatches",query:{}},res);
+    const sql=String(dbMocks.q.mock.calls[0][0]);
+    expect(sql).toMatch(/to_jsonb\(dispatches\) -> 'gate_pass'/);
+    expect(sql).not.toMatch(/,\s*gate_pass\s*\n/);
+  });
+});

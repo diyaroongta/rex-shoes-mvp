@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
+const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Gate passes":"Dispatch","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -281,7 +281,7 @@ describe("critical UI contracts",()=>{
     expect(itemsOf("Production")[0]).toBe("Schedule");
     /* Repair is the last thing that can happen to a shoe before the lorry,
        so it sits under Dispatch — after the book, being the exception path. */
-    expect(itemsOf("Dispatch")).toEqual(["Dispatch Book","Repair"]);
+    expect(itemsOf("Dispatch")).toEqual(["Dispatch Book","Gate passes","Repair"]);
     /* The copilot was never on the factory's change list, so it is not on the
        menu bar either. */
     expect(screen.queryByRole("button",{name:"Copilot"})).toBeNull();

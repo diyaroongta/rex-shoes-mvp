@@ -338,6 +338,12 @@ alter table job_work add column if not exists card jsonb;
 -- the report was mis-keyed and puts the pairs back into pending.
 alter table dispatches add column if not exists hidden boolean not null default false;
 
+-- What the dispatch supervisor writes on the GATE PASS SLIP by hand: the
+-- SR. No off the pre-printed book, the transporter and the city. Kept with the
+-- dispatch so a reprint matches the slip that left. Everything else on the slip
+-- is derived from packing_list and is deliberately NOT stored here.
+alter table dispatches add column if not exists gate_pass jsonb;
+
 -- Roles are validated in shared/permissions.js, not by a CHECK constraint. The
 -- constraint listed three roles; adding an Owner/Director or a Dispatch
 -- Executive then meant a schema migration to hand somebody a login, and an

@@ -6,6 +6,7 @@ import { jobOrderBalance } from "../shared/job-orders.js";
 import { INPUTS } from "../shared/inputs.js";
 import { setReference } from "../shared/bridge.js";
 import { validateMovement, repairLedger, heldByCombo } from "../shared/repair.js";
+import { cleanGatePassFields } from "../shared/gate-pass.js";
 
 function validDate(value){
   if(value==null||value==="") return true;
@@ -355,8 +356,11 @@ export default wrap(async (req, res) => {
 
   if(req.method === "GET"){
     const { rows } = await q(
+      /* gate_pass read through to_jsonb, NOT by name: a deployment that
+         reaches the database before `gate_pass` has been added would
+         otherwise fail this query — and with it the whole Dispatch Book. */
       `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order,
-              packing_list, hidden
+              packing_list, hidden, to_jsonb(dispatches) -> 'gate_pass' as gate_pass
          from dispatches
         where $1::boolean or not hidden
         order by dispatched_on desc, id desc`,
@@ -483,6 +487,33 @@ export default wrap(async (req, res) => {
       [order_no, JSON.stringify(clean), JSON.stringify(cleanCartons), k, note || null,
        dispatched_on || null, !!closes_order, sheet ? JSON.stringify(sheet) : null]);
     return res.status(201).json(rows[0]);
+  }
+
+  /* THE HAND-WRITTEN PART OF THE GATE PASS — SR. No, transporter, city.
+     Nothing else on the slip can be written here: every figure on it comes
+     from the packing list already stored with this dispatch. The column is
+     added on first use, the same way dispatches_removed is created, so this
+     works before db/schema.sql has been re-run. */
+  if(req.method === "PATCH"){
+    const id = Number((req.query||{}).id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const keys = Object.keys(req.body || {});
+    if(keys.length !== 1 || keys[0] !== "gate_pass")
+      return fail(res, 400, "Only the gate pass fields of a dispatch can be changed here");
+    await q("alter table dispatches add column if not exists gate_pass jsonb");
+    const { rows: used } = await q(
+      `select order_no, dispatched_on, gate_pass ->> 'serial_no' as serial_no
+         from dispatches where id <> $1 and coalesce(gate_pass ->> 'serial_no','') <> ''`, [id]);
+    const check = cleanGatePassFields(req.body.gate_pass || {}, used.map(u => ({ ...u,
+      dispatched_on: u.dispatched_on instanceof Date ? u.dispatched_on.toISOString().slice(0,10) : u.dispatched_on })));
+    if(!check.ok) return fail(res, 400, check.problems.join("; "));
+    const value = { ...check.value, saved_by: (req.user && req.user.username) || null,
+                    saved_at: new Date().toISOString() };
+    const { rows } = await q(
+      `update dispatches set gate_pass = $2 where id = $1
+       returning id, order_no, gate_pass`, [id, JSON.stringify(value)]);
+    if(!rows.length) return fail(res, 404, "That dispatch is not on record — it may have been undone. Reload the list.");
+    return res.status(200).json(rows[0]);
   }
 
   /* Removing a mis-keyed packing report. The record is NOT erased — it moves to

@@ -122,6 +122,9 @@ export const saveProductionActuals = rows => post("/api/dispatches?resource=prod
 /* ---- dispatch / packing reports ---- */
 export const listDispatches  = ()      => j("/api/dispatches");
 export const addDispatch     = d       => post("/api/dispatches", d);
+/* The hand-written part of a gate pass: SR. No, transporter, city. */
+export const saveGatePass    = (id, gate_pass) => j(`/api/dispatches?id=${id}`, { method:"PATCH",
+  headers:{"Content-Type":"application/json"}, body:JSON.stringify({ gate_pass }) });
 /* TWO DIFFERENT ACTIONS, deliberately not one button.
    undoDispatch  — the report was mis-keyed: the pairs go back to pending and
                    the record moves to dispatches_removed.

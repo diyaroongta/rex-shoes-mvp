@@ -157,6 +157,32 @@ export function gatePassRows(built, opts = {}){
   return rows;
 }
 
+/* WHAT IS WRITTEN ON THE SLIP BY HAND, kept with the dispatch so a reprint
+ * reads the same as the slip that left. Three fields, and only these three:
+ * everything else on the slip is DERIVED from the packing list and must not
+ * be storable separately, or the two documents could disagree.
+ *
+ * The SR. No is the pre-printed number off the factory's own book (15941,
+ * 15945). We never issue one — but one number can only be on one slip, so a
+ * number already used is reported rather than silently accepted.
+ * Shared by the screen and the server, so both refuse the same things. */
+export const GATE_PASS_LIMITS = { serial_no: 20, transporter: 80, city: 60 };
+
+export function cleanGatePassFields(input = {}, usedSerials = []){
+  const value = {}, problems = [];
+  for(const [key, max] of Object.entries(GATE_PASS_LIMITS)){
+    const v = text(input[key]).replace(/\s+/g, " ");
+    if(v.length > max) problems.push(`${LABEL[key]} is longer than ${max} characters`);
+    value[key] = v.slice(0, max);
+  }
+  const clash = value.serial_no && (usedSerials || [])
+    .find(u => text(u.serial_no).toUpperCase() === value.serial_no.toUpperCase());
+  if(clash) problems.push(`SR. No ${value.serial_no} is already on the gate pass for `
+    + `${clash.order_no || "another dispatch"}${clash.dispatched_on ? ` dated ${clash.dispatched_on}` : ""}`);
+  return { ok: problems.length === 0, value, problems };
+}
+const LABEL = { serial_no: "SR. No", transporter: "Transporter", city: "City" };
+
 export function buildGatePass(input = {}){
   const built = input.packing_list || { lines: [], total_pairs: 0, total_cartons: 0 };
   const rows = gatePassRows(built, input);

@@ -22,6 +22,7 @@ import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
 import StockTab from "./StockTab.jsx";
 import DispatchTab from "./DispatchTab.jsx";
+import GatePassTab from "./GatePassTab.jsx";
 import PartiesTab from "./PartiesTab.jsx";
 import AddSize from "./AddSize.jsx";
 import ArticleRulesTab, { ArticleRules } from "./ArticleRulesTab.jsx";
@@ -116,6 +117,11 @@ export default function App({ user=null, onSignOut=null }={}){
 
   const [loadErr, setLoadErr] = useState("");
   const [flash, setFlash] = useState("");   // survives the tab jump after a save
+  /* The dispatch the Dispatch Book sent to Gate passes. Forgotten on leaving,
+     so opening Gate passes from the menu later starts on the list, not on a
+     slip somebody looked at an hour ago. */
+  const [gateFocus, setGateFocus] = useState(null);
+  useEffect(()=>{ if(tab!=="gatepass") setGateFocus(null); },[tab]);
   const [syncedAt, setSyncedAt] = useState(null);
   const [syncFailed, setSyncFailed] = useState(false);
   const [refTick, setRefTick] = useState(0);   // bumped when reference data is re-uploaded
@@ -654,7 +660,10 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="procurement" && <ProcurementTab state={state} role={role}
           onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
-        {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll} />}
+        {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll}
+          onOpenGatePass={canSeeTab(role,"gatepass")?(id=>{setGateFocus(id);setTab("gatepass");}):null} />}
+        {tab==="gatepass" && <GatePassTab dispatches={dispatches} orders={orders||[]} onChanged={syncAll}
+          focusId={gateFocus} />}
         {tab==="stock" && <StockTab state={state} jobs={jobs} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
@@ -2215,7 +2224,7 @@ const FLOW = [
   { step:2, group:"Job orders", tabs:[["jobs","Create Job Order"],["jobwork","Job Orders Database"]] },
   { step:3, group:"Production", tabs:[["schedule","Schedule"],["production_input","Daily plan vs achievement"],
                                       ["status","Production status"],["plan","Production plan"],["machines","Machine load"]] },
-  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["repair","Repair"]] },
+  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["repair","Repair"]] },
 ];
 const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
 
@@ -2261,6 +2270,7 @@ const VIEWS = {
   jobwork:     {title:"Job Orders Database",sub:"Every issued job order: out, received, shortage and external payment"},
   status:      {title:"Production status",   sub:"Where every job card actually is — recorded movements first, the plan where nothing is recorded"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
+  gatepass:    {title:"Gate passes",        sub:"The slip security checks as each lorry leaves — from the packing list, with the SR. No off the book"},
   schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
   production_input:{title:"Daily plan vs achievement",sub:"Enter what was made against the day's plan; the balance re-plans from the next day"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},

@@ -1,15 +1,14 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { REF as INPUTS } from "./lib/refdata.js";
 import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import PackingList from "./PackingList.jsx";
 import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
-import { comboSizes, mrpForSize } from "../shared/pi.js";
-import GatePass from "./GatePass.jsx";
+import { comboSizes } from "../shared/pi.js";
+import { printDocument } from "./lib/print-document.js";
 import { todayIso } from "./lib/today.js";
-import { buildGatePass, pairsFromCartons } from "../shared/gate-pass.js";
+import { pairsFromCartons } from "../shared/gate-pass.js";
 import { singlePackQty } from "../shared/bridge.js";
 import { suggestMixedCarton, withMixedCarton, moveToMixedCarton, describeCartons, packingSummary,
          withSharedCarton, sharedCartons } from "../shared/mixed-carton.js";
@@ -31,7 +30,7 @@ const fmt = n => (n==null||isNaN(n)) ? "0" : Number(n).toLocaleString("en-IN");
    MORE pending than really existed and the clerk was refused on save with
    "only N pairs remain outstanding". The ledger below sees everything; only
    the history list filters. */
-export default function DispatchTab({ orders, dispatches = [], onChanged }){
+export default function DispatchTab({ orders, dispatches = [], onChanged, onOpenGatePass }){
   /* Pairs on the repair bench are NOT shippable — sending one is how a customer
      receives the very shoe that failed inspection. The screen subtracts them so
      the clerk sees a true "can ship" figure rather than being refused by the
@@ -46,17 +45,15 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      thing that travels with the lorry, so it has to be reprintable long after
      the dispatch was recorded — not only at the moment it was keyed in. */
   const [viewing,setViewing]=useState(null);
-  /* The gate pass is the SAME shipment as the packing list, so it is raised
-     from the same row rather than re-keyed. Three things are not in the
-     system and are typed here: the serial number off the pre-printed pad, the
-     transporter, and the destination city. */
-  const [showGate,setShowGate]=useState(false);
-  const [gate,setGate]=useState({serial_no:"",transporter:"",city:""});
+  /* The gate pass has its own screen (Gate passes): security works from the
+     day's lorries, not from this book's order-by-order history. This screen
+     links to it — the dispatch just recorded, or any report below. */
+  const [lastRecorded,setLastRecorded]=useState(null);
   /* The document opens ABOVE the report history, so on a full book the click
      at the bottom opened it a screen away and looked like nothing happened. */
   const viewerRef=useRef(null);
   useEffect(()=>{ if(viewing&&viewerRef.current&&viewerRef.current.scrollIntoView)
-    viewerRef.current.scrollIntoView({behavior:"smooth",block:"start"}); },[viewing,showGate]);
+    viewerRef.current.scrollIntoView({behavior:"smooth",block:"start"}); },[viewing]);
   const [draft,setDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
@@ -207,10 +204,11 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
       if(sheet) for(const line of buildPackingList(sheet).lines)
         if(line.combo) cartons[line.combo]=(cartons[line.combo]||0)+line.cartons;
 
-      await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
+      const made = await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
         kind: closing ? "shortage" : kind, note, closes_order: closing,
         ...(sheet ? { packing_list: sheet } : {}) });
       setOpen(null); setPreview(null); setStale(false); setSheet(null);
+      setLastRecorded(sheet && made && made.id ? { id:made.id, order_no:rec.order.order_no } : null);
       setMsg(closing
         ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
         : `Packing report recorded for ${rec.order.order_no}.`);
@@ -223,24 +221,9 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
      same way the invoice is. A print stylesheet has to anticipate every piece
      of chrome on the page; a clean document cannot get one wrong, and what is
      saved as a PDF is then exactly the sheet and nothing else. */
-  function printPackingList(){ printDocument(".packing-list","Packing list"); }
-  function printGatePass(){ printDocument(".gate-pass","Gate pass"); }
-  function printDocument(selector,label){
-    const node=document.querySelector(selector);
-    if(!node) return;
-    const w=window.open("","_blank","width=900,height=1000");
-    if(!w){ setErr(`Popup blocked — allow popups to print the ${label.toLowerCase()}.`); return; }
-    w.document.open();
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
-      + `<title>${label} ${viewing?viewing.order_no:""}</title>`
-      + `<style>*{box-sizing:border-box}`
-      + `body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}`
-      + `table{width:100%;border-collapse:collapse}`
-      + `[data-noprint]{display:none!important}@page{size:A4 portrait;margin:10mm}</style></head>`
-      + `<body>${node.outerHTML}`
-      + `<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script>`
-      + `</body></html>`);
-    w.document.close();
+  function printPackingList(){
+    if(!printDocument(".packing-list",`Packing list ${viewing?viewing.order_no:""}`))
+      setErr("Popup blocked — allow popups to print the packing list.");
   }
 
   if(!orders || !orders.length) return <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm text-center text-slate-500 text-sm">
@@ -248,7 +231,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
 
   return <div>
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3">{err}</div>}
-    {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
+    {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3 flex items-center gap-3 flex-wrap">
+      <span>{msg}</span>
+      {/* The next thing that happens to a recorded dispatch is the gate. */}
+      {lastRecorded && onOpenGatePass && <button onClick={()=>onOpenGatePass(lastRecorded.id)}
+        className="font-semibold text-emerald-900 underline">Make its gate pass →</button>}
+    </div>}
 
     <div className="flex gap-4 flex-wrap mb-3 text-xs">
       <span className="text-slate-500">Ordered <b className="mono text-slate-800">{fmt(totals.ordered)}</b></span>
@@ -455,59 +443,17 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
           <div className="text-sm font-semibold text-slate-800">
             <span className="mono">{viewing.order_no}</span>
           </div>
-          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
-            {[["list","Packing list"],["gate","Gate pass"]].map(([key,label])=>(
-              <button key={key} onClick={()=>setShowGate(key==="gate")}
-                className={`px-2.5 py-1 font-semibold ${(key==="gate")===showGate?"bg-slate-800 text-white":"bg-white text-slate-600"}`}>
-                {label}</button>))}
-          </div>
-          <button onClick={showGate?printGatePass:printPackingList}
+          <button onClick={printPackingList}
             className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">
             Print / Save PDF</button>
-          <button onClick={()=>{setViewing(null);setShowGate(false);}}
+          <button onClick={()=>setViewing(null)}
             className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
         </div>
-        {showGate && <div data-noprint className="flex gap-2 flex-wrap mb-2">
-          <label className="text-xs text-slate-600">SR. No. from the book
-            <input value={gate.serial_no} aria-label="Gate pass serial number"
-              onChange={e=>setGate(g=>({...g,serial_no:e.target.value}))}
-              className="block mt-0.5 w-32 text-sm border border-slate-300 rounded px-2 py-1 mono" /></label>
-          <label className="text-xs text-slate-600">Transporter
-            <input value={gate.transporter} aria-label="Transporter"
-              onChange={e=>setGate(g=>({...g,transporter:e.target.value}))}
-              className="block mt-0.5 w-44 text-sm border border-slate-300 rounded px-2 py-1" /></label>
-          <label className="text-xs text-slate-600">City
-            <input value={gate.city} aria-label="Destination city"
-              placeholder={((((orders||[]).find(o=>o.order_no===viewing.order_no)||{}).pi)||{}).customer_city||""}
-              onChange={e=>setGate(g=>({...g,city:e.target.value}))}
-              className="block mt-0.5 w-36 text-sm border border-slate-300 rounded px-2 py-1" /></label>
-        </div>}
-        {showGate
-          ? (()=>{
-              const built=buildPackingList(viewing.sheet||{});
-              const order=(orders||[]).find(o=>o.order_no===viewing.order_no)||{};
-              const article=order.article_code||order.article||"";
-              return <GatePass data={buildGatePass({
-                packing_list:built, ...gate,
-                /* The PI already records where the goods are going; typing it
-                   again on every slip is how the two stop agreeing. */
-                city:gate.city||((order.pi||{}).customer_city)||"",
-                order_no:viewing.order_no, date:viewing.dispatched_on||built.date,
-                party:built.customer||order.party,
-                order_qty:(order.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0)||null,
-                /* Per SIZE, off the article master — blank where there is no
-                   figure on record rather than a zero. */
-                /* The chart is keyed by RANGE (2X5: 949); asked with "" for the
-                   range it found no per-size key and printed every MRP blank. */
-                mrpFor:(size,line)=>mrpForSize((INPUTS.mrp&&INPUTS.mrp[(line&&line.article)||article])||{},(line&&line.combo)||"",size),
-                packFor:(size,group,line)=>singlePackQty((line&&line.article)||article,size,"",(line&&line.combo)||""),
-              })} />;
-            })()
-          /* Sheets recorded before the draft carried the order's total
-             reprinted "Order Quantity" blank; the order still knows it. */
-          : <PackingList data={{...viewing.sheet, order_qty:viewing.sheet.order_qty
-              ?? ((((orders||[]).find(o=>o.order_no===viewing.order_no)||{}).lines||[])
-                   .reduce((a,l)=>a+(Number(l.qty)||0),0)||null)}} />}
+        {/* Sheets recorded before the draft carried the order's total
+            reprinted "Order Quantity" blank; the order still knows it. */}
+        <PackingList data={{...viewing.sheet, order_qty:viewing.sheet.order_qty
+          ?? ((((orders||[]).find(o=>o.order_no===viewing.order_no)||{}).lines||[])
+               .reduce((a,l)=>a+(Number(l.qty)||0),0)||null)}} />
       </div>)}
 
     {!!reportsByOrder.length && (
@@ -545,14 +491,14 @@ export default function DispatchTab({ orders, dispatches = [], onChanged }){
                 <td className="text-slate-500">{d.note||""}</td>
                 <td className="text-right whitespace-nowrap pr-3">
                   {d.packing_list && <button
-                    onClick={()=>{setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}});setShowGate(false);}}
+                    onClick={()=>setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}})}
                     aria-label={`Packing list for ${d.order_no}`}
                     className="font-semibold text-indigo-700 hover:underline mr-2">View report</button>}
                   {/* The gate pass goes with the lorry as the packing list does,
                       so it is one click from the report — not a toggle found
                       only after opening the packing list. */}
-                  {d.packing_list && <button
-                    onClick={()=>{setViewing({order_no:d.order_no, sheet:{...d.packing_list, date:d.dispatched_on}});setShowGate(true);}}
+                  {d.packing_list && onOpenGatePass && <button
+                    onClick={()=>onOpenGatePass(d.id)}
                     aria-label={`Gate pass for ${d.order_no}`}
                     className="font-semibold text-indigo-700 hover:underline mr-2">Gate pass</button>}
                   {confirmDel===d.id

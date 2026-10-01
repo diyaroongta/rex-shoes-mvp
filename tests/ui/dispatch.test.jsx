@@ -15,7 +15,6 @@ vi.mock("../../src/lib/client.js",()=>({
   undoDispatch:mocks.undoDispatch,hideDispatch:mocks.hideDispatch,deleteDispatch:mocks.undoDispatch,
 }));
 import DispatchTab from "../../src/DispatchTab.jsx";
-import { REF } from "../../src/lib/refdata.js";
 
 beforeEach(()=>{vi.clearAllMocks();mocks.listDispatches.mockResolvedValue([]);
   mocks.listRepairs.mockResolvedValue([]);
@@ -120,7 +119,9 @@ it("records ten full cartons plus the client's 13-pair mixed carton without doub
   const order={order_no:"JO-MIX",party:"K.P. Gurgaon",article:"SPIKE",article_code:"SPIKE",
     pi:{vl:"VELCRO",upper_colour:"N.BLUE / S.BLUE"},
     lines:[{combo:"2X5",qty:193,sizes:{"2":56,"3":58,"4":42,"5":37}}]};
-  render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}}/>);
+  mocks.addDispatch.mockResolvedValue({id:44,order_no:"JO-MIX"});
+  const openGate=vi.fn();
+  render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}} onOpenGatePass={openGate}/>);
 
   await user.click(screen.getByRole("button",{name:"Packing report"}));
   await user.click(screen.getByRole("button",{name:"Fill in the packing list"}));
@@ -145,6 +146,9 @@ it("records ten full cartons plus the client's 13-pair mixed carton without doub
     order_no:"JO-MIX",dispatched:{"2X5":193},cartons:{"2X5":11},
     packing_list:expect.objectContaining({order_no:"JO-MIX"}),
   })));
+  /* The next thing a recorded dispatch needs is its gate pass. */
+  await user.click(await screen.findByRole("button",{name:"Make its gate pass →"}));
+  expect(openGate).toHaveBeenCalledWith(44);
 });
 
 /* A packing report can be mis-keyed. Removing one returns its pairs to the
@@ -192,39 +196,32 @@ it("removing from history does NOT put the pairs back",async()=>{
   expect((await screen.findAllByText(/still counts those pairs as dispatched/)).length).toBeGreaterThan(0);
 });
 
-/* THE GATE PASS, ONE CLICK FROM THE REPORT. It was only reachable by opening
-   the packing list and finding a toggle, the city was typed again although
-   the PI records it, and every full carton printed a blank STD. PAC. because
-   the pack quantity was asked for without its size range. */
-it("opens the gate pass straight from a report, with the PI's city and the range's pack",async()=>{
+/* The gate pass has its own screen now; the Dispatch Book hands it the
+   dispatch in question — from any report, and straight after recording one. */
+const DEMO_ORDER={order_no:"JO2173",party:"DEMO",article:"ARMOUR (LACE)",article_code:"ARMOUR (LACE)",
+  pi:{customer_city:"Ludhiana"},lines:[{combo:"2X5",qty:1000}]};
+const DEMO_DISPATCH={id:15,order_no:"JO2173",dispatched:{"2X5":425},cartons:{"2X5":24},
+  kind:"partial",dispatched_on:"2026-09-30",closes_order:false,
+  packing_list:{customer:"DEMO",order_no:"JO2173",lines:[{article:"ARMOUR (LACE)",closure:"Lace",colour:"Black",combo:"2X5",
+    groups:[{sizes:[{size:"2",pairs:108}],cartons:6},{sizes:[{size:"3",pairs:108}],cartons:6},
+            {sizes:[{size:"4",pairs:108}],cartons:6},{sizes:[{size:"5",pairs:90}],cartons:5},
+            {sizes:[{size:"2",pairs:2},{size:"3",pairs:4},{size:"4",pairs:4},{size:"5",pairs:1}],cartons:1,mixed:true}]}]}};
+
+it("sends a report's gate pass to the Gate passes screen",async()=>{
   const user=userEvent.setup();
-  const order={order_no:"JO2173",party:"DEMO",article:"ARMOUR (LACE)",article_code:"ARMOUR (LACE)",
-               pi:{customer_city:"Ludhiana"},lines:[{combo:"2X5",qty:1000}]};
-  const dispatched=[{id:15,order_no:"JO2173",dispatched:{"2X5":425},cartons:{"2X5":24},
-    kind:"partial",dispatched_on:"2026-09-30",closes_order:false,
-    packing_list:{customer:"DEMO",order_no:"JO2173",lines:[{article:"ARMOUR (LACE)",closure:"Lace",colour:"Black",combo:"2X5",
-      groups:[{sizes:[{size:"2",pairs:108}],cartons:6},{sizes:[{size:"3",pairs:108}],cartons:6},
-              {sizes:[{size:"4",pairs:108}],cartons:6},{sizes:[{size:"5",pairs:90}],cartons:5},
-              {sizes:[{size:"2",pairs:2},{size:"3",pairs:4},{size:"4",pairs:4},{size:"5",pairs:1}],cartons:1,mixed:true}]}]}}];
-  /* The live chart is keyed by RANGE. Asked with "" for the range, every
-     MRP on the slip printed blank although 949 is on record. */
-  REF.mrp = { ...(REF.mrp||{}), "ARMOUR (LACE)":{ "2X5":949 } };
-  render(<DispatchTab orders={[order]} dispatches={dispatched} onChanged={()=>{}}/>);
-
+  const open=vi.fn();
+  render(<DispatchTab orders={[DEMO_ORDER]} dispatches={[DEMO_DISPATCH]} onChanged={()=>{}} onOpenGatePass={open}/>);
   await user.click(screen.getByRole("button",{name:"Gate pass for JO2173"}));
+  expect(open).toHaveBeenCalledWith(15);
+  // The in-place gate pass toggle is gone — one place makes a slip.
+  expect(screen.queryByText("GATE PASS SLIP")).toBeNull();
+});
 
-  const slip=(await screen.findByText("GATE PASS SLIP")).closest(".gate-pass");
-  expect(slip.textContent).toMatch(/LUDHIANA/);                    // from the PI, not retyped
-  expect(slip.textContent).toMatch(/2 x 2, 3 x 4, 4 x 4, 5 x 1/);  // what the mixed box holds
-  expect(slip.textContent).toMatch(/425/);
-  expect(slip.textContent).not.toMatch(/no standard pack on record/);
-  const rows=[...slip.querySelectorAll("tbody tr")].filter(r=>/^\d+$/.test(r.children[0]?.textContent||"")&&r.children[9]?.textContent);
-  expect(rows.slice(0,4).map(r=>r.children[8].textContent)).toEqual(["18","18","18","18"]);
-  expect(rows.slice(0,5).map(r=>r.children[7].textContent)).toEqual(["949","949","949","949","949"]);
-  expect(slip.textContent).not.toMatch(/no MRP on record/);
-
-  /* The packing list recorded before the draft carried the order's total
-     reprinted "Order Quantity" blank; the order still knows it is 1,000. */
-  await user.click(screen.getByRole("button",{name:"Packing list"}));
+it("reprints an old packing list with the order's quantity, not a blank",async()=>{
+  const user=userEvent.setup();
+  render(<DispatchTab orders={[DEMO_ORDER]} dispatches={[DEMO_DISPATCH]} onChanged={()=>{}}/>);
+  /* Sheets recorded before the draft carried the order's total reprinted
+     "Order Quantity" blank; the order still knows it is 1,000. */
+  await user.click(screen.getByRole("button",{name:"Packing list for JO2173"}));
   expect((await screen.findByText("Order Quantity :-")).nextSibling.textContent).toBe("1000");
 });

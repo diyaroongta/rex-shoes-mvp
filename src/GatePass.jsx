@@ -1,5 +1,33 @@
 import React from "react";
 import { buildGatePass } from "../shared/gate-pass.js";
+import { buildPackingList } from "../shared/packing-list.js";
+import { singlePackQty } from "../shared/bridge.js";
+import { mrpForSize } from "../shared/pi.js";
+
+/* A STORED DISPATCH, AS ITS GATE PASS. One place turns a dispatch row, its
+   order and what was written by hand into the slip, so the Gate passes screen
+   and anything else that prints one cannot look sizes up two ways.
+   Both look-ups carry the LINE'S RANGE: the live master answers a pack
+   quantity and an MRP only when asked within the range (ARMOUR 2X5 packs 18,
+   MRP 949), and asked without it printed every STD. PAC. and MRP blank.
+   `fields` is the hand-written part; a blank city falls back to the PI's. */
+export function gatePassFor(dispatch, order = {}, fields = {}, ref = {}){
+  const built = buildPackingList({ ...(dispatch.packing_list || {}), date: dispatch.dispatched_on });
+  const article = order.article_code || order.article || "";
+  const pi = order.pi || {};
+  return buildGatePass({
+    packing_list: built,
+    serial_no: fields.serial_no, transporter: fields.transporter,
+    city: fields.city || pi.customer_city || "",
+    order_no: dispatch.order_no, date: dispatch.dispatched_on || built.date,
+    party: built.customer || order.party,
+    order_qty: (order.lines || []).reduce((a, l) => a + (Number(l.qty) || 0), 0) || null,
+    mrpFor: (size, line) => mrpForSize(((ref.mrp || {})[(line && line.article) || article]) || {},
+                                       (line && line.combo) || "", size),
+    packFor: (size, group, line) => singlePackQty((line && line.article) || article, size, "",
+                                                  (line && line.combo) || ""),
+  });
+}
 
 /* THE GATE PASS SLIP, in the factory's own layout — the pre-printed book that
    security checks as the lorry leaves. Every figure comes from the packing

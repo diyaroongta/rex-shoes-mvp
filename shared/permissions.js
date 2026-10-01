@@ -39,7 +39,7 @@ const MATERIAL_KEYS = ["new_material"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","schedule",
+const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","gatepass","schedule",
                    "production_input","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -68,7 +68,9 @@ export const ROLE_DEFS = {
        confined to dispatch. */
     /* Repair is the last thing that happens to a shoe before it goes on the
        lorry, so it belongs to whoever is packing it. */
-    tabs:["mis","orders","pis","status","repair","dispatch","rules"],
+    /* Gate passes: the slip for the lorry this role just packed. Saving its
+       SR. No is a write to dispatches, which this role already has. */
+    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","rules"],
     writes:["dispatches"], reference:null,
   },
   /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
@@ -110,7 +112,7 @@ export const ROLE_DEFS = {
   auditor: {
     label:"Auditor / Consultant",
     summary:"Reads the dashboard and the change history. No edit rights at all.",
-    tabs:["mis","orders","pis","status","repair","dispatch","schedule","procurement","stock","data"],
+    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","schedule","procurement","stock","data"],
     writes:[], reference:null,
   },
   /* Kept because accounts already carry it, and because "sees everything,

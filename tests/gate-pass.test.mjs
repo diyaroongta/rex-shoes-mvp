@@ -3,7 +3,7 @@
    including on a mixed box, where the std. pac. column holds what that one box
    actually carries. */
 import assert from "node:assert/strict";
-import { buildGatePass, gatePassRows, describeGroup, pairsFromCartons } from "../shared/gate-pass.js";
+import { buildGatePass, gatePassRows, describeGroup, pairsFromCartons, cleanGatePassFields } from "../shared/gate-pass.js";
 import { buildPackingList } from "../shared/packing-list.js";
 
 let passed = 0, failed = 0;
@@ -223,6 +223,19 @@ test("the MRP comes from the row's own range", () => {
     packFor: () => 18 });
   assert.equal(pass.rows[0].mrp, 949);
   assert.equal(pass.missing_mrp, 0);
+});
+
+/* What is written by hand is kept with the dispatch — and one number off the
+   book belongs to one slip only. */
+test("the hand-written fields are trimmed, capped, and an SR. No is used once", () => {
+  const ok = cleanGatePassFields({ serial_no:" 15941 ", transporter:"A.B.C.  Transport", city:"Mumbai" });
+  assert.deepEqual(ok.value, { serial_no:"15941", transporter:"A.B.C. Transport", city:"Mumbai" });
+  assert.equal(ok.ok, true);
+  const clash = cleanGatePassFields({ serial_no:"15941" }, [{ serial_no:"15941", order_no:"JO2112", dispatched_on:"2026-09-19" }]);
+  assert.equal(clash.ok, false);
+  assert.match(clash.problems[0], /15941 is already on the gate pass for JO2112 dated 2026-09-19/);
+  assert.equal(cleanGatePassFields({ serial_no:"x".repeat(21) }).ok, false);
+  assert.equal(cleanGatePassFields({}).ok, true, "all three may be left blank — the slip prints a line");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
