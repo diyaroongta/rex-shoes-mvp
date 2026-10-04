@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks=vi.hoisted(()=>({
   listRepairs:vi.fn(),listDispatches:vi.fn(),addDispatch:vi.fn(),
-  undoDispatch:vi.fn(),hideDispatch:vi.fn()}));
+  undoDispatch:vi.fn(),hideDispatch:vi.fn(),moveToStock:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>({
   /* The screen reads the repair bench so it can subtract pairs that cannot
      ship — see the note in DispatchTab about shipping a shoe that failed
@@ -13,6 +13,7 @@ vi.mock("../../src/lib/client.js",()=>({
   listRepairs:mocks.listRepairs,
   listDispatches:mocks.listDispatches,addDispatch:mocks.addDispatch,
   undoDispatch:mocks.undoDispatch,hideDispatch:mocks.hideDispatch,deleteDispatch:mocks.undoDispatch,
+  moveToStock:mocks.moveToStock,
 }));
 import DispatchTab from "../../src/DispatchTab.jsx";
 
@@ -35,7 +36,30 @@ it("does not derive a carton count from the packing rate any more",async()=>{
   expect(mocks.listDispatches).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button",{name:"Packing report"}));
   expect(screen.queryByText("10.00")).toBeNull();
-  expect(screen.getByRole("button",{name:"Fill in the packing list"})).toBeInTheDocument();
+  /* The packing list opens already filled from the order — nothing to press. */
+  expect(screen.getAllByLabelText(/^Cartons for size/).length).toBeGreaterThan(0);
+});
+
+/* THE GOLA PLUS DISPATCH. The order was taken size by size; the dispatch sheet
+   split each range evenly (30/30/30/30) and printed sizes nobody ordered. */
+it("drafts the packing list from the order's own sizes, not an even split",async()=>{
+  const user=userEvent.setup();
+  const order={order_no:"JO2175",party:"Shoe House",article:"SPIKE",article_code:"SPIKE",
+    pi:{vl:"VELCRO"},lines:[{combo:"7X10S",qty:120,sizes:{"7s":40,"8s":20,"10s":60}}]};
+  render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}}/>);
+  await user.click(screen.getByRole("button",{name:"Packing report"}));
+  // Step 1 lists the ordered sizes, each with its own box.
+  expect(screen.getByLabelText("Dispatch now, 7X10S size 7s")).toHaveValue(40);
+  expect(screen.getByLabelText("Dispatch now, 7X10S size 10s")).toHaveValue(60);
+  // The sheet carries exactly those sizes and pairs — 9s was never ordered.
+  expect(screen.getByLabelText("Pairs of size 7s")).toHaveValue(40);
+  expect(screen.getByLabelText("Pairs of size 8s")).toHaveValue(20);
+  expect(screen.getByLabelText("Pairs of size 10s")).toHaveValue(60);
+  expect(screen.queryByLabelText("Pairs of size 9s")).toBeNull();
+  // Sending fewer of one size moves the sheet with it.
+  const box=screen.getByLabelText("Dispatch now, 7X10S size 10s");
+  await user.clear(box); await user.type(box,"24");
+  expect(screen.getByLabelText("Pairs of size 10s")).toHaveValue(24);
 });
 
 /* The packing list is the document that travels with the lorry, so it has to
@@ -97,7 +121,6 @@ it("counts cartons per size on the packing list, and totals what was entered",as
                pi:{vl:"VELCRO",upper_colour:"N.BLUE/RED"},lines:[{combo:"7X10S",qty:240}]};
   render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}}/>);
   await user.click(screen.getByRole("button",{name:"Packing report"}));
-  await user.click(screen.getByRole("button",{name:"Fill in the packing list"}));
 
   // The article, closure and colour come across so they are not re-keyed.
   expect(screen.getByText(/VELCRO/)).toBeInTheDocument();
@@ -124,7 +147,6 @@ it("records ten full cartons plus the client's 13-pair mixed carton without doub
   render(<DispatchTab orders={[order]} dispatches={[]} onChanged={()=>{}} onOpenGatePass={openGate}/>);
 
   await user.click(screen.getByRole("button",{name:"Packing report"}));
-  await user.click(screen.getByRole("button",{name:"Fill in the packing list"}));
 
   for(const [size,pairs,cartons] of [["2",56,3],["3",58,3],["4",42,2],["5",37,2]]){
     const pairBox=screen.getByLabelText(`Pairs of size ${size}`);
@@ -224,4 +246,20 @@ it("reprints an old packing list with the order's quantity, not a blank",async()
      "Order Quantity" blank; the order still knows it is 1,000. */
   await user.click(screen.getByRole("button",{name:"Packing list for JO2173"}));
   expect((await screen.findByText("Order Quantity :-")).nextSibling.textContent).toBe("1000");
+});
+
+/* An MTS order is made for the shelf. "Move to stock" takes its pairs off the
+   order book and puts them in finished stock, size by size, in one step. */
+it("moves an MTS order into finished stock with its sizes",async()=>{
+  const user=userEvent.setup();
+  vi.spyOn(window,"confirm").mockReturnValue(true);
+  mocks.moveToStock.mockResolvedValue({});
+  const order={order_no:"JO9",party:"Rex stock",article:"SPIKE",article_code:"SPIKE",
+    pi:{order_nature:"MTS"},lines:[{combo:"7X10S",qty:60,sizes:{"7s":20,"8s":40}}]};
+  const mto={...order,order_no:"JO10",pi:{order_nature:"MTO"}};
+  render(<DispatchTab orders={[order,mto]} dispatches={[]} onChanged={()=>{}}/>);
+  expect(screen.getAllByRole("button",{name:"Move to stock"}).length).toBe(1);   // MTO is not offered it
+  await user.click(screen.getByRole("button",{name:"Move to stock"}));
+  await user.click(screen.getByRole("button",{name:"Move to finished stock"}));
+  await waitFor(()=>expect(mocks.moveToStock).toHaveBeenCalledWith("JO9",{"7X10S":60},{"7X10S":{"7s":20,"8s":40}},""));
 });

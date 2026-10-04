@@ -398,3 +398,53 @@ create unique index if not exists production_actuals_row_key
   on production_actuals (production_on, work_center, stage, unit_key);
 create index if not exists production_actuals_day_idx
   on production_actuals (production_on desc, work_center);
+
+-- ---------------------------------------------------------------------------
+-- Finished goods ledger. An EVENT LOG, like repairs: opening counts, pairs put
+-- into stock, MTS orders moved to stock from the Dispatch Book, pairs issued
+-- out to a customer, and count adjustments. On hand = the sum, per article and
+-- size (see shared/finished-stock.js). A wrong entry is deleted and re-entered.
+create table if not exists finished_stock (
+  id          bigserial primary key,
+  article     text        not null,
+  size        text        not null,
+  qty         integer     not null check (qty <> 0),     -- signed: + into stock, - out
+  kind        text        not null check (kind in ('opening','received','from_order','issued','adjust')),
+  order_no    text,
+  dispatch_id integer,                                   -- the MTS dispatch that moved it in
+  note        text,
+  moved_on    date        not null default current_date,
+  created_by  text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists finished_stock_article_idx on finished_stock (article, size);
+
+-- Job-card details captured WITH the day's production, so the card fills
+-- itself: rejection, repair, cartons packed, people on the line, supervisor.
+alter table production_actuals add column if not exists rejected_pairs integer not null default 0;
+alter table production_actuals add column if not exists repair_pairs   integer not null default 0;
+alter table production_actuals add column if not exists cartons        integer;
+alter table production_actuals add column if not exists operators      integer;
+alter table production_actuals add column if not exists supervisor     text;
+alter table production_actuals add column if not exists shift          text;
+
+-- Photos of the COMPLETED paper job card, as proof it came back filled. A
+-- card is "received" once at least one photo is on file; the weekly job-card
+-- filled % is open cards against received ones. Images are resized in the
+-- browser before upload (data URLs, like catalogue photos).
+create table if not exists job_card_documents (
+  id          bigserial primary key,
+  job_id      bigint,
+  card_no     text,
+  order_no    text,
+  image       text        not null,
+  note        text,
+  uploaded_by text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists job_card_documents_job_idx on job_card_documents (job_id);
+
+-- A job card cancelled because its ORDER was cancelled. Kept (a challan number
+-- must stay resolvable) but archived and marked, so it leaves every working
+-- list and every fabricator's open balance.
+alter table job_work add column if not exists cancelled boolean not null default false;

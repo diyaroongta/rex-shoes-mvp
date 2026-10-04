@@ -8,7 +8,7 @@
  * Run: npm test
  */
 import assert from "node:assert/strict";
-import { planVsActual, biggestGaps } from "../shared/plan-vs-actual.js";
+import { planVsActual, biggestGaps, planAdherence } from "../shared/plan-vs-actual.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -92,6 +92,37 @@ test("the biggest shortfalls come first, and unreported days are not among them"
   assert.equal(gaps.length, 1);
   assert.equal(gaps[0].date, "2026-04-06");
 });
+
+console.log("\nPlan adherence %");
+{
+  const plan = [
+    { production_on:"2026-04-06", work_center:"CUT", stage:"CUTTING", unit_key:"A", order_no:"A", planned_pairs:500 },
+    { production_on:"2026-04-06", work_center:"CUT", stage:"CUTTING", unit_key:"B", order_no:"B", planned_pairs:500 },
+    { production_on:"2026-04-07", work_center:"STI", stage:"STITCHING", unit_key:"A", order_no:"A", planned_pairs:400 },
+    { production_on:"2026-04-20", work_center:"STI", stage:"STITCHING", unit_key:"B", order_no:"B", planned_pairs:999 },
+  ];
+  const act = [
+    { production_on:"2026-04-06", work_center:"CUT", stage:"CUTTING", unit_key:"A", actual_pairs:600, planned_pairs:500 },
+    { production_on:"2026-04-06", work_center:"CUT", stage:"CUTTING", unit_key:"B", actual_pairs:400, planned_pairs:500 },
+  ];
+  test("over-making one job does not hide under-making another", () => {
+    const a = planAdherence(plan, act, "2026-04-10");
+    assert.equal(a.totals.adherence, 90, "(500 + 400) / 1000, not 1000/1000");
+    assert.equal(planVsActual(plan.slice(0,2), act).totals.pct, 100, "achievement alone reads 100%");
+  });
+  test("future days are not missed yet; unreported past days are named, not zeroed", () => {
+    const a = planAdherence(plan, act, "2026-04-10");
+    assert.equal(a.totals.rows, 3, "the 20 April row is in the future");
+    assert.equal(a.totals.adherence_all, 64.3, "strict: 900 of 1,400 including the unreported 7 April");
+    assert.equal(a.totals.coverage, 66.7);
+  });
+  test("adherence is broken down by week and by stage", () => {
+    const a = planAdherence(plan, act, "2026-04-10");
+    assert.equal(a.stages.find(s => s.stage === "CUTTING").adherence, 90);
+    assert.equal(a.stages.find(s => s.stage === "STITCHING").adherence, null, "nothing reported is no figure");
+    assert.ok(a.weeks.length >= 1);
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exitCode = failed ? 1 : 0;

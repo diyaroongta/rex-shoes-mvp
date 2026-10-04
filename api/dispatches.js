@@ -1,12 +1,14 @@
 import { q, db } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
-import { buildPackingList } from "../shared/packing-list.js";
+import { buildPackingList, checkAgainstOrder } from "../shared/packing-list.js";
 import { validateIssue, receive, slipFor } from "../shared/job-work.js";
 import { jobOrderBalance } from "../shared/job-orders.js";
 import { INPUTS } from "../shared/inputs.js";
 import { setReference } from "../shared/bridge.js";
 import { validateMovement, repairLedger, heldByCombo } from "../shared/repair.js";
 import { cleanGatePassFields } from "../shared/gate-pass.js";
+import { validateMoves } from "../shared/finished-stock.js";
+import { validateJobCardFields } from "../shared/production-actuals.js";
 
 function validDate(value){
   if(value==null||value==="") return true;
@@ -275,9 +277,12 @@ async function productionActuals(req, res){
   if(req.method === "GET"){
     const { rows }=await q(
       `select id, production_on, work_center, stage, order_no, unit_key, job_card_no, article, party,
-              size_ranges, planned_pairs, actual_pairs, note, created_by, updated_at
+              size_ranges, planned_pairs, actual_pairs, note, created_by, updated_at,
+              rejected_pairs, repair_pairs, cartons, operators, supervisor, shift
          from production_actuals order by production_on desc, work_center, order_no`);
     return res.status(200).json(rows.map(row=>({...row,
+      rejected_pairs:Number(row.rejected_pairs||0),repair_pairs:Number(row.repair_pairs||0),
+      cartons:row.cartons==null?null:Number(row.cartons),operators:row.operators==null?null:Number(row.operators),
       production_on:row.production_on instanceof Date
         ?row.production_on.toISOString().slice(0,10):String(row.production_on).slice(0,10),
       planned_pairs:Number(row.planned_pairs),actual_pairs:Number(row.actual_pairs)})));
@@ -300,7 +305,9 @@ async function productionActuals(req, res){
       if(!Number.isInteger(actual_pairs)||actual_pairs<0) return fail(res,400,`Row ${line}: achieved pairs must be a whole number`);
       if(!Number.isInteger(planned_pairs)||planned_pairs<0) return fail(res,400,`Row ${line}: planned pairs must be a whole number`);
       if(!unit_key) return fail(res,400,`Row ${line}: plan row ID is required`);
-      clean.push({production_on,work_center,stage,order_no,unit_key,
+      const extra=validateJobCardFields(row);
+      if(extra.problem) return fail(res,400,`Row ${line}: ${extra.problem}`);
+      clean.push({production_on,work_center,stage,order_no,unit_key,...extra.fields,
         job_card_no:String(row.job_card_no||"").trim(),
         article:String(row.article||"").trim(),party:String(row.party||"").trim(),
         size_ranges:String(row.size_ranges||"").trim(),planned_pairs,actual_pairs,
@@ -320,16 +327,22 @@ async function productionActuals(req, res){
         const { rows }=await client.query(
           `insert into production_actuals
              (production_on, work_center, stage, order_no, unit_key, job_card_no, article, party,
-              size_ranges, planned_pairs, actual_pairs, note, created_by)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+              size_ranges, planned_pairs, actual_pairs, note, created_by,
+              rejected_pairs, repair_pairs, cartons, operators, supervisor, shift)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
            on conflict (production_on, work_center, stage, unit_key) do update set
              order_no=excluded.order_no, job_card_no=excluded.job_card_no,
              article=excluded.article, party=excluded.party, size_ranges=excluded.size_ranges,
              planned_pairs=excluded.planned_pairs, actual_pairs=excluded.actual_pairs,
-             note=excluded.note, created_by=excluded.created_by, updated_at=now()
-           returning id, production_on, work_center, stage, order_no, unit_key, job_card_no, planned_pairs, actual_pairs, note`,
+             note=excluded.note, created_by=excluded.created_by,
+             rejected_pairs=excluded.rejected_pairs, repair_pairs=excluded.repair_pairs,
+             cartons=excluded.cartons, operators=excluded.operators,
+             supervisor=excluded.supervisor, shift=excluded.shift, updated_at=now()
+           returning id, production_on, work_center, stage, order_no, unit_key, job_card_no, planned_pairs, actual_pairs, note,
+             rejected_pairs, repair_pairs, cartons, operators, supervisor, shift`,
           [row.production_on,row.work_center,row.stage,row.order_no,row.unit_key,row.job_card_no,row.article,row.party,
-           row.size_ranges,row.planned_pairs,row.actual_pairs,row.note,(req.user||{}).username||null]);
+           row.size_ranges,row.planned_pairs,row.actual_pairs,row.note,(req.user||{}).username||null,
+           row.rejected_pairs,row.repair_pairs,row.cartons,row.operators,row.supervisor,row.shift]);
         saved.push(rows[0]);
       }
       await client.query("commit");
@@ -341,7 +354,96 @@ async function productionActuals(req, res){
   return fail(res,405,`${req.method} not allowed`);
 }
 
+/* FINISHED GOODS LEDGER — see shared/finished-stock.js. Lives here for the
+   same reason job work and repairs do: twelve functions is the Hobby limit. */
+async function finishedStockMoves(req, res){
+  if(req.method === "GET"){
+    const { rows } = await q(
+      `select id, article, size, qty, kind, order_no, dispatch_id, note, moved_on, created_by
+         from finished_stock order by moved_on desc, id desc`);
+    return res.status(200).json(rows.map(r => ({ ...r, qty:Number(r.qty),
+      moved_on: r.moved_on instanceof Date ? r.moved_on.toISOString().slice(0,10) : String(r.moved_on||"").slice(0,10) })));
+  }
+  if(req.method === "POST"){
+    const { rows:clean, problems } = validateMoves((req.body||{}).moves);
+    if(problems.length) return fail(res, 400, problems.slice(0,6).join("; "));
+    if(clean.length > 1000) return fail(res, 400, "Record at most 1,000 movements at a time");
+    const client = await db().connect();
+    try{
+      await client.query("begin");
+      const saved = [];
+      for(const m of clean){
+        const { rows } = await client.query(
+          `insert into finished_stock (article, size, qty, kind, order_no, note, moved_on, created_by)
+           values ($1,$2,$3,$4,$5,$6, coalesce($7::date, current_date), $8)
+           returning id, article, size, qty, kind, order_no, note, moved_on`,
+          [m.article, m.size, m.qty, m.kind, m.order_no, m.note, m.moved_on, (req.user||{}).username||null]);
+        saved.push(rows[0]);
+      }
+      await client.query("commit");
+      return res.status(201).json({ saved:saved.length, rows:saved });
+    }catch(e){ await client.query("rollback"); throw e; }
+    finally{ client.release(); }
+  }
+  /* A movement is a record of what happened, so a wrong one is DELETED and
+     re-entered rather than overtyped. A move that came in with an MTS dispatch
+     is refused here — undo that dispatch instead, or the order book and the
+     shelf disagree. */
+  if(req.method === "DELETE"){
+    const id = Number((req.query||{}).id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const { rows } = await q("select dispatch_id from finished_stock where id = $1", [id]);
+    if(!rows.length) return fail(res, 404, "That movement is no longer there — reload the list.");
+    if(rows[0].dispatch_id) return fail(res, 409, "This came in with an MTS dispatch. Undo that dispatch in the Dispatch Book instead — it removes this too.");
+    await q("delete from finished_stock where id = $1", [id]);
+    return res.status(200).json({ id, deleted:true });
+  }
+  return fail(res, 405, `${req.method} not allowed`);
+}
+
+/* PHOTOS OF THE COMPLETED PAPER JOB CARD. A card counts as RECEIVED once a
+   photo is on file — that is the job-card filled % the factory monitors. */
+async function jobCardDocs(req, res){
+  if(req.method === "GET"){
+    const withImages = String((req.query||{}).images||"") === "1";
+    const jobId = (req.query||{}).job_id;
+    const { rows } = await q(
+      `select id, job_id, card_no, order_no, note, uploaded_by, created_at${withImages ? ", image" : ""}
+         from job_card_documents
+        where ($1::bigint is null or job_id = $1)
+        order by created_at desc`, [jobId ? Number(jobId) : null]);
+    return res.status(200).json(rows);
+  }
+  if(req.method === "POST"){
+    const b = req.body || {};
+    const image = String(b.image || "");
+    if(!/^data:image\/(jpeg|png|webp);base64,/.test(image)) return fail(res, 400, "image must be a JPEG, PNG or WebP photo");
+    if(image.length > 3_000_000) return fail(res, 413, "That photo is too large even after resizing — retake it closer, or upload a smaller one");
+    const jobId = Number(b.job_id);
+    if(!Number.isInteger(jobId)) return fail(res, 400, "job_id is required — a photo belongs to one job card");
+    const { rows:job } = await q("select id, order_no, card from job_work where id = $1", [jobId]);
+    if(!job.length) return fail(res, 404, "No such job card");
+    const { rows } = await q(
+      `insert into job_card_documents (job_id, card_no, order_no, image, note, uploaded_by)
+       values ($1,$2,$3,$4,$5,$6) returning id, job_id, card_no, order_no, note, uploaded_by, created_at`,
+      [jobId, String((job[0].card||{}).card_no||b.card_no||""), job[0].order_no, image,
+       String(b.note||"").slice(0,300)||null, (req.user||{}).username||null]);
+    return res.status(201).json(rows[0]);
+  }
+  if(req.method === "DELETE"){
+    const id = Number((req.query||{}).id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const { rowCount } = await q("delete from job_card_documents where id = $1", [id]);
+    if(!rowCount) return fail(res, 404, "That photo is no longer there");
+    return res.status(200).json({ id, deleted:true });
+  }
+  return fail(res, 405, `${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
+  const resource = String((req.query||{}).resource || (req.body && req.body.resource) || "");
+  if(resource === "finished_stock") return finishedStockMoves(req, res);
+  if(resource === "job_card_docs") return jobCardDocs(req, res);
   if(String((req.query||{}).resource||"") === "job_work"
      || (req.body && req.body.resource === "job_work"))
     return jobWork(req, res);
@@ -382,7 +484,7 @@ export default wrap(async (req, res) => {
     if(kind==="shortage"&&!closes_order) return fail(res,400,"a shortage report must close the order");
 
     const { rows: ord } = await q(
-      "select order_no, article_code, lines from orders where order_no = $1 and active", [order_no]);
+      "select order_no, article_code, lines, pi from orders where order_no = $1 and active", [order_no]);
     if(!ord.length) return fail(res, 404, `no such order: ${order_no}`);
 
     // Never accept a dispatch for a combo the order doesn't contain, and never
@@ -393,7 +495,7 @@ export default wrap(async (req, res) => {
 
     /* Hidden rows are INCLUDED here on purpose: hiding takes a report off the
        history list, it does not un-ship the pairs. */
-    const { rows: prev } = await q("select dispatched from dispatches where order_no = $1", [order_no]);
+    const { rows: prev } = await q("select dispatched, packing_list from dispatches where order_no = $1", [order_no]);
     const already = {};
     for(const p of prev)
       for(const [c,v] of Object.entries(p.dispatched)) already[c] = (already[c] || 0) + Number(v);
@@ -464,6 +566,11 @@ export default wrap(async (req, res) => {
           `The packing list adds up to ${built.total_pairs} pairs but this dispatch is ${dispatchedPairs}. `
           + `Correct the sizes or the quantities before saving.`);
       if(!built.ok) return fail(res, 400, built.problems.slice(0,5).join("; "));
+      /* Range by range and size by size against the ORDER, not only the grand
+         total — a sheet that moved pairs between ranges, or packed a size the
+         customer never ordered, used to pass as long as the sum matched. */
+      const againstOrder = checkAgainstOrder(req.body.packing_list, ord[0], clean, prev);
+      if(againstOrder.length) return fail(res, 400, againstOrder.slice(0,5).join("; "));
       sheet = req.body.packing_list;
     }
 
@@ -480,13 +587,55 @@ export default wrap(async (req, res) => {
       for(const line of buildPackingList(sheet).lines)
         if(line.combo) cleanCartons[line.combo] = (cleanCartons[line.combo] || 0) + line.cartons;
 
-    const { rows } = await q(
-      `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list)
-       values ($1,$2,$3,$4,$5, coalesce($6::date, current_date), $7, $8)
-       returning id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list`,
-      [order_no, JSON.stringify(clean), JSON.stringify(cleanCartons), k, note || null,
-       dispatched_on || null, !!closes_order, sheet ? JSON.stringify(sheet) : null]);
-    return res.status(201).json(rows[0]);
+    /* MOVE TO STOCK. An MTS order is made for the shelf, not for a lorry, so
+       "dispatching" it means the pairs leave the order book AND land in
+       finished stock — in ONE transaction, so the two can never disagree.
+       Sizes are required: finished stock is counted per size. */
+    const toStock = !!(req.body && req.body.to_stock);
+    let stockRows = [];
+    if(toStock){
+      if(!/\bMTS\b/i.test(String((ord[0].pi||{}).order_nature||"")))
+        return fail(res, 400, `${order_no} is not an MTS order, so it cannot be moved into stock — record a dispatch instead`);
+      if(closes_order) return fail(res, 400, "Moving to stock cannot also close the order short");
+      const sizes = (req.body.stock_sizes && typeof req.body.stock_sizes === "object") ? req.body.stock_sizes : {};
+      for(const [combo, n] of Object.entries(clean)){
+        const bySize = sizes[combo] || {};
+        let sum = 0;
+        for(const [size, v] of Object.entries(bySize)){
+          const pairs = Number(v);
+          if(!Number.isInteger(pairs) || pairs < 0) return fail(res, 400, `${combo} size ${size}: pairs must be a whole number`);
+          if(!pairs) continue;
+          sum += pairs;
+          stockRows.push({ size:String(size), qty:pairs });
+        }
+        if(sum !== n) return fail(res, 400, `${combo}: the sizes moved to stock add up to ${sum}, not ${n}`);
+      }
+    }
+
+    const insertSql = `insert into dispatches (order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list)
+         values ($1,$2,$3,$4,$5, coalesce($6::date, current_date), $7, $8)
+         returning id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order, packing_list`;
+    const insertArgs = [order_no, JSON.stringify(clean), JSON.stringify(cleanCartons), k,
+         (toStock ? `Moved to finished stock${note ? ` — ${note}` : ""}` : note) || null,
+         dispatched_on || null, !!closes_order, sheet ? JSON.stringify(sheet) : null];
+    if(!toStock){
+      const { rows } = await q(insertSql, insertArgs);
+      return res.status(201).json(rows[0]);
+    }
+    const client = await db().connect();
+    try{
+      await client.query("begin");
+      const { rows } = await client.query(insertSql, insertArgs);
+      for(const m of stockRows)
+        await client.query(
+          `insert into finished_stock (article, size, qty, kind, order_no, dispatch_id, note, moved_on, created_by)
+           values ($1,$2,$3,'from_order',$4,$5,$6, coalesce($7::date, current_date), $8)`,
+          [ord[0].article_code, m.size, m.qty, order_no, rows[0].id, "MTS order moved to stock",
+           dispatched_on || null, (req.user||{}).username || null]);
+      await client.query("commit");
+      return res.status(201).json({ ...rows[0], moved_to_stock: stockRows.reduce((a,m)=>a+m.qty,0) });
+    }catch(e){ await client.query("rollback"); throw e; }
+    finally{ client.release(); }
   }
 
   /* THE HAND-WRITTEN PART OF THE GATE PASS — SR. No, transporter, city.
@@ -569,6 +718,8 @@ export default wrap(async (req, res) => {
          values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
         [d.id, d.order_no, JSON.stringify(d.dispatched), JSON.stringify(d.cartons || {}),
          d.kind, d.note, d.dispatched_on, d.closes_order]);
+      /* An MTS dispatch put pairs on the shelf; undoing it takes them off again. */
+      await client.query("delete from finished_stock where dispatch_id = $1", [id]);
       await client.query("delete from dispatches where id = $1", [id]);
       await client.query("commit");
       const pairs = Object.values(d.dispatched || {}).reduce((a,b)=>a+(Number(b)||0), 0);

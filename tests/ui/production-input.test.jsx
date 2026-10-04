@@ -3,7 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const apiMocks=vi.hoisted(()=>({saveProductionActuals:vi.fn(),listProductionActuals:vi.fn()}));
+const apiMocks=vi.hoisted(()=>({saveProductionActuals:vi.fn(),listProductionActuals:vi.fn(),
+  listJobCardDocs:vi.fn(async()=>[]),uploadJobCardDoc:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>apiMocks);
 
 import ProductionInputTab, { workbookFor, mondayOf, plusDays } from "../../src/ProductionInputTab.jsx";
@@ -61,7 +62,7 @@ it("downloads the supplied Monday-to-Saturday machine planning layout",()=>{
   expect(Object.values(weekly).some(cell=>String(cell?.v||"").includes("PROPOSED: 150"))).toBe(true);
   expect(input.A1.v).toBe("Production Date");
   expect(input.K1.v).toBe("Achieved Pairs");
-  expect(input["!autofilter"].ref).toBe("A1:M4");
+  expect(input["!autofilter"].ref).toBe("A1:S4");
 });
 
 /* TYPED ON THE SCREEN. The factory's ask (T-104) was that the ERP asks for
@@ -82,6 +83,33 @@ it("records production typed straight into the table, and says what it changed",
   expect(rows[0].unit_key).toBe("JO9500#JC41");
   /* Not just "saved" — the screen reports the consequence. */
   expect(await screen.findByText("What this entry changed")).toBeInTheDocument();
+});
+
+/* THE JOB CARD FILLS ITSELF from what is typed with the production figure. */
+it("records rejection, repair and the people on the line with the pairs", async () => {
+  const user = userEvent.setup();
+  render(<ProductionInputTab state={STATE} actuals={[]} onChanged={vi.fn()} replan={()=>STATE} />);
+  await user.type(await screen.findByLabelText(/Pairs achieved for JC41/), "425");
+  await user.click(screen.getByRole("button",{ name:/Job card details for JC41/ }));
+  await user.type(screen.getByLabelText(/^Rejected for JC41/), "5");
+  await user.type(screen.getByLabelText(/^Sent for repair for JC41/), "8");
+  await user.type(screen.getByLabelText(/^People on the line for JC41/), "12");
+  expect(screen.getByText(/no photo yet — open/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button",{ name:"Save today's production" }));
+  await waitFor(()=>expect(apiMocks.saveProductionActuals).toHaveBeenCalled());
+  const [rows] = apiMocks.saveProductionActuals.mock.calls[0];
+  expect(rows[0]).toMatchObject({ actual_pairs:425, rejected_pairs:5, repair_pairs:8, operators:12 });
+});
+
+it("refuses more rejected and repaired pairs than were made", async () => {
+  const user = userEvent.setup();
+  render(<ProductionInputTab state={STATE} actuals={[]} onChanged={vi.fn()} replan={()=>STATE} />);
+  await user.type(await screen.findByLabelText(/Pairs achieved for JC41/), "10");
+  await user.click(screen.getByRole("button",{ name:/Job card details for JC41/ }));
+  await user.type(screen.getByLabelText(/^Rejected for JC41/), "11");
+  await user.click(screen.getByRole("button",{ name:"Save today's production" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/cannot exceed/);
+  expect(apiMocks.saveProductionActuals).not.toHaveBeenCalled();
 });
 
 /* The re-plan a dispatch date can absorb. The card still ships the same day,

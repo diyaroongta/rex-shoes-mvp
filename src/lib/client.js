@@ -227,3 +227,27 @@ export async function askCopilot(question, context){
   const d = await post("/api/copilot", { question, context });
   return d.text || "";
 }
+
+/* ---- finished goods: the stock ledger (opening, in, out, adjustments) ----
+   On the dispatches endpoint for the twelve-function reason. */
+export const listFinishedStock   = ()    => j("/api/dispatches?resource=finished_stock");
+export const addFinishedStock    = moves => post("/api/dispatches?resource=finished_stock",
+  { resource:"finished_stock", moves });
+export const deleteFinishedStock = id    => j(`/api/dispatches?resource=finished_stock&id=${encodeURIComponent(id)}`,
+  { method:"DELETE" });
+/* An MTS order leaves the order book INTO finished stock, sizes given. */
+export const moveToStock = (order_no, dispatched, stock_sizes, note) =>
+  post("/api/dispatches", { order_no, dispatched, stock_sizes, note, to_stock:true, kind:"partial" });
+
+/* ---- photos of completed paper job cards ---- */
+export const listJobCardDocs  = (jobId, images=false) =>
+  j(`/api/dispatches?resource=job_card_docs${jobId?`&job_id=${encodeURIComponent(jobId)}`:""}${images?"&images=1":""}`);
+export const uploadJobCardDoc = (job_id, image, note) => post("/api/dispatches?resource=job_card_docs",
+  { resource:"job_card_docs", job_id, image, note });
+export const deleteJobCardDoc = id => j(`/api/dispatches?resource=job_card_docs&id=${encodeURIComponent(id)}`,
+  { method:"DELETE" });
+
+/* ---- cancelling an order and everything raised against it ---- */
+export const orderImpact = no => j(`/api/orders/${encodeURIComponent(no)}?impact=1`);
+export const cancelOrder = (no, confirm_dispatched=false) =>
+  j(`/api/orders/${encodeURIComponent(no)}?cascade=1${confirm_dispatched?"&confirm_dispatched=1":""}`, { method:"DELETE" });

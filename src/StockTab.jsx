@@ -2,7 +2,6 @@ import React, { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
-import { finishedGoods } from "../shared/finished-goods.js";
 import { stockSheetRows, stockPatchFromRows } from "../shared/stock-upload.js";
 
 /* Stock register in the factory's own STOCK MASTER layout:
@@ -58,7 +57,7 @@ export default function StockTab({ state, onChanged, jobs=null }){
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div role="tablist" aria-label="Stock" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4">
-      {[["add","Add Stock"],["view","View Stock"],["finished","Finished Goods"],["mto","MTO Stock"],["material","Add New Material"]].map(([k,label])=>
+      {[["add","Add Stock"],["view","View Stock"],["material","Add New Material"]].map(([k,label])=>
         <button key={k} role="tab" aria-selected={mode===k} onClick={()=>setMode(k)}
           className="text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors"
           style={mode===k
@@ -67,8 +66,6 @@ export default function StockTab({ state, onChanged, jobs=null }){
     </div>
     {mode==="view" ? <ViewStock version={version} onSaved={refreshed} />
       : mode==="add" ? <AddStock version={version} onSaved={refreshed} onViewAll={()=>setMode("view")} />
-      : mode==="finished" ? <FinishedGoods jobs={jobs} />
-      : mode==="mto" ? <MtoStock state={state} />
       : <div>
           <div className="text-sm font-semibold text-slate-800 mb-1">Add New Material</div>
           <div className="text-xs text-slate-500 mb-3">Use this only when the material is not already in the BOM material master.</div>
@@ -84,7 +81,7 @@ export default function StockTab({ state, onChanged, jobs=null }){
 /* One row per material, computed the same way everywhere on this screen.
    Stock = Opening + Received − Issued: the identity that makes the register
    auditable rather than a free-floating number. */
-function stockRows(){
+export function stockRows(){
   const meta = INPUTS.stock_meta || {};
   return Object.entries(INPUTS.materials||{}).map(([key,m],i)=>{
     const md = meta[key] || {};
@@ -495,86 +492,9 @@ function AddStock({ version, onSaved, onViewAll }){
   </div>;
 }
 
-/* SHOES MADE FOR STOCK. A job card either belongs to an Order Book row or it
-   does not, and `order_no` already says which. What comes back on a CUSTOMER
-   card is owed to that customer; what comes back on a STOCK card belongs to
-   the factory and was recorded nowhere until now.
-   Derived from the receipts, never stored, so a corrected receipt corrects
-   this too. */
-function FinishedGoods({ jobs }){
-  const fg = React.useMemo(()=>finishedGoods(jobs||[]), [jobs]);
-  if(jobs===null) return <div className="text-sm text-slate-500 py-8 text-center">Loading job orders…</div>;
-  return <div>
-    <div className="text-sm font-semibold text-slate-700">Finished goods made for stock</div>
-    <div className="text-xs text-slate-500 mt-1 mb-3">
-      Pairs that came back on job cards raised WITHOUT an Order Book row — work the factory
-      made for itself. Pairs on a customer's job card belong to that order and are counted there.
-      This is what has been <b>made</b>: nothing in the system yet records a sale out of finished
-      stock, so it does not fall when stock is sold.
-    </div>
-    {!fg.articles.length
-      ? <div className="text-sm text-slate-500 text-center py-8">
-          No job card has been raised for stock yet. A job order created without choosing an
-          Order Book row is a stock card, and what comes back on it appears here.</div>
-      : <>
-        <div className="flex gap-4 flex-wrap mb-3 text-xs">
-          <span className="text-slate-500">Articles <b className="mono text-slate-800">{fg.articles.length}</b></span>
-          <span className="text-slate-500">Pairs made <b className="mono text-slate-800">{fmt(fg.total_pairs)}</b></span>
-          {fg.sizes_unknown_pairs>0 && <span className="text-amber-700 font-semibold">
-            {fmt(fg.sizes_unknown_pairs)} pairs whose sizes are not yet known</span>}
-        </div>
-        <div className="overflow-x-auto rounded-xl border border-slate-200">
-          <table className="w-full text-sm"><thead>
-            <tr className="text-[11px] uppercase tracking-wide text-slate-500 bg-slate-50">
-              <th className="text-left px-3 py-2">Article</th>
-              <th className="text-right px-3 py-2">Pairs</th>
-              <th className="text-left px-3 py-2">Sizes</th>
-              <th className="text-right px-3 py-2">Cards</th>
-            </tr></thead>
-            <tbody>{fg.articles.map(a=>(
-              <tr key={a.article} className="border-t border-slate-100">
-                <td className="px-3 py-2 font-medium text-slate-800">{a.article}</td>
-                <td className="px-3 py-2 text-right mono font-semibold">{fmt(a.pairs)}</td>
-                <td className="px-3 py-2 text-[11px] text-slate-600">
-                  {a.size_list.length
-                    ? a.size_list.map(s=>`${s.size}: ${fmt(s.pairs)}`).join(" · ")
-                    : <span className="text-amber-700">not recorded per size</span>}
-                  {/* A part-received card says how many pairs came back but not
-                      WHICH — splitting them across sizes would invent a
-                      breakdown nobody wrote down. */}
-                  {a.sizes_unknown>0 && a.size_list.length>0 &&
-                    <div className="text-amber-700">+{fmt(a.sizes_unknown)} pairs of unknown size</div>}
-                </td>
-                <td className="px-3 py-2 text-right mono text-slate-500">{a.cards}
-                  {a.open_cards>0 && <span className="text-amber-700"> ({a.open_cards} open)</span>}</td>
-              </tr>))}</tbody>
-          </table>
-        </div>
-      </>}
-  </div>;
-}
-
-function MtoStock({state}){
-  const orders=(state&&state.orders||[]).filter(order=>/\bMTO\b/i.test(String(order.pi&&order.pi.order_nature||"")));
-  return <div className="overflow-x-auto">
-    <div className="text-sm font-semibold text-slate-700">MTO material availability</div>
-    <div className="text-xs text-slate-500 mt-1 mb-3">Only live orders whose Order Nature is MTO are shown. Requirements and shortfall come from their existing BOMs and the current stock register.</div>
-    <table className="w-full text-xs" style={{minWidth:820}}><thead><tr className="sign text-slate-500">
-      {['Order / PI','Party','Article','Material','Required','Covered','Shortfall','UOM'].map(h=><th key={h} className={`py-2 px-2 ${['Required','Covered','Shortfall'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
-    </tr></thead><tbody>{orders.flatMap(order=>{
-      const group=(state.procurement_by_order||{})[order.order_no];
-      const materials=group&&group.materials||[];
-      return materials.map((m,index)=><tr key={`${order.order_no}-${m.material_key}`} className="border-t border-slate-100" style={{background:m.shortfall>0?'#fff7ed':'#fff'}}>
-        <td className="py-2 px-2">{index===0&&<><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi&&order.pi.pi_no||'No PI'}</div></>}</td>
-        <td className="px-2">{index===0?order.party:''}</td><td className="px-2">{index===0?order.article:''}</td><td className="px-2">{m.name}</td>
-        <td className="px-2 mono text-right">{fmt(m.required)}</td><td className="px-2 mono text-right">{fmt(m.covered)}</td>
-        <td className={`px-2 mono text-right font-semibold ${m.shortfall>0?'text-amber-700':'text-emerald-700'}`}>{fmt(m.shortfall)}</td><td className="px-2">{m.uom}</td>
-      </tr>);
-    })}</tbody></table>
-    {!orders.length&&<div className="text-sm text-slate-500 text-center py-8">No live order is marked MTO.</div>}
-    {!!orders.length&&!orders.some(order=>((state.procurement_by_order||{})[order.order_no]||{}).materials?.length)&&<div className="text-sm text-amber-700 text-center py-8">These MTO orders do not yet have BOM material requirements.</div>}
-  </div>;
-}
+/* Finished goods (MTS) and MTO stock moved to Dispatch → Finished goods:
+   they are shoes, not raw material, and they are what the dispatch clerk
+   ships from. This screen is the raw-material register. */
 
 /* Adding a material the BOM has never mentioned.
    The UOM is part of the material's IDENTITY, not a display preference — the

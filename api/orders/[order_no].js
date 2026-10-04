@@ -4,6 +4,7 @@ import { INPUTS as SEED } from "../../shared/inputs.js";
 import { ensurePiTable, syncPiMaster } from "../_lib/pis.js";
 import { comboSizesForArticle, setReference } from "../../shared/bridge.js";
 import { normalizeOverride } from "../../shared/engine.js";
+import { orderImpact, cascadeCancel } from "../_lib/cascade.js";
 
 /* Same reason as the create endpoint: edit an order for an article that was
    uploaded through Data & BOM and seed-based validation would reject it. */
@@ -149,6 +150,32 @@ export default wrap(async (req, res) => {
       return res.status(200).json({...r,
         order_date:r.order_date instanceof Date?r.order_date.toISOString().slice(0,10):String(r.order_date)});
     }catch(e){await client.query("rollback");throw e;}finally{client.release();}
+  }
+
+  /* What cancelling this order would take with it — asked BEFORE the clerk
+     confirms, so the dialog can name the job cards and packing reports. */
+  if(req.method === "GET" && String((req.query||{}).impact||"") === "1"){
+    const client = await db().connect();
+    try{ return res.status(200).json(await orderImpact(client, [order_no])); }
+    finally{ client.release(); }
+  }
+
+  /* CANCEL: the order AND everything raised against it — see api/_lib/cascade.js. */
+  if(req.method === "DELETE" && String((req.query||{}).cascade||"") === "1"){
+    const client = await db().connect();
+    try{
+      await client.query("begin");
+      const { rows } = await client.query("select order_no from orders where order_no = $1 and active for update", [order_no]);
+      if(!rows.length){ await client.query("rollback"); return fail(res, 404, `no such order: ${order_no} — it may already be cancelled. Reload the Order Book.`); }
+      const out = await cascadeCancel(client, [order_no], {
+        confirmDispatched: String((req.query||{}).confirm_dispatched||"") === "1",
+        user: (req.user||{}).username || null });
+      if(out.refused){ await client.query("rollback"); return res.status(409).json({ error: out.message, impact: out.impact }); }
+      await syncPiMaster(client);
+      await client.query("commit");
+      return res.status(200).json({ cancelled: order_no, impact: out.impact });
+    }catch(e){ try{ await client.query("rollback"); }catch(_){ } throw e; }
+    finally{ client.release(); }
   }
 
   if(req.method === "DELETE"){

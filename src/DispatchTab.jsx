@@ -3,7 +3,8 @@ import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import PackingList from "./PackingList.jsx";
-import { buildPackingList, draftFromOrder } from "../shared/packing-list.js";
+import { buildPackingList, draftFromOrder, sizeBalance, syncSheetPairs, checkAgainstOrder, lineSizeOrder } from "../shared/packing-list.js";
+import { comboSizesForArticle } from "../shared/bridge.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
 import { comboSizes } from "../shared/pi.js";
 import { printDocument } from "./lib/print-document.js";
@@ -55,6 +56,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
   useEffect(()=>{ if(viewing&&viewerRef.current&&viewerRef.current.scrollIntoView)
     viewerRef.current.scrollIntoView({behavior:"smooth",block:"start"}); },[viewing]);
   const [draft,setDraft]=useState({});
+  /* Per SIZE, for every range the customer ordered size by size: {combo:{size:pairs}}.
+     The range total in `draft` is then the SUM of these, never typed separately,
+     so the dispatch, the packing list and the order cannot disagree. */
+  const [sizeDraft,setSizeDraft]=useState({});
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
   const [busy,setBusy]=useState(false);
@@ -147,21 +152,53 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
     }).sort((a,b)=>String(b.latest).localeCompare(String(a.latest))||a.order_no.localeCompare(b.order_no));
   },[dispatches,orders]);
 
+  const sizesFor = order => combo => comboSizesForArticle(order.article_code||order.article, combo, (order.pi||{}).vl);
+  const previousFor = no => dispatches.filter(d=>d.order_no===no);
+  /* What is leaving, in the shape the packing list is drafted from: a sized
+     range as {size: pairs}, a range ordered as a range as its total. */
+  const leavingFrom = (d, sd) => Object.fromEntries(Object.keys(d).map(c=>[c, sd[c] ? sd[c] : Number(d[c])||0]));
+
   function startReport(rec){
     setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
     /* Pre-filled with what can actually SHIP. Pre-filling the whole outstanding
        balance would put pairs that are on the repair bench into the report by
        default, and the server would then refuse the whole thing. */
     const hold=(repairHold[rec.order.order_no]||{by_combo:{}}).by_combo;
-    const d={}; for(const r of rec.rows)
-      d[r.combo]=Math.max(0, (r.pending>0?r.pending:0) - (hold[r.combo]||0));
-    setDraft(d); setSheet(null); setPreview(null); setStale(false);
+    const balance=sizeBalance(rec.order, previousFor(rec.order.order_no));
+    const d={}, sd={};
+    for(const r of rec.rows){
+      const can=Math.max(0, (r.pending>0?r.pending:0) - (hold[r.combo]||0));
+      const owed=balance[r.combo];
+      /* Sized range: start from what is still owed of EACH size. Only when the
+         whole range can ship — a repair hold cannot be placed on a size, so a
+         held range starts at its range total and the packer splits it. */
+      if(owed && can===Object.values(owed.sizes).reduce((a,x)=>a+x.remaining,0)-0 && !owed.unsized){
+        sd[r.combo]=Object.fromEntries(Object.entries(owed.sizes).filter(([,x])=>x.remaining>0).map(([k,x])=>[k,x.remaining]));
+      } else if(owed){
+        sd[r.combo]=Object.fromEntries(Object.keys(owed.sizes).map(k=>[k,0]));
+      }
+      d[r.combo]=sd[r.combo]?Object.values(sd[r.combo]).reduce((a,b)=>a+(Number(b)||0),0):can;
+    }
+    setDraft(d); setSizeDraft(sd); setPreview(null); setStale(false);
+    /* THE ORDER COMES ITSELF. The packing list opens already filled from the
+       order's own sizes — the clerk counts cartons, not re-keys what was ordered. */
+    setSheet(draftFromOrder(rec.order, sizesFor(rec.order), leavingFrom(d,sd), previousFor(rec.order.order_no)));
   }
 
   /* Any change to what is leaving, or to how it is boxed, invalidates a
      preview already generated. */
   function touched(){ if(preview) setStale(true); }
-  const editDraft=(combo,value)=>{ setDraft(d=>({...d,[combo]:value})); touched(); };
+  const editDraft=(combo,value,order)=>{
+    const d={...draft,[combo]:value};
+    setDraft(d); touched();
+    if(sheet&&order) setSheet(syncSheetPairs(sheet, leavingFrom(d,sizeDraft), order, sizesFor(order)));
+  };
+  const editSize=(combo,size,value,order)=>{
+    const sd={...sizeDraft,[combo]:{...(sizeDraft[combo]||{}),[size]:value}};
+    const d={...draft,[combo]:Object.values(sd[combo]).reduce((a,b)=>a+(Number(b)||0),0)};
+    setSizeDraft(sd); setDraft(d); touched();
+    if(sheet&&order) setSheet(syncSheetPairs(sheet, leavingFrom(d,sd), order, sizesFor(order)));
+  };
   const editSheet=next=>{ setSheet(next); touched(); };
 
   function generate(rec){
@@ -177,8 +214,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
   /* The server REFUSES a sheet whose pairs disagree with the dispatch, so
      letting Record be pressed here only turns a visible mismatch into a
      server error after the fact. */
-  const sheetProblems=()=>sheet
-    ? buildPackingList({...sheet,dispatch_pairs:enteredPairs()}).problems : [];
+  const sheetProblems=rec=>sheet
+    ? [...buildPackingList({...sheet,dispatch_pairs:enteredPairs()}).problems,
+       ...(rec?checkAgainstOrder(sheet, rec.order, leavingFrom(draft,sizeDraft), previousFor(rec.order.order_no)):[])]
+    : [];
 
   async function submit(rec, closes=false){
     const closing=closes||kind==="shortage";
@@ -213,6 +252,38 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
         ? `${rec.order.order_no} closed. Any undelivered balance is recorded as a shortage.`
         : `Packing report recorded for ${rec.order.order_no}.`);
       if(onChanged) await onChanged();   // reloads the shared dispatch list
+    }catch(e){ setErr(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+
+  /* MOVE TO STOCK. An MTS order was made for the shelf: its pairs leave the
+     order book and land in finished stock in one step, size by size. Sizes
+     come from step 1 for a range ordered size by size, otherwise from the
+     packing list — finished stock is counted per size, so it is never guessed. */
+  const isMts = order => /\bMTS\b/i.test(String(((order||{}).pi||{}).order_nature||""));
+  async function moveToStock(rec){
+    const dispatched={}, stockSizes={};
+    for(const [c,v] of Object.entries(draft)){ const n=Number(v)||0; if(n>0) dispatched[c]=n; }
+    if(!Object.keys(dispatched).length){ setErr("Enter the pairs going into stock first."); return; }
+    const fromSheet={};
+    if(sheet) for(const line of buildPackingList(sheet).lines)
+      for(const g of line.groups) for(const z of g.sizes){
+        const b=fromSheet[line.combo]||(fromSheet[line.combo]={}); b[z.size]=(b[z.size]||0)+z.pairs; }
+    for(const c of Object.keys(dispatched)){
+      const bySize=sizeDraft[c] ? Object.fromEntries(Object.entries(sizeDraft[c]).map(([k,v])=>[k,Number(v)||0])) : fromSheet[c];
+      const sum=Object.values(bySize||{}).reduce((a,b)=>a+b,0);
+      if(!bySize||sum!==dispatched[c]){
+        setErr(`${c}: give the sizes on the packing list (they add up to ${sum}, not ${dispatched[c]}) — finished stock is counted per size.`); return; }
+      stockSizes[c]=bySize;
+    }
+    const pairs=Object.values(dispatched).reduce((a,b)=>a+b,0);
+    if(!confirm(`Move ${fmt(pairs)} pairs of ${rec.order.order_no} into finished stock?\n\nThey leave the order book as dispatched and appear under Dispatch → Finished goods.`)) return;
+    setBusy(true); setErr("");
+    try{
+      await api.moveToStock(rec.order.order_no, dispatched, stockSizes, note);
+      setOpen(null); setPreview(null); setSheet(null);
+      setMsg(`${fmt(pairs)} pairs of ${rec.order.order_no} moved into finished stock.`);
+      if(onChanged) await onChanged();
     }catch(e){ setErr(String(e.message||e)); }
     finally{ setBusy(false); }
   }
@@ -259,7 +330,8 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
           {list.map(rec=>(
             <React.Fragment key={rec.order.order_no}>
               <tr className="border-t border-slate-100">
-                <td className="py-2 mono font-semibold">{rec.order.order_no}</td>
+                <td className="py-2 mono font-semibold">{rec.order.order_no}
+                  {isMts(rec.order) && <span className="ml-1 text-[10px] font-sans font-semibold rounded px-1 bg-sky-100 text-sky-800" title="Made to stock">MTS</span>}</td>
                 <td className="text-slate-600">{rec.order.party}</td>
                 <td className="text-slate-600">{rec.order.article}</td>
                 <td className="text-right mono">{fmt(rec.total_ordered)}</td>
@@ -287,7 +359,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                 <td className="text-right">
                   {rec.total_pending>0 && !rec.closed && <button onClick={()=>open===rec.order.order_no?setOpen(null):startReport(rec)}
                     className="text-xs font-semibold text-indigo-700 hover:underline">
-                    {open===rec.order.order_no?"Cancel":"Packing report"}</button>}</td>
+                    {open===rec.order.order_no?"Cancel":"Packing report"}</button>}
+                  {rec.total_pending>0 && !rec.closed && isMts(rec.order) && open!==rec.order.order_no &&
+                    <button onClick={()=>startReport(rec)} className="block ml-auto mt-0.5 text-xs font-semibold text-sky-700 hover:underline">
+                      Move to stock</button>}</td>
               </tr>
 
               {open===rec.order.order_no && (
@@ -307,8 +382,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                         {rec.rows.map(r=>{
                           const onBench=(repairHold[rec.order.order_no]||{by_combo:{}}).by_combo[r.combo]||0;
                           const canShip=Math.max(0,r.pending-onBench);
-                          return <tr key={r.combo}>
-                            <td className="mono py-1">{r.combo}</td>
+                          const owed=sizeBalance(rec.order, previousFor(rec.order.order_no))[r.combo];
+                          const line=(rec.order.lines||[]).find(l=>l.combo===r.combo)||{combo:r.combo};
+                          const sizeNames=owed?lineSizeOrder(line, sizesFor(rec.order)).filter(z=>owed.sizes[z]):[];
+                          return <React.Fragment key={r.combo}><tr>
+                            <td className="mono py-1">{r.combo}
+                              {owed && <span className="text-[10px] text-slate-400 font-sans"> · ordered size by size</span>}</td>
                             <td className="text-right mono">{fmt(r.ordered)}</td>
                             <td className="text-right mono">{fmt(r.dispatched)}</td>
                             <td className="text-right mono">{fmt(r.pending)}
@@ -319,12 +398,31 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                               {onBench>0 && <div className="text-[10px] text-amber-700">
                                 −{fmt(onBench)} in repair</div>}</td>
                             <td className="text-right">
-                              <input type="number" min={0} max={canShip} value={draft[r.combo]??0}
-                                onChange={e=>editDraft(r.combo,e.target.value)}
-                                style={onBench>0?{borderColor:"#f59e0b"}:undefined}
-                                title={onBench>0?`${onBench} pair(s) are on the repair bench and cannot ship`:undefined}
-                                className="w-20 text-sm border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>
-                          </tr>;})}
+                              {owed
+                                ? <span className="mono font-semibold" title="The sum of the sizes below">{fmt(draft[r.combo]||0)}</span>
+                                : <input type="number" min={0} max={canShip} value={draft[r.combo]??0}
+                                    onChange={e=>editDraft(r.combo,e.target.value,rec.order)}
+                                    style={onBench>0?{borderColor:"#f59e0b"}:undefined}
+                                    title={onBench>0?`${onBench} pair(s) are on the repair bench and cannot ship`:undefined}
+                                    className="w-20 text-sm border border-slate-300 rounded px-1 py-0.5 mono text-right" />}</td>
+                          </tr>
+                          {/* THE ORDER'S OWN SIZES. A customer who ordered 7s:40, 8s:20,
+                              10s:60 sees those three sizes here — not the range split
+                              four ways — and the packing list below follows them. */}
+                          {sizeNames.map(z=>{ const x=owed.sizes[z]; return <tr key={z} className="text-slate-500">
+                            <td className="mono pl-5">size {z}</td>
+                            <td className="text-right mono">{fmt(x.ordered)}</td>
+                            <td className="text-right mono">{fmt(x.sent)}</td>
+                            <td className="text-right mono">{fmt(x.remaining)}</td>
+                            <td className="text-right">
+                              <input type="number" min={0} max={x.remaining} value={(sizeDraft[r.combo]||{})[z]??0}
+                                aria-label={`Dispatch now, ${r.combo} size ${z}`}
+                                onChange={e=>editSize(r.combo,z,e.target.value,rec.order)}
+                                className="w-16 text-xs border border-slate-300 rounded px-1 py-0.5 mono text-right" /></td>
+                          </tr>; })}
+                          {owed && owed.unsized>0 && <tr><td colSpan={5} className="text-[10px] text-amber-700 pl-5">
+                            {fmt(owed.unsized)} pairs of {r.combo} went out earlier without a packing list, so their sizes are unknown — check the per-size balance by hand.</td></tr>}
+                          </React.Fragment>;})}
                       </tbody>
                     </table>
 
@@ -337,8 +435,8 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                     <div className="mt-1">
                       {!sheet
                         ? <button type="button"
-                            onClick={()=>editSheet(draftFromOrder(rec.order, comboSizes,
-                              Object.fromEntries(Object.entries(draft).map(([c,v])=>[c,Number(v)||0]))))}
+                            onClick={()=>editSheet(draftFromOrder(rec.order, sizesFor(rec.order),
+                              leavingFrom(draft,sizeDraft), previousFor(rec.order.order_no)))}
                             className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">
                             Fill in the packing list
                           </button>
@@ -352,10 +450,11 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                         a rejection after the clerk has pressed Record. */}
                     {sheet && (()=>{
                       const built=buildPackingList({...sheet,dispatch_pairs:enteredPairs()});
-                      return built.problems.length
+                      const problems=sheetProblems(rec);
+                      return problems.length
                         ? <div className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5 mt-2">
-                            <b>The packing list and the dispatch do not agree yet:</b>
-                            <ul className="list-disc pl-4 mt-0.5">{built.problems.map((p,i)=><li key={`${i}-${p}`}>{p}</li>)}</ul>
+                            <b>The packing list, the dispatch and the order do not agree yet:</b>
+                            <ul className="list-disc pl-4 mt-0.5">{problems.map((p,i)=><li key={`${i}-${p}`}>{p}</li>)}</ul>
                           </div>
                         : <div className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5 mt-2">
                             Reconciled — <b className="mono">{fmt(built.total_pairs)}</b> pairs in
@@ -375,8 +474,12 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                                unchanged shipped the whole balance and left
                                nothing short. Closing starts from zero, so the
                                shortage is the balance unless pairs are typed. */
-                            if(next==="shortage") setDraft(d=>Object.fromEntries(Object.keys(d).map(k=>[k,0])));
-                            else setDraft(Object.fromEntries(rec.rows.map(r=>[r.combo,r.pending>0?r.pending:0])));
+                            if(next==="shortage"){
+                              setDraft(d=>Object.fromEntries(Object.keys(d).map(k=>[k,0])));
+                              setSizeDraft(sd=>Object.fromEntries(Object.entries(sd).map(([c,v])=>[c,Object.fromEntries(Object.keys(v).map(k=>[k,0]))])));
+                              setSheet(null);
+                            }
+                            else startReport(rec);
                           }}
                           className="block mt-0.5 text-sm border border-slate-300 rounded-lg px-2 py-1 bg-white">
                           <option value="partial">Partial dispatch</option>
@@ -396,6 +499,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                           :sheetProblems(rec).length?"The packing list and the dispatch do not agree":""}
                         className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
                         {busy?"Recording…":"Record dispatch"}</button>
+                      {isMts(rec.order) && <button disabled={busy} onClick={()=>moveToStock(rec)}
+                        title="MTS order: the pairs leave the order book and are added to finished stock, size by size"
+                        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-sky-600 text-white disabled:opacity-50">
+                        Move to finished stock</button>}
                       <button disabled={busy||stale} onClick={()=>submit(rec,true)}
                         title="Dispatch what is entered above and close the order, accepting the rest as never coming"
                         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-300 text-rose-700 bg-white disabled:opacity-50">
@@ -560,6 +667,8 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
         <div className="text-xs font-semibold text-slate-700 mb-1">
           <span className="mono">{line.article}</span> · {line.closure || "—"} · {line.colour || "—"}
           <span className="text-slate-400 font-normal ml-2 mono">{line.combo}</span>
+          {line.estimated && <span className="ml-2 font-normal text-amber-700">
+            sizes are a starting split — this range was not ordered size by size; correct them to what is in the boxes</span>}
         </div>
         <table className="text-xs w-full" style={{borderCollapse:"collapse"}}>
           <thead><tr className="text-slate-500">
@@ -633,8 +742,10 @@ function PackingListEditor({ sheet, setSheet, expectedPairs }){
             what is in the box is counted, never derived. */}
         {(() => {
           const suggestion = suggestMixedCarton(line, rateForLine(line));
-          const sizes = (comboSizes(line.combo)||[]).length
-            ? comboSizes(line.combo) : line.groups.flatMap(g=>g.sizes.map(s=>s.size));
+          /* The sizes ON THIS LINE — what was ordered — not the range's whole
+             roll, which offered sizes nobody ordered. */
+          const sizes = line.groups.flatMap(g=>g.sizes.map(s=>s.size)).filter(Boolean).length
+            ? line.groups.flatMap(g=>g.sizes.map(s=>s.size)).filter(Boolean) : (comboSizes(line.combo)||[]);
           return <div className="flex items-center gap-2 flex-wrap mt-1">
             <button type="button"
               onClick={()=>setSheet(suggestion

@@ -136,6 +136,7 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
   /* Removal is its own panel now — see BomRemovalPanel. It replaced a
      one-material-at-a-time control that did not scale past a handful. */
   const [removeOpen,setRemoveOpen]=useState(false);
+  const [addOpen,setAddOpen]=useState(false);
   const type=typeOptions.includes(chosenType)?chosenType:"ALL";
 
   function clearEdits(){setPackingEdits({});setSingleEdits({});}
@@ -209,7 +210,16 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
         className="text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 bg-white">
         {removeOpen?"Close BOM removal":"Remove from BOM"}
       </button>
+      <button type="button" onClick={()=>setAddOpen(v=>!v)}
+        className="text-xs font-semibold border border-indigo-300 text-indigo-800 rounded-lg px-3 py-2 bg-indigo-50">
+        {addOpen?"Close":"+ Add a size range"}
+      </button>
     </div>
+    {addOpen&&<AddRangePanel article={article} onDone={out=>{
+      setAddOpen(false);
+      setMsg(`${out.combo} (sizes ${out.sizes.join(", ")}) added to ${out.article}. ${out.warnings.join(" ")}`);
+      onChanged&&onChanged();
+    }} />}
     <div className="text-xs text-slate-600 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 mb-3">
       This page is the current database view for the selected article. It shows every stored combination by default,
       the effective rule for every individual size, and the complete BOM. Packing quantities can be edited here;
@@ -241,5 +251,52 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
       <button disabled={busy||(!Object.keys(packingEdits).length&&!Object.keys(singleEdits).length)} onClick={clearEdits}
         className="text-xs font-semibold border border-slate-300 rounded-lg px-4 py-2 bg-white disabled:opacity-40">Discard changes</button>
     </div>
+  </div>;
+}
+
+/* ADD A SIZE RANGE — big 11 and 12 on GOLA PLUS, without re-uploading the
+   whole workbook. The BOM can be copied from a range the person CHOOSES (and
+   the range remembers where it came from); pairs per carton and MRP are taken
+   only as typed. See shared/add-range.js. */
+function AddRangePanel({article,onDone}){
+  const art=(INPUTS.articles||{})[article]||{};
+  const ranges=art.combo_order||Object.keys(art.combos||{});
+  const [combo,setCombo]=useState("");
+  const [from,setFrom]=useState("");
+  const [pack,setPack]=useState("");
+  const [mrp,setMrp]=useState("");
+  const [busy,setBusy]=useState(false),[err,setErr]=useState("");
+  async function add(){
+    setBusy(true); setErr("");
+    try{
+      const out=await api.patchReference({add_combo:{article,combo,copy_from:from||null,packing:pack,mrp}});
+      await reloadReference(); onDone(out);
+    }catch(e){ setErr(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+  return <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3 mb-3">
+    <div className="text-sm font-semibold text-slate-800">Add a size range to {article}</div>
+    <p className="text-xs text-slate-600 mt-0.5 mb-2">
+      Write the range the way the factory does — <b className="mono">11X12B</b> is big 11 to big 12, <b className="mono">8X10</b> is kids 8s to 10s.
+      Existing ranges: <span className="mono">{ranges.join(", ")||"none"}</span>.
+      Copying a BOM is a starting point only — bigger sizes use more material, so replace it with the real BOM when known.</p>
+    <div className="flex gap-2 flex-wrap items-end">
+      <label className="text-xs text-slate-600">New range
+        <input value={combo} onChange={e=>setCombo(e.target.value.toUpperCase())} placeholder="11X12B" aria-label="New size range"
+          className="block mt-0.5 w-24 border border-slate-300 rounded px-2 py-1 mono text-sm"/></label>
+      <label className="text-xs text-slate-600">Copy BOM rates from
+        <select value={from} onChange={e=>setFrom(e.target.value)} aria-label="Copy BOM from"
+          className="block mt-0.5 border border-slate-300 rounded px-2 py-1 text-sm bg-white">
+          <option value="">— no BOM yet —</option>{ranges.map(r=><option key={r} value={r}>{r}</option>)}</select></label>
+      <label className="text-xs text-slate-600">Pairs per carton
+        <input type="number" min={1} value={pack} onChange={e=>setPack(e.target.value)} placeholder="blank = unknown" aria-label="Pairs per carton"
+          className="block mt-0.5 w-28 border border-slate-300 rounded px-2 py-1 mono text-sm"/></label>
+      <label className="text-xs text-slate-600">MRP (₹)
+        <input type="number" min={1} value={mrp} onChange={e=>setMrp(e.target.value)} placeholder="blank = unknown" aria-label="MRP"
+          className="block mt-0.5 w-28 border border-slate-300 rounded px-2 py-1 mono text-sm"/></label>
+      <button disabled={busy||!combo} onClick={add}
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{busy?"Adding…":"Add range"}</button>
+    </div>
+    {err&&<div role="alert" className="text-xs text-rose-800 mt-2">{err}</div>}
   </div>;
 }

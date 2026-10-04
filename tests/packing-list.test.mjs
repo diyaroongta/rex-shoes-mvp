@@ -8,7 +8,7 @@
  * Run: npm test
  */
 import assert from "node:assert/strict";
-import { buildPackingList, cartonNumbers, draftFromOrder } from "../shared/packing-list.js";
+import { buildPackingList, cartonNumbers, draftFromOrder, sizeBalance, checkAgainstOrder, syncSheetPairs } from "../shared/packing-list.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -241,6 +241,77 @@ test("an uncounted line names its sizes, so two rows do not read alike", () => {
   assert.ok(uncounted.some(p => p.includes("6s")), uncounted.join(" | "));
   assert.ok(uncounted.some(p => p.includes("7s")), uncounted.join(" | "));
 });
+
+console.log("\nE — the order's own sizes, not an even split (the GOLA PLUS dispatch)");
+{
+  /* The live fault: an order taken size by size came back on the dispatch
+     sheet as 30/30/30/30 — 120 pairs of 7X10 divided evenly — and its 8X10
+     line printed as kids sizes. The ORDER is the source of the sheet now. */
+  const roll = c => ({ "7X10":["7s","8s","9s","10s"], "11X1":["11s","12s","13s","1"], "8X10B":["8","9","10"] })[c] || [];
+  const order = { order_no:"JO2175", party:"Shoe House", article_code:"GOLA PLUS VELCRO BLACK BLACK",
+    pi:{ vl:"VELCRO", upper_colour:"BLACK" },
+    lines:[ { combo:"7X10", qty:120, sizes:{ "7s":40, "8s":20, "9s":0, "10s":60 } },
+            { combo:"11X1", qty:110, sizes:{ "11s":50, "13s":60 } },
+            { combo:"8X10B", qty:120, sizes:{ "8":40, "9":40, "10":40 }, size_order:["8","9","10"] } ] };
+  const flat = d => Object.fromEntries(d.lines.map(l => [l.combo, Object.fromEntries(l.groups.flatMap(g => g.sizes).map(s => [s.size, s.pairs]))]));
+
+  test("the draft is the order's sizes, exactly — no size nobody ordered", () => {
+    const d = draftFromOrder(order, roll, { "7X10":120, "11X1":110, "8X10B":120 });
+    assert.deepEqual(flat(d), { "7X10":{ "7s":40, "8s":20, "10s":60 }, "11X1":{ "11s":50, "13s":60 }, "8X10B":{ "8":40, "9":40, "10":40 } });
+    assert.ok(d.lines.every(l => !l.estimated), "an exact order is not an estimate");
+  });
+  test("adult sizes keep the labels the order wrote (8, not 8s)", () => {
+    const d = draftFromOrder(order, roll, { "8X10B":120 });
+    assert.deepEqual(d.lines[0].groups.map(g => g.sizes[0].size), ["8","9","10"]);
+  });
+  test("sizes given for this dispatch are used as given", () => {
+    const d = draftFromOrder(order, roll, { "7X10":{ "7s":10, "10s":14 } });
+    assert.deepEqual(flat(d), { "7X10":{ "7s":10, "10s":14 } });
+  });
+  test("a second dispatch drafts only what is still owed per size", () => {
+    const first = { dispatched:{ "7X10":60 }, packing_list:{ lines:[{ combo:"7X10", groups:[{ sizes:[{ size:"7s", pairs:40 },{ size:"8s", pairs:20 }] }] }] } };
+    const bal = sizeBalance(order, [first]);
+    assert.equal(bal["7X10"].sizes["7s"].remaining, 0);
+    assert.equal(bal["7X10"].sizes["10s"].remaining, 60);
+    const d = draftFromOrder(order, roll, { "7X10":60 }, [first]);
+    assert.deepEqual(flat(d), { "7X10":{ "10s":60 } });
+  });
+  test("a range ordered as a range still starts equal, and says it is an estimate", () => {
+    const d = draftFromOrder({ ...order, lines:[{ combo:"7X10", qty:120 }] }, roll, { "7X10":120 });
+    assert.deepEqual(flat(d), { "7X10":{ "7s":30, "8s":30, "9s":30, "10s":30 } });
+    assert.equal(d.lines[0].estimated, true);
+  });
+  test("the check refuses pairs moved between ranges even when the total matches", () => {
+    const sheet = draftFromOrder(order, roll, { "7X10":120, "11X1":110 });
+    sheet.lines[0].groups[0].sizes[0].pairs = 70;           // +30 on 7X10
+    sheet.lines[1].groups[0].sizes[0].pairs = 20;           // -30 on 11X1
+    const p = checkAgainstOrder(sheet, order, { "7X10":120, "11X1":110 });
+    assert.ok(p.some(x => /7X10: the packing list has 150/.test(x)), p.join(" | "));
+  });
+  test("the check refuses a size that was never ordered", () => {
+    const sheet = { lines:[{ combo:"11X1", groups:[{ sizes:[{ size:"12s", pairs:10 },{ size:"11s", pairs:40 }], cartons:1 }] }] };
+    const p = checkAgainstOrder(sheet, order, { "11X1":50 });
+    assert.ok(p.some(x => /size 12s was not ordered/.test(x)), p.join(" | "));
+  });
+  test("the check refuses more of a size than is still owed", () => {
+    const sheet = { lines:[{ combo:"7X10", groups:[{ sizes:[{ size:"8s", pairs:25 }], cartons:1 }] }] };
+    const p = checkAgainstOrder(sheet, order, { "7X10":25 });
+    assert.ok(p.some(x => /8s: 25 pairs packed but only 20/.test(x)), p.join(" | "));
+  });
+  test("a sheet that matches the order passes", () => {
+    const sheet = draftFromOrder(order, roll, { "7X10":120, "11X1":110, "8X10B":120 });
+    assert.deepEqual(checkAgainstOrder(sheet, order, { "7X10":120, "11X1":110, "8X10B":120 }), []);
+  });
+  test("changing what leaves keeps every carton already counted", () => {
+    const sheet = draftFromOrder(order, roll, { "7X10":120 });
+    sheet.lines[0].groups[0].cartons = 2;                    // 7s counted
+    const next = syncSheetPairs(sheet, { "7X10":{ "7s":40, "8s":20, "10s":30 } }, order, roll);
+    assert.equal(next.lines[0].groups[0].cartons, 2);
+    assert.deepEqual(flat(next), { "7X10":{ "7s":40, "8s":20, "10s":30 } });
+    const dropped = syncSheetPairs(next, { "7X10":{ "7s":40 } }, order, roll);
+    assert.deepEqual(flat(dropped), { "7X10":{ "7s":40 } });
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes

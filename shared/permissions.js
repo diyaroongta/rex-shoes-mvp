@@ -39,7 +39,7 @@ const MATERIAL_KEYS = ["new_material"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","gatepass","schedule",
+const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","gatepass","finished","formats","schedule",
                    "production_input","plan","machines","procurement","stock","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -57,7 +57,7 @@ export const ROLE_DEFS = {
   sales: {
     label:"CRM / Sales",
     summary:"Raises PIs and bulk orders, and maintains customers and their terms.",
-    tabs:["mis","intake","pis","orders","parties","copilot"],
+    tabs:["mis","intake","pis","orders","finished","parties","copilot"],
     writes:["orders","pis","parties","read-order-photo","read-pi","copilot"], reference:null,
   },
   dispatch: {
@@ -70,7 +70,7 @@ export const ROLE_DEFS = {
        lorry, so it belongs to whoever is packing it. */
     /* Gate passes: the slip for the lorry this role just packed. Saving its
        SR. No is a write to dispatches, which this role already has. */
-    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","rules"],
+    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","finished","formats","rules"],
     writes:["dispatches"], reference:null,
   },
   /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
@@ -88,19 +88,19 @@ export const ROLE_DEFS = {
     summary:"Builds the production schedule and balances machine load. "
       +"Re-sequences work; cannot raise a PI, record a dispatch, "
       +"or change what was ordered.",
-    tabs:["mis","orders","status","schedule","production_input","plan","machines"],
+    tabs:["mis","orders","status","schedule","production_input","plan","machines","formats"],
     writes:[], orders:"plan", production_actuals:true, reference:null,
   },
   procurement: {
     label:"Procurement Officer",
     summary:"Works the buying list and records what has come in. Cannot change a BOM.",
-    tabs:["mis","procurement","stock","orders","schedule"],
+    tabs:["mis","procurement","stock","orders","schedule","formats"],
     writes:[], reference:"stock", purchase_orders:"all",
   },
   store: {
     label:"Store / Inventory Keeper",
     summary:"Stock in, stock out and physical counts. Nothing else.",
-    tabs:["stock","procurement"],
+    tabs:["stock","procurement","formats"],
     writes:[], reference:"stock", purchase_orders:"receive",
   },
   data: {
@@ -112,7 +112,7 @@ export const ROLE_DEFS = {
   auditor: {
     label:"Auditor / Consultant",
     summary:"Reads the dashboard and the change history. No edit rights at all.",
-    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","schedule","procurement","stock","data"],
+    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","finished","schedule","procurement","stock","data"],
     writes:[], reference:null,
   },
   /* Kept because accounts already carry it, and because "sees everything,
@@ -207,6 +207,12 @@ export function can(role, method, url, body){
       : `${def.label} cannot change the BOM or reference data.` };
   }
 
+  /* A photo of the completed job card is filed by whoever records the day's
+     production — the same person, the same moment. */
+  if(endpoint === "dispatches" && /(?:\?|&)resource=job_card_docs(?:&|$)/.test(String(url||""))){
+    if(def.production_actuals || def.writes.includes("dispatches")) return {allowed:true};
+    return {allowed:false,reason:`${def.label} cannot file job-card photos.`};
+  }
   if(endpoint === "dispatches" && /(?:\?|&)resource=production_actuals(?:&|$)/.test(String(url||""))){
     if(def.production_actuals) return {allowed:true};
     return {allowed:false,reason:`${def.label} cannot record production achievement.`};

@@ -4,7 +4,7 @@
    wrong no matter how plausible the dates look. */
 import assert from "node:assert/strict";
 import { compute, queueOrder, normalizeOverride, hasOverride, extraLeadDays,
-         netByOrder, shortfallByPi } from "../shared/engine.js";
+         netByOrder, shortfallByPi, workCalendar } from "../shared/engine.js";
 import { INPUTS } from "../shared/inputs.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
@@ -45,12 +45,13 @@ test("dates, SLA and one material rate", () => {
   // 7 stages now: PREPARATION and UPPER_QC were added, and DISPATCH is a real
   // stage with capacity rather than an instant marker — so a single order takes
   // 3 days longer end to end than under the old 5-stage model.
-  assert.equal(o.dispatch_date, "2026-07-12");
+  // 2026-07-12 is a SUNDAY. The factory is shut, so dispatch is the Monday.
+  assert.equal(o.dispatch_date, "2026-07-13");
   assert.equal(o.sla, "on_track");
   assert.deepEqual(o.stages.map(x => x.stage),
     ["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","PACKING","DISPATCH"]);
   assert.deepEqual(o.stages.map(x => x.start_date),
-    ["2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-11","2026-07-12"]);
+    ["2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-11","2026-07-13"]);
   // a PVC article with no machine assigned falls back to rotary
   assert.equal(o.stages.find(x => x.stage === "MOLDING").work_center, "MOLDING_PVC_ROTARY");
   // 0.065037 per pair x 960 pairs = 62.44 MTR
@@ -119,9 +120,15 @@ test("exclusive machines never overlap, never overbook, never lose pairs", () =>
         if(st.work_center === code && !st.instant) blocks.push({ ...st, order_no:o.order_no, qty:o.qty });
     blocks.sort((a,b) => a.start - b.start);
 
-    for(const b of blocks)
-      assert.equal(b.end - b.start + 1, Math.ceil(b.qty / cap),
-        `${b.order_no}: block length must be ceil(qty/cap)`);
+    /* WORKING days: a Sunday inside a moulding run is stepped over, so the
+       block's calendar span can be one longer than its working days. */
+    const isSunday = d => new Date(new Date(origin).getTime() + d*86400000).getUTCDay() === 0;
+    for(const b of blocks){
+      let working = 0; for(let d=b.start; d<=b.end; d++) if(!isSunday(d)) working++;
+      assert.equal(working, Math.ceil(b.qty / cap),
+        `${b.order_no}: block must run ceil(qty/cap) working days`);
+      for(const d of Object.keys(b.alloc||{})) assert.ok(!isSunday(Number(d)), `${b.order_no}: booked on a Sunday`);
+    }
     for(let i = 1; i < blocks.length; i++)
       assert.ok(blocks[i].start > blocks[i-1].end,
         `${blocks[i].order_no} overlaps ${blocks[i-1].order_no} on ${code}`);
@@ -491,5 +498,53 @@ test("one hollow article reports once, however many orders it carries", () => {
 });
 
 
+console.log("\nH — the factory calendar: no work on a Sunday or a holiday");
+{
+  const weekday = d => new Date(new Date(origin).getTime() + d*86400000).getUTCDay();
+  const big = [
+    { order_no:"JO9001", order_date:"2026-07-06", article_code:"SMART BOY (L) BLACK", priority:2, party:"A", lines:[{ combo:"6X8", qty:9000 }] },
+    { order_no:"JO9002", order_date:"2026-07-06", article_code:"ARMOUR (VELCRO)", priority:2, party:"B", lines:[{ combo:"8X10", qty:6000 }] },
+  ];
+  test("no machine, pooled or exclusive, is ever booked on a Sunday", () => {
+    const s = run(big);
+    for(const [wc, days] of Object.entries(s.daily_load))
+      for(const [d, v] of Object.entries(days))
+        if(v > 1e-9) assert.notEqual(weekday(Number(d)), 0, `${wc} booked on Sunday (day ${d})`);
+    assert.deepEqual(s.schedule_problems, []);
+  });
+  test("a holiday is shut like a Sunday, and pushes dispatch by a day", () => {
+    const one = [{ order_no:"JO9003", order_date:"2026-07-06", article_code:"SMART BOY (L) BLACK", priority:2, party:"T", lines:[{ combo:"6X8", qty:960 }] }];
+    const plain = compute(one, articles, materials, wcs, origin, {});
+    const shut = compute(one, articles, materials, wcs, origin, { calendar:{ holidays:["2026-07-08"] } });
+    const st = shut.orders[0].stages.find(x => x.stage === "STITCHING");
+    assert.notEqual(st.start_date, "2026-07-08", "nothing starts on the holiday");
+    for(const day of Object.values(shut.daily_load))
+      assert.ok(!day[String(Math.round((new Date("2026-07-08") - new Date(origin))/86400000))], "nothing booked on the holiday");
+    assert.ok(shut.orders[0].dispatch_day > plain.orders[0].dispatch_day);
+  });
+  test("weekly_off:[] restores a seven-day week (opt-out, not the default)", () => {
+    const one = [{ order_no:"JO9004", order_date:"2026-07-06", article_code:"SMART BOY (L) BLACK", priority:2, party:"T", lines:[{ combo:"6X8", qty:960 }] }];
+    const s = compute(one, articles, materials, wcs, origin, { calendar:{ weekly_off:[] } });
+    assert.equal(s.orders[0].dispatch_date, "2026-07-12");
+  });
+  test("a stage pinned to N days takes N WORKING days", () => {
+    const one = [{ order_no:"JO9005", order_date:"2026-07-09", article_code:"SMART BOY (L) BLACK", priority:2, party:"T", lines:[{ combo:"6X8", qty:960 }] }];
+    const s = compute(one, articles, materials, wcs, origin, { overrides:{ JO9005:{ days:{ CUTTING:4 } } } });
+    const cut = s.orders[0].stages.find(x => x.stage === "CUTTING");
+    const booked = Object.keys(cut.alloc).map(Number);
+    assert.equal(booked.length, 4);
+    assert.ok(booked.every(d => weekday(d) !== 0));
+    assert.equal(Math.round(Object.values(cut.alloc).reduce((a,b)=>a+b,0)), 960, "no pairs lost over the Sunday");
+  });
+  test("a calendar that shuts every day cannot hang the planner", () => {
+    const cal = workCalendar({ weekly_off:[0,1,2,3,4,5,6] }, origin);
+    assert.equal(cal.off(3), false);
+  });
+  test("holidays may be given as {date, name} rows", () => {
+    const cal = workCalendar({ holidays:[{ date:"2026-08-15", name:"Independence Day" }] }, origin);
+    assert.equal(cal.off(Math.round((new Date("2026-08-15") - new Date(origin))/86400000)), true);
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+process.exitCode = failed ? 1 : 0;

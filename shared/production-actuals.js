@@ -47,12 +47,16 @@ export function plannedProductionRows(state, origin, fromDay){
    its plan row. Each one carries the figures it was saved with (the table
    stores planned_pairs, article, party and the rest), which is what it was
    measured against at the time. */
+const jobCardOf=a=>({rejected_pairs:Number(a.rejected_pairs||0),repair_pairs:Number(a.repair_pairs||0),
+  cartons:a.cartons==null?null:Number(a.cartons),operators:a.operators==null?null:Number(a.operators),
+  supervisor:a.supervisor||"",shift:a.shift||""});
 export function withProductionActuals(planned, actuals){
   const byKey=new Map((actuals||[]).map(row=>[productionActualKey(row),row]));
   const out=(planned||[]).map(row=>{
     const actual=byKey.get(productionActualKey(row));
     return {...row, id:actual&&actual.id, actual_pairs:actual==null?null:Number(actual.actual_pairs),
-      note:actual&&actual.note||"", recorded_by:actual&&actual.created_by||""};
+      note:actual&&actual.note||"", recorded_by:actual&&actual.created_by||"",
+      ...(actual?jobCardOf(actual):{})};
   });
   const seen=new Set((planned||[]).map(productionActualKey));
   for(const actual of actuals||[]){
@@ -66,7 +70,7 @@ export function withProductionActuals(planned, actuals){
       article:actual.article||"", party:actual.party||"", size_ranges:actual.size_ranges||"",
       planned_pairs:Math.round(Number(actual.planned_pairs)||0),
       id:actual.id, actual_pairs:Number(actual.actual_pairs),
-      note:actual.note||"", recorded_by:actual.created_by||"",
+      note:actual.note||"", recorded_by:actual.created_by||"", ...jobCardOf(actual),
       /* This row is history, not a thing still to make — a screen that offers
          it as an editable plan row would be inviting work to be entered
          against a day the planner has already moved on from. */
@@ -78,8 +82,43 @@ export function withProductionActuals(planned, actuals){
     ||String(a.order_no).localeCompare(String(b.order_no)));
 }
 
-export function validateProductionActuals(rows, planned){
+/* THE JOB CARD, FILLED IN WITH THE PRODUCTION FIGURE.
+   The paper card carries more than "pairs made": what was rejected, what went
+   for repair, the cartons packed, how many people ran the line, who supervised
+   and which shift. Asking for them WITH the day's production fills the card
+   automatically instead of leaving it to be written up separately.
+   Rejected and repair are OF the achieved pairs, so together they cannot
+   exceed them. Blank stays blank — "not recorded" is not zero. */
+export const JOB_CARD_FIELDS = [
+  ["rejected_pairs","Rejected","pairs"],["repair_pairs","Sent for repair","pairs"],
+  ["cartons","Cartons packed","count"],["operators","People on the line","count"],
+  ["supervisor","Supervisor","text"],["shift","Shift","text"],
+];
+export function validateJobCardFields(row){
+  const fields={rejected_pairs:0,repair_pairs:0,cartons:null,operators:null,supervisor:null,shift:null};
+  const whole=(v,label)=>{
+    if(v==null||String(v).trim()==="") return {value:null};
+    const n=Number(v);
+    if(!Number.isInteger(n)||n<0) return {problem:`${label} must be a whole number of 0 or more`};
+    return {value:n};
+  };
+  for(const [key,label,kind] of JOB_CARD_FIELDS){
+    if(kind==="text"){ const t=String((row||{})[key]??"").trim().slice(0,80); fields[key]=t||null; continue; }
+    const r=whole((row||{})[key],label);
+    if(r.problem) return {problem:r.problem};
+    fields[key]=r.value==null?(key.endsWith("_pairs")?0:null):r.value;
+  }
+  const actual=Number((row||{}).actual_pairs);
+  if(Number.isFinite(actual)&&fields.rejected_pairs+fields.repair_pairs>actual)
+    return {problem:`rejected (${fields.rejected_pairs}) and repair (${fields.repair_pairs}) are part of the ${actual} pairs achieved, so together they cannot exceed it`};
+  return {fields};
+}
+
+/* `existing` lets a row that is ALREADY recorded be corrected even after the
+   plan has moved on from it — refusing that left a wrong figure uncorrectable. */
+export function validateProductionActuals(rows, planned, existing=[]){
   const plan=new Map((planned||[]).map(row=>[productionActualKey(row),row]));
+  for(const row of existing||[]){ const k=productionActualKey(row); if(!plan.has(k)) plan.set(k,row); }
   const clean=[], problems=[];
   for(const [index,input] of (rows||[]).entries()){
     const key=productionActualKey(input), match=plan.get(key);
@@ -88,7 +127,9 @@ export function validateProductionActuals(rows, planned){
     if(!Number.isFinite(actual)||actual<0||!Number.isInteger(actual)){
       problems.push(`Row ${index+1} achievement must be a whole number of pairs`); continue;
     }
-    clean.push({...match,actual_pairs:actual,note:String(input.note||"").trim().slice(0,500)});
+    const extra=validateJobCardFields({...input,actual_pairs:actual});
+    if(extra.problem){ problems.push(`Row ${index+1}: ${extra.problem}`); continue; }
+    clean.push({...match,actual_pairs:actual,...extra.fields,note:String(input.note||"").trim().slice(0,500)});
   }
   return {ok:problems.length===0, rows:clean, problems};
 }

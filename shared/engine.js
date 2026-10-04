@@ -34,6 +34,38 @@ export const RANK = {on_track:0,at_risk:1,breach:2};
 export const round2 = (n,d)=>{const f=10**d;return Math.round(n*f)/f;};
 export const dayIndex = (iso,origin)=>Math.round((new Date(iso)-new Date(origin))/86400000);
 export const fromDay = (i,origin)=>{const d=new Date(origin);d.setUTCDate(d.getUTCDate()+i);return d.toISOString().slice(0,10);};
+
+/* THE FACTORY DOES NOT WORK ON SUNDAYS, OR ON A HOLIDAY.
+   The planner used to treat every day as a working day, so cutting was booked
+   on Sundays and on Diwali, and every dispatch date after one was a day early
+   for each Sunday it crossed. A calendar is now part of the plan:
+
+     weekly_off  weekdays the factory is shut, 0 = Sunday (the default)
+     holidays    ISO dates it is shut on top of that
+
+   An OFF day books no capacity on any machine and a run simply steps over it —
+   a moulding block that reaches Saturday continues on Monday, it does not
+   restart. Elapsed-time legs (outside-stitching transit) still count calendar
+   days, because a lorry is on the road whether or not the factory is open.
+   Pure: weekday arithmetic on the ISO date, no clock, no locale. */
+export const DEFAULT_WEEKLY_OFF = [0];
+export function workCalendar(calendar, origin){
+  const cal = calendar || {};
+  const weekly = new Set((Array.isArray(cal.weekly_off) ? cal.weekly_off : DEFAULT_WEEKLY_OFF)
+    .map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6));
+  const holidays = new Set();
+  for(const h of Array.isArray(cal.holidays) ? cal.holidays : []){
+    const iso = String(h && typeof h === "object" ? h.date : h || "").slice(0,10);
+    if(/^\d{4}-\d{2}-\d{2}$/.test(iso)) holidays.add(dayIndex(iso, origin));
+  }
+  const base = new Date(origin).getUTCDay();
+  const off = d => weekly.has(((base + d) % 7 + 7) % 7) || holidays.has(d);
+  /* A calendar that closes every day would hang every loop below. */
+  if(weekly.size >= 7) return { off: () => false, weekly_off: [], holidays: [] };
+  return { off, weekly_off: [...weekly], holidays: [...holidays] };
+}
+/* The first working day on or after d. */
+export const nextWorkingDay = (d, off) => { let x = d; for(let i=0; i<400 && off(x); i++) x++; return x; };
 /* Molding is several distinct machines, not one. Which one an order uses
    depends on its sole type, and for PVC on the article's assigned machine
    (rotary or vertical) — that assignment is factory knowledge, so when it is
@@ -187,7 +219,8 @@ export function queueOrder(orders, overrides={}){
    rescheduled for WHAT IS LEFT, from the day after the last entry. That is the
    whole feedback loop: the floor reports a number, and tomorrow's plan is
    built from what is genuinely still to make. */
-export function schedule(orders, articles, wcs, origin, horizon=1500, overrides={}, progress={}){
+export function schedule(orders, articles, wcs, origin, horizon=1500, overrides={}, progress={}, calendar=null){
+  const { off } = workCalendar(calendar, origin);
   const used={};
   const busy={};   // exclusive machines: [{start,end,order_no}] blocks already taken
   // Release day = order date + whatever the order's own routing costs before
@@ -281,48 +314,52 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
         };
         const free=d=>cap-(used[wcCode][d]||0);
         let s=null, e=null;
+        /* N WORKING days from d — an off day inside the span is stepped over,
+           it neither counts nor breaks the run. */
+        const workingSpan=(from,n)=>{ const out=[]; for(let d=from; out.length<n && d<=from+horizon; d++) if(!off(d)) out.push(d); return out; };
         if(forcedDays){
-          /* Told to take N days: it takes N days, from the first day the
-             machine is not holding a different article. */
-          let c=earliest;
+          /* Told to take N days: it takes N working days, from the first day
+             the machine is not holding a different article. */
+          let c=nextWorkingDay(earliest,off);
           while(c<=earliest+horizon){
-            let ok=true;
-            for(let d=c; d<c+forcedDays; d++){
-              const holder=dayHolder(d);
-              if(holder && holder!==article){ ok=false; c=d+1; break; }
-            }
-            if(ok){ s=c; e=c+forcedDays-1; break; }
+            const span=workingSpan(c,forcedDays);
+            const clash=span.find(d=>{ const holder=dayHolder(d); return holder && holder!==article; });
+            if(clash==null){ s=span[0]; e=span[span.length-1]; break; }
+            c=nextWorkingDay(clash+1,off);
           }
-          if(s===null){ s=earliest; e=earliest+forcedDays-1; }
+          if(s===null){ const span=workingSpan(nextWorkingDay(earliest,off),forcedDays); s=span[0]; e=span[span.length-1]; }
         } else {
-          let c=earliest;
+          let c=nextWorkingDay(earliest,off);
           while(c<=earliest+horizon){
             let want=remaining, d=c, run=[];
             while(want>1e-9 && d<=earliest+horizon){
+              if(off(d)){ d++; continue; }      // Sunday or a holiday: step over it
               const holder=dayHolder(d);
               if((holder && holder!==article) || free(d)<=1e-9){ break; }
               const take=Math.min(free(d),want);
               run.push([d,take]); want-=take; d++;
             }
-            if(want<=1e-9){ s=c; e=run[run.length-1][0]; break; }
+            if(want<=1e-9){ s=run[0][0]; e=run[run.length-1][0]; break; }
             /* The run was broken. Restart after whatever stopped it. */
-            c=(run.length?run[run.length-1][0]:c)+1;
+            c=nextWorkingDay((run.length?run[run.length-1][0]:c)+1,off);
           }
-          if(s===null){ s=earliest; e=earliest+Math.max(1,Math.ceil(remaining/cap-1e-9))-1; }
+          if(s===null){ const span=workingSpan(nextWorkingDay(earliest,off),Math.max(1,Math.ceil(remaining/cap-1e-9))); s=span[0]; e=span[span.length-1]; }
         }
         startDay=s; endDay=e;
         blocks.push({start:startDay,end:endDay,order_no:o.order_no,article});
         // A forced span spreads the whole order evenly across those days, even
         // when that is more than the line can hold in a day. That is the point.
-        const span=endDay-startDay+1;
-        const perDay=forcedDays?remaining/span:null;
+        let workDays=0; for(let d=startDay; d<=endDay; d++) if(!off(d)) workDays++;
+        const perDay=forcedDays?remaining/Math.max(1,workDays):null;
         let left=remaining;
+        let lastWork=endDay; while(lastWork>startDay && off(lastWork)) lastWork--;
         for(let d=startDay; d<=endDay; d++){
+          if(off(d)) continue;
           /* Unforced, a day takes what is LEFT on the machine that day, not the
              full capacity — another card of the same article may already hold
              part of it. */
           const take=forcedDays
-            ? (d===endDay?left:perDay)
+            ? (d===lastWork?left:perDay)
             : Math.min(Math.max(0,cap-(used[wcCode][d]||0)),left);
           used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; left-=take;
           if(forcedDays&&used[wcCode][d]>cap+1e-6){
@@ -332,9 +369,11 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
       } else if(forcedDays){
         /* Told to finish in N days on a shared line: take the day whether or
            not it is free. The line is now overbooked, and that is reported. */
-        startDay=earliest; endDay=startDay+forcedDays-1;
+        startDay=nextWorkingDay(earliest,off); endDay=startDay;
         const perDay=remaining/forcedDays;
-        for(let d=startDay; d<=endDay; d++){
+        for(let d=startDay, n=0; n<forcedDays; d++){
+          if(off(d)) continue;
+          n++; endDay=d;
           used[wcCode][d]=(used[wcCode][d]||0)+perDay; alloc[d]=perDay;
           if(used[wcCode][d]>cap+1e-6) (forcedLoad[wcCode]=forcedLoad[wcCode]||{})[d]=true;
         }
@@ -342,7 +381,7 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
         // a hall or a bank of lines: several orders can share the same day's capacity
         let left=remaining, d=earliest;
         while(left>1e-9 && d<=r+horizon){
-          const free=cap-(used[wcCode][d]||0);
+          const free=off(d)?0:cap-(used[wcCode][d]||0);
           if(free>1e-9){ const take=Math.min(free,left); used[wcCode][d]=(used[wcCode][d]||0)+take; alloc[d]=take; left-=take; if(startDay===null)startDay=d; }
           d++;
         }
@@ -618,7 +657,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   /* What the floor reported it actually made, fed back in: a finished stage
      books no more capacity and a part-finished one is planned for the balance
      from tomorrow. Absent, the plan is the pure forecast it always was. */
-  const sched=schedule(scheduled,articles,wcs,origin,1500,expanded.overrides,opts.progress||{});
+  const sched=schedule(scheduled,articles,wcs,origin,1500,expanded.overrides,opts.progress||{},opts.calendar||null);
   sched.warnings.push(...expanded.notes);
   const problems=validateSchedule(sched,wcs);
   for(const o of orphaned)
@@ -846,7 +885,9 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
   }
   loadSummary.sort((a,b)=>b.avg_util_pct-a.avg_util_pct);
   const dispatchDays=orderViews.map(o=>o.dispatch_day).filter(Number.isFinite);
-  return {orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,data_gaps:dataGaps,daily_load:sched.load,
+  const cal=workCalendar(opts.calendar||null,origin);
+  return {calendar:{weekly_off:cal.weekly_off,holidays:(opts.calendar&&opts.calendar.holidays)||[]},
+    orders:[...orphanViews,...orderViews],orphan_orders:orphanViews,procurement,netted,machine_load:loadSummary,schedule_problems:problems,data_gaps:dataGaps,daily_load:sched.load,
     plan_warnings:sched.warnings, forced_load:sched.forced_load,
     /* Every batch as its own row, for the screens that plan work rather than
        report on an order: the machine board, the status view, and the

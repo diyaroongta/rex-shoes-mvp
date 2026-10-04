@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Gate passes":"Dispatch","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
+const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Gate passes":"Dispatch","Finished goods":"Dispatch","Formats & sheets":"Formats","Procurement":"Materials","Stock":"Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
 async function goTo(user, screen){
   const group = NAV_GROUP[screen];
   if(group){
@@ -281,7 +281,8 @@ describe("critical UI contracts",()=>{
     expect(itemsOf("Production")[0]).toBe("Schedule");
     /* Repair is the last thing that can happen to a shoe before the lorry,
        so it sits under Dispatch — after the book, being the exception path. */
-    expect(itemsOf("Dispatch")).toEqual(["Dispatch Book","Gate passes","Repair"]);
+    /* Finished goods (MTS and MTO stock) sits with dispatch: it is what ships. */
+    expect(itemsOf("Dispatch")).toEqual(["Dispatch Book","Gate passes","Finished goods","Repair"]);
     /* The copilot was never on the factory's change list, so it is not on the
        menu bar either. */
     expect(screen.queryByRole("button",{name:"Copilot"})).toBeNull();
@@ -1130,8 +1131,11 @@ describe("the production plan can be overruled by hand",()=>{
       expect.objectContaining({seq:1})));
     // The board is recomputed from the override, not merely recorded.
     await waitFor(()=>expect(queue()).toEqual(["JOB","JOA"]));
-    expect(screen.getAllByText("manual").length).toBe(2,
-      "the order row and its only scheduled card both show the manual decision");
+    /* An order on ONE card is drawn once: the card is named on the order's row
+       rather than repeated as an identical row beneath it. */
+    expect(screen.getAllByText("manual").length).toBe(1,
+      "an order released on a single card is not drawn twice");
+    expect(screen.getAllByText(/card JC70\d · /).length).toBeGreaterThan(0);
   });
 
   it("carries out a forced stage duration and prints what it cost",async()=>{
@@ -1481,6 +1485,22 @@ describe("the schedule opens on the floor",()=>{
     expect(screen.getAllByText(/Marked urgent \(P1\)/).length).toBeGreaterThan(0);
     // A machine with nothing on it says so rather than showing a blank card.
     expect(screen.getAllByText(/Nothing scheduled today/).length).toBeGreaterThan(0);
+  });
+
+  /* A Sunday is not an empty factory: the panel says it is shut and shows the
+     machines for the next working day. Pinned to a Sunday so it is tested
+     whatever day the suite runs. */
+  it("says the factory is shut on a Sunday and shows the next working day",async()=>{
+    vi.useFakeTimers({toFake:["Date"]});
+    vi.setSystemTime(new Date("2026-10-04T10:00:00"));        // a Sunday
+    try{
+      mocks.listOrders.mockResolvedValue([{...order,order_date:"2026-10-04"}]);
+      const user=userEvent.setup();
+      render(<App/>);
+      await goTo(user, "Schedule");
+      expect(await screen.findByText(/Factory shut today \(Sunday\)/)).toBeInTheDocument();
+      expect(screen.getByText(/showing the next working day/)).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
   });
 
   it("opens on a two-week window and can be zoomed out",async()=>{

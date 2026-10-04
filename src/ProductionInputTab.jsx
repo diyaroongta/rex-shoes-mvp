@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { planImpact } from "../shared/input-impact.js";
-import { productionActualKey } from "../shared/production-actuals.js";
+import { productionActualKey, JOB_CARD_FIELDS } from "../shared/production-actuals.js";
+import { jobCardFill, jobIdOfUnit } from "../shared/job-card-fill.js";
+import { isOffDay, holidayName } from "../shared/holidays.js";
 import { todayIso } from "./lib/today.js";
 import * as XLSX from "xlsx";
 import { REF as INPUTS } from "./lib/refdata.js";
@@ -10,7 +12,8 @@ import { plannedProductionRows, productionActualSummary, validateProductionActua
 import * as api from "./lib/client.js";
 
 const HEADERS=["Production Date","Work Centre Code","Work Centre","Stage","Job Card No","Order No",
-  "Article","Size Range","Party","Planned Pairs","Achieved Pairs","Note","Plan Row ID"];
+  "Article","Size Range","Party","Planned Pairs","Achieved Pairs","Note",
+  "Rejected","Sent for Repair","Cartons","People on Line","Supervisor","Shift","Plan Row ID"];
 const isoDate=value=>{
   if(value instanceof Date) return value.toISOString().slice(0,10);
   if(typeof value==="number"){
@@ -101,11 +104,13 @@ export function workbookFor(rows, weekStart){
   const input=[HEADERS,...weekly.map(row=>[
     row.production_on,row.work_center,(INPUTS.workcenters[row.work_center]||{}).name||row.work_center,
     row.stage,row.job_card_no||"",row.order_no,row.article,row.size_ranges,row.party,row.planned_pairs,
-    row.actual_pairs==null?"":row.actual_pairs,row.note||"",row.unit_key,
+    row.actual_pairs==null?"":row.actual_pairs,row.note||"",
+    row.rejected_pairs||"",row.repair_pairs||"",row.cartons??"",row.operators??"",row.supervisor||"",row.shift||"",row.unit_key,
   ])];
   const inputSheet=XLSX.utils.aoa_to_sheet(input);
-  inputSheet["!cols"]=[{wch:16},{wch:20},{wch:26},{wch:16},{wch:15},{wch:15},{wch:24},{wch:18},{wch:22},{wch:16},{wch:17},{wch:30},{wch:24}];
-  inputSheet["!autofilter"]={ref:`A1:M${Math.max(1,input.length)}`};
+  inputSheet["!cols"]=[{wch:16},{wch:20},{wch:26},{wch:16},{wch:15},{wch:15},{wch:24},{wch:18},{wch:22},{wch:16},{wch:17},{wch:30},
+    {wch:10},{wch:14},{wch:10},{wch:13},{wch:16},{wch:9},{wch:24}];
+  inputSheet["!autofilter"]={ref:`A1:S${Math.max(1,input.length)}`};
   inputSheet["!freeze"]={xSplit:0,ySplit:1,topLeftCell:"A2",activePane:"bottomLeft",state:"frozen"};
   for(let c=0;c<HEADERS.length;c++){
     const cell=inputSheet[XLSX.utils.encode_cell({r:0,c})];
@@ -124,7 +129,28 @@ const niceDay = iso => {
     : d.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"});
 };
 
-export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
+/* A phone photo of a completed job card, shrunk in the browser before upload —
+   an unresized photo is several MB and the serverless body limit is 4.5. */
+export function shrinkImage(file, max=1400, quality=0.72){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error("Could not read that file"));
+    reader.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error("That file is not a photo"));
+      img.onload=()=>{
+        const k=Math.min(1,max/Math.max(img.width,img.height));
+        const c=document.createElement("canvas"); c.width=Math.round(img.width*k); c.height=Math.round(img.height*k);
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        resolve(c.toDataURL("image/jpeg",quality));
+      };
+      img.src=reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export default function ProductionInputTab({state,actuals=[],onChanged,replan,jobs=[],calendar=null}){
   const today=todayIso();
   const [weekStart,setWeekStart]=useState(()=>mondayOf(today));
   const [busy,setBusy]=useState(false),[message,setMessage]=useState(""),[error,setError]=useState("");
@@ -137,11 +163,27 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
      file, filling it and uploading it again is three steps for one number.
      The Excel round trip stays for a week's worth at a time. */
   const [entry,setEntry]=useState({});
+  /* The job-card details typed WITH the production figure: {rowKey:{field:value}}. */
+  const [cardEntry,setCardEntry]=useState({});
+  const [openCard,setOpenCard]=useState(null);
+  const [docs,setDocs]=useState([]);
+  const loadDocs=async()=>{ try{ setDocs(await api.listJobCardDocs()); }catch(_){ /* the metric shows "—" rather than a wrong number */ } };
+  useEffect(()=>{ loadDocs(); },[]);
+  async function attachPhoto(row,file){
+    const jobId=jobIdOfUnit(row.unit_key);
+    if(!jobId){ setError("This row is the whole order, not a job card — issue a job card first, then file its photo."); return; }
+    setError(""); setBusy(true);
+    try{ const image=await shrinkImage(file); await api.uploadJobCardDoc(jobId,image,`${row.stage} ${row.production_on}`);
+         await loadDocs(); setMessage(`Photo of card ${row.job_card_no||jobId} filed — it now counts as received.`); }
+    catch(e){ setError(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
   const fileRef=useRef(null);
   const planned=useMemo(()=>plannedProductionRows(state,INPUTS.origin,fromDay),[state]);
   const rows=useMemo(()=>withProductionActuals(planned,actuals),[planned,actuals]);
   const summary=useMemo(()=>productionActualSummary(planned,actuals,today),[planned,actuals,today]);
   const weekEnd=plusDays(weekStart,5);
+  const fill=useMemo(()=>jobCardFill(jobs,docs,weekStart,plusDays(weekStart,6)),[jobs,docs,weekStart]);
   /* A DAY AT A TIME, BECAUSE THAT IS WHAT IS BEING REPORTED.
      The screen showed a whole Monday-to-Saturday week as one flat list of
      number boxes, so reporting today's production meant finding today's rows
@@ -210,21 +252,29 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
   async function saveTyped(){
     setError("");setMessage("");setBusy(true);
     try{
-      const rows=Object.entries(entry)
-        .filter(([,v])=>String(v).trim()!=="")
-        .map(([key,value])=>{
-          const row=(planned||[]).find(r=>productionActualKey(r)===key);
-          return row?{...row,actual_pairs:Number(value)}:null;
+      /* A row is saved when its pairs OR its job-card details were typed; the
+         card details of an already-recorded row keep its recorded pairs. */
+      const keys=new Set([...Object.keys(entry).filter(k=>String(entry[k]).trim()!==""),
+                          ...Object.keys(cardEntry).filter(k=>Object.values(cardEntry[k]||{}).some(v=>String(v).trim()!==""))]);
+      const all=withProductionActuals(planned,actuals);
+      const rows=[...keys].map(key=>{
+          const row=all.find(r=>productionActualKey(r)===key);
+          if(!row) return null;
+          const typed=entry[key]!=null&&String(entry[key]).trim()!=="";
+          const actual=typed?Number(entry[key]):row.actual_pairs;
+          if(actual==null) return null;
+          const card={...Object.fromEntries(JOB_CARD_FIELDS.map(([f])=>[f,row[f]??""])),...(cardEntry[key]||{})};
+          return {...row,...card,actual_pairs:actual};
         }).filter(Boolean);
       if(!rows.length) throw new Error("Type the pairs achieved against at least one row first.");
-      const checked=validateProductionActuals(rows,planned);
+      const checked=validateProductionActuals(rows,planned,actuals);
       if(!checked.ok) throw new Error(checked.problems.slice(0,8).join("; "));
       const after=typeof replan==="function"?replan(checked.rows):null;
       const result=await api.saveProductionActuals(checked.rows);
       await onChanged();
-      setEntry({});
+      setEntry({}); setCardEntry({}); setOpenCard(null);
       setImpact(after?planImpact(state,after,checked.rows):planImpact(state,state,checked.rows));
-      setMessage(`${result.saved} row${result.saved===1?"":"s"} saved.`);
+      setMessage(`${result.saved} row${result.saved===1?"":"s"} saved — job cards filled from these figures.`);
     }catch(e){setError(e.message||String(e));}
     finally{setBusy(false);}
   }
@@ -241,6 +291,8 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
         stage:row.Stage,job_card_no:row["Job Card No"],order_no:row["Order No"],unit_key:row["Plan Row ID"],article:row.Article,
         size_ranges:row["Size Range"],party:row.Party,planned_pairs:Number(row["Planned Pairs"]),
         actual_pairs:Number(row["Achieved Pairs"]),note:row.Note,
+        rejected_pairs:row["Rejected"],repair_pairs:row["Sent for Repair"],cartons:row["Cartons"],
+        operators:row["People on Line"],supervisor:row["Supervisor"],shift:row["Shift"],
       }));
       if(!entered.length) throw new Error("No Achieved Pairs were filled in.");
       const checked=validateProductionActuals(entered,planned);
@@ -274,11 +326,19 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
           <input ref={fileRef} type="file" accept=".xlsx,.xls" disabled={busy} className="hidden" onChange={e=>e.target.files[0]&&upload(e.target.files[0])}/>
         </label>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-4">
         <Metric label="Today's plan" value={`${fmt(summary.planned_pairs)} pairs`} />
         <Metric label="Today's achievement" value={`${fmt(summary.actual_pairs)} pairs`} />
         <Metric label="Rows reported" value={`${summary.recorded_rows} of ${summary.planned_rows}`} />
+        {/* JOB CARD FILLED %: cards issued this week against cards that came
+            back filled (a photo of the completed card is on file). */}
+        <Metric label="Job cards filled this week" value={fill.pct==null?"—":`${fill.pct}%`}
+          sub={`${fill.received} received of ${fill.issued} issued · ${fill.open} open`} />
       </div>
+      {fill.outstanding>0 && <div className="mt-2 text-xs text-amber-800">
+        {fill.outstanding} job card{fill.outstanding===1?" has":"s have"} not come back filled yet (any week up to this one).
+        {fill.open_cards.length>0 && <> This week: {fill.open_cards.slice(0,8).map(c=>c.card_no).join(", ")}{fill.open_cards.length>8?"…":""}.</>}
+        {" "}Open a row's <b>Job card</b> details to file the photo.</div>}
       {error&&<div role="alert" className="mt-3 text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2">{error}</div>}
       {message&&<div className="mt-3 text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 px-3 py-2">{message}</div>}
     </section>
@@ -337,8 +397,10 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
           party under the order, the size range under the article. */}
       <table className="w-full text-xs" style={{minWidth:620}}><thead><tr className="sign text-slate-500">
         {['Date','Where','Job card / Order','Article','Plan','Achievement'].map(h=><th key={h} className={`py-2 px-2 ${['Plan','Achievement'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
-      </tr></thead><tbody>{visible.map(row=><tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100 align-top">
-        <td className="py-2 px-2 mono whitespace-nowrap">{row.production_on}</td>
+        <th></th>
+      </tr></thead><tbody>{visible.flatMap(row=>[<tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100 align-top">
+        <td className="py-2 px-2 mono whitespace-nowrap">{row.production_on}
+          {isOffDay(row.production_on,calendar) && <div className="text-[10px] text-rose-700 font-sans">{holidayName(row.production_on,calendar)||"Sunday"} — shut</div>}</td>
         <td className="py-2 px-2"><div>{(INPUTS.workcenters[row.work_center]||{}).name||row.work_center}</div>
           <div className="text-slate-400">{STAGE_WORD[row.stage]||row.stage}</div></td>
         <td className="py-2 px-2"><div className="mono font-semibold">{row.job_card_no?`Card ${row.job_card_no}`:'Whole order'}</div>
@@ -375,9 +437,40 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
               className="text-[10px] font-semibold text-slate-500 hover:text-indigo-700 disabled:opacity-40">=plan</button>}
           </div>
         </td>
-      </tr>)}</tbody></table>
+        <td className="px-1 text-right">
+          <button type="button" onClick={()=>setOpenCard(openCard===productionActualKey(row)?null:productionActualKey(row))}
+            aria-label={`Job card details for ${row.job_card_no||row.order_no} ${row.stage} on ${row.production_on}`}
+            className={`text-[10px] font-semibold rounded px-1.5 py-0.5 border ${docs.some(d=>Number(d.job_id)===jobIdOfUnit(row.unit_key))?"border-emerald-300 text-emerald-700":"border-slate-300 text-slate-600"}`}>
+            Job card{(row.rejected_pairs||row.repair_pairs||row.cartons!=null)?" ✓":""}</button></td>
+      </tr>,
+      openCard===productionActualKey(row) && <tr key={`${productionActualKey(row)}-card`} className="bg-slate-50">
+        <td colSpan={7} className="px-2 py-2">
+          <div className="text-[11px] text-slate-500 mb-1">
+            Filled onto the job card with the pairs achieved. Rejected and repair are <b>of</b> the achieved pairs.</div>
+          <div className="flex gap-2 flex-wrap items-end">
+            {JOB_CARD_FIELDS.filter(([f])=>f!=="cartons"||row.stage==="PACKING"||row.stage==="DISPATCH").map(([f,label,kind])=>{
+              const key=productionActualKey(row);
+              const value=(cardEntry[key]||{})[f]??(row[f]==null||row[f]===0&&f.endsWith("_pairs")&&row.actual_pairs==null?"":row[f]);
+              return <label key={f} className="text-[11px] text-slate-600">{label}
+                {f==="shift"
+                  ? <select value={value} onChange={e=>setCardEntry(c=>({...c,[key]:{...(c[key]||{}),[f]:e.target.value}}))}
+                      className="block mt-0.5 border border-slate-300 rounded px-1 py-0.5 text-xs bg-white">
+                      <option value="">—</option><option>Day</option><option>Night</option><option>General</option></select>
+                  : <input type={kind==="text"?"text":"number"} min={0} value={value} aria-label={`${label} for ${row.job_card_no||row.order_no} ${row.stage}`}
+                      onChange={e=>setCardEntry(c=>({...c,[key]:{...(c[key]||{}),[f]:e.target.value}}))}
+                      className={`block mt-0.5 border border-slate-300 rounded px-1 py-0.5 text-xs ${kind==="text"?"w-28":"w-20 mono text-right"}`}/>}
+              </label>;})}
+            <label className={`text-[11px] font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-700 bg-white ${busy?"opacity-50":"cursor-pointer"}`}>
+              Upload photo of completed card
+              <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy}
+                onChange={e=>{ const f=e.target.files&&e.target.files[0]; if(f) attachPhoto(row,f); e.target.value=""; }}/></label>
+            {(()=>{ const n=docs.filter(d=>Number(d.job_id)===jobIdOfUnit(row.unit_key)).length;
+              return n?<span className="text-[11px] text-emerald-700 font-semibold">{n} photo{n===1?"":"s"} on file — received</span>
+                      :<span className="text-[11px] text-amber-700">no photo yet — open</span>; })()}
+          </div>
+        </td></tr>])}</tbody></table>
       {!!visible.length&&<div className="flex items-center gap-3 flex-wrap mt-3">
-        <button onClick={saveTyped} disabled={busy||!Object.values(entry).some(v=>String(v).trim()!=="")}
+        <button onClick={saveTyped} disabled={busy||(!Object.values(entry).some(v=>String(v).trim()!=="")&&!Object.values(cardEntry).some(c=>Object.values(c||{}).some(v=>String(v).trim()!=="")))}
           className="text-xs font-semibold rounded-lg px-4 py-2 bg-indigo-600 text-white disabled:opacity-40">
           {busy?"Saving…":"Save today's production"}</button>
         <span className="text-xs text-slate-500">
@@ -394,7 +487,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan}){
   </div>;
 }
 
-function Metric({label,value}){return <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-3"><div className="sign text-slate-500" style={{fontSize:10}}>{label}</div><div className="mono text-lg font-semibold text-slate-800 mt-1">{value}</div></div>;}
+function Metric({label,value,sub}){return <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-3"><div className="sign text-slate-500" style={{fontSize:10}}>{label}</div><div className="mono text-lg font-semibold text-slate-800 mt-1">{value}</div>{sub&&<div className="text-[10px] text-slate-500 mt-0.5">{sub}</div>}</div>;}
 
 /* WHAT YOUR ENTRY JUST DID.
    Four things move when the floor reports a number, and a screen that says

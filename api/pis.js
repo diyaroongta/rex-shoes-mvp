@@ -1,4 +1,5 @@
 import { q, db } from "./_lib/db.js";
+import { cascadeCancel } from "./_lib/cascade.js";
 import { fail, wrap } from "./_lib/http.js";
 import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
 import { INPUTS as SEED } from "../shared/inputs.js";
@@ -248,7 +249,10 @@ export default wrap(async (req,res)=>{
             +`${shipped.length===1?"has":"have"} recorded dispatches, and shipment records are never destroyed. `
             +`Archive this PI instead.`,409);
         }
-        await client.query("delete from orders where order_no = any($1::text[])",[orderNos]);
+        /* Through the cascade, not a bare DELETE: the orders' job cards are
+           cancelled, their production and repair entries removed, and a
+           recorded production entry no longer blocks the delete by foreign key. */
+        await cascadeCancel(client,orderNos,{hard:true,user:(req.user||{}).username||null});
       }
       await client.query("delete from proforma_invoice_revisions where pi_no=$1",[piNo]);
       await client.query("delete from proforma_invoices where pi_no=$1",[piNo]);

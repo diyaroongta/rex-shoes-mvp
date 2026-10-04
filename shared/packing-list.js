@@ -163,39 +163,144 @@ export function cartonNumbers(group, totalCartons){
   return `${span}/${totalCartons}`;
 }
 
+/* ---------------- THE ORDER'S OWN SIZES ----------------
+   An order line is stored per size range AND, when the customer ordered size
+   by size, with its exact sizes ({combo, qty, sizes:{"7s":40,"8s":20}}). The
+   packing list used to ignore `sizes` and divide the dispatched pairs evenly
+   across every size of the range — so an order for 7s:40, 8s:20, 9s:30, 10s:30
+   came back on the dispatch sheet as 30/30/30/30, and a size nobody ordered
+   appeared with pairs against it. The sheet and the order book stopped
+   agreeing on the very first line. These helpers make the ORDER the source of
+   the sheet: what was ordered per size, what earlier packing lists already
+   sent per size, and therefore what is still owed per size. */
+
+const pos = v => Math.max(0, Math.round(num(v)));
+
+/* The labels a line's sizes print as, in range order: the line's own
+   size_order first (a lace range prints 6..9 where the default roll says
+   6s..9s), then the sizes it actually carries, then the range's roll. */
+export function lineSizeOrder(line, sizesForCombo){
+  const out = [];
+  const push = s => { const k = String(s); if(k && !out.includes(k)) out.push(k); };
+  for(const s of Array.isArray(line && line.size_order) ? line.size_order : []) push(s);
+  for(const s of (sizesForCombo && line ? sizesForCombo(line.combo) || [] : [])) push(s);
+  for(const s of Object.keys((line && line.sizes) || {})) push(s);
+  return out;
+}
+
+/* {combo: {size: pairs}} ordered — only for lines that carry exact sizes.
+   A line with no size breakdown is absent, never invented. */
+export function orderedSizes(order){
+  const out = {};
+  for(const l of (order && order.lines) || []){
+    if(!l || !l.sizes || typeof l.sizes !== "object") continue;
+    const bucket = out[l.combo] || (out[l.combo] = {});
+    for(const [size, q] of Object.entries(l.sizes)){ const n = pos(q); if(n) bucket[size] = (bucket[size] || 0) + n; }
+  }
+  return out;
+}
+
+/* {combo: {size: pairs}} already sent, read off earlier packing lists. Pairs
+   dispatched WITHOUT a packing list have no sizes; they are counted per combo
+   as `unsized` so nobody mistakes them for still owed. */
+export function packedSizes(dispatches = []){
+  const sized = {}, unsized = {};
+  for(const d of dispatches || []){
+    const fromSheet = {};
+    for(const line of ((d && d.packing_list && d.packing_list.lines) || [])){
+      const combo = String(line.combo || "");
+      const groups = Array.isArray(line.groups) && line.groups.length ? line.groups : [{ sizes: line.sizes }];
+      for(const g of groups) for(const sz of (g.sizes || [])){
+        const n = pos(sz.pairs); if(!n || !combo) continue;
+        const bucket = sized[combo] || (sized[combo] = {});
+        bucket[String(sz.size)] = (bucket[String(sz.size)] || 0) + n;
+        fromSheet[combo] = (fromSheet[combo] || 0) + n;
+      }
+    }
+    for(const [combo, v] of Object.entries((d && d.dispatched) || {})){
+      const gap = pos(v) - (fromSheet[combo] || 0);
+      if(gap > 0) unsized[combo] = (unsized[combo] || 0) + gap;
+    }
+  }
+  return { sized, unsized };
+}
+
+/* What is still owed, size by size, for every line that has sizes. */
+export function sizeBalance(order, dispatches = []){
+  const ordered = orderedSizes(order);
+  const { sized, unsized } = packedSizes(dispatches);
+  const out = {};
+  for(const [combo, sizes] of Object.entries(ordered)){
+    const sent = sized[combo] || {};
+    out[combo] = { unsized: unsized[combo] || 0, sizes: {} };
+    for(const [size, q] of Object.entries(sizes))
+      out[combo].sizes[size] = { ordered:q, sent:sent[size] || 0, remaining:Math.max(0, q - (sent[size] || 0)) };
+  }
+  return out;
+}
+
 /* Seed a sheet from what the order already knows, so the packer types counts
-   rather than re-keying the article, closure and colour on every line. Sizes
-   come from the ranges being sent, one line per range, and the carton count is
-   deliberately left at 0 — it is the one number that must be counted. */
-export function draftFromOrder(order, sizesForCombo, dispatched = {}){
+   rather than re-keying the article, closure and colour on every line.
+
+   `dispatched` is what is leaving, per range — either {combo: pairs} or, as
+   the dispatch screen now sends it, {combo: {size: pairs}}. In order of trust:
+     1. sizes given for this dispatch     → exactly those, nothing else
+     2. the order line has exact sizes    → what is still owed per size; if
+        fewer pairs are leaving than are owed, a proportional starting point,
+        flagged `estimated` so the screen says so
+     3. a line with no size breakdown     → the range split equally (the
+        factory's combination-pack rule), flagged `estimated`
+   The carton count is untouched and stays zero: cartons are COUNTED. */
+export function draftFromOrder(order, sizesForCombo, dispatched = {}, previous = []){
   const pi = (order && order.pi) || {};
+  const balance = sizeBalance(order, previous);
   const lines = [];
-  for(const [combo, pairs] of Object.entries(dispatched)){
-    const total = Math.round(num(pairs));
-    if(total <= 0) continue;
-    /* A COMBINATION PACK IS PACKED EQUAL, AND THAT IS THE STARTING POINT.
-       The factory's rule: a carton labelled 8X10 holds sizes 8, 9 and 10 in
-       equal numbers. So the draft divides the dispatched pairs across the
-       range's sizes rather than starting every box at zero and making the
-       packer type the obvious case.
-       It is a STARTING POINT, not an assertion — the packer changes any of it,
-       and their own gate pass shows why: an odd box really does go out as
-       "2|2 3|5 5|10". The remainder falls on the earliest sizes, the same way
-       the invoice splits a range, so one range never splits two ways.
-       The CARTON COUNT is untouched and stays zero: cartons are counted on
-       this screen, never derived. */
-    const names = sizesForCombo(combo) || [];
-    const share = spread(total, names.length);
-    const sizes = names.map((size, i) => ({ size, pairs: share[i] || 0 }));
+  for(const [combo, value] of Object.entries(dispatched || {})){
+    const line = ((order && order.lines) || []).find(l => l.combo === combo) || { combo };
+    const order_ = lineSizeOrder(line, sizesForCombo);
+    let sizes, estimated = false;
+    if(value && typeof value === "object"){
+      sizes = order_.concat(Object.keys(value).filter(k => !order_.includes(k)))
+        .map(size => ({ size, pairs: pos(value[size]) })).filter(s => s.pairs > 0);
+    } else {
+      const total = pos(value);
+      if(total <= 0) continue;
+      const owed = balance[combo];
+      if(owed){
+        const left = Object.fromEntries(order_.filter(s => owed.sizes[s]).map(s => [s, owed.sizes[s].remaining]));
+        const leftTotal = Object.values(left).reduce((a, b) => a + b, 0);
+        let take = left;
+        if(leftTotal !== total){
+          estimated = true;
+          const names = Object.keys(left).filter(k => left[k] > 0);
+          const have = names.map(k => left[k]);
+          const sum = have.reduce((a, b) => a + b, 0) || 1;
+          const want = Math.min(total, leftTotal || total);
+          const base = have.map(h => Math.floor(h * want / sum));
+          let short = want - base.reduce((a, b) => a + b, 0);
+          for(let i = 0; i < base.length && short > 0; i++) if(base[i] < have[i]){ base[i]++; short--; }
+          take = Object.fromEntries(names.map((k, i) => [k, base[i]]));
+        }
+        sizes = order_.filter(s => take[s] > 0).map(size => ({ size, pairs: take[size] }));
+      } else {
+        /* A COMBINATION PACK IS PACKED EQUAL — the factory's rule for a range
+           ordered as a range. A starting point, flagged as one. */
+        estimated = true;
+        const names = order_.length ? order_ : (sizesForCombo ? sizesForCombo(combo) || [] : []);
+        const share = spread(total, names.length);
+        sizes = names.map((size, i) => ({ size, pairs: share[i] || 0 })).filter(s => s.pairs > 0);
+      }
+    }
+    if(!sizes.length) continue;
     lines.push({
       article: order.article_code || "",
       closure: pi.vl || "",
       colour: pi.upper_colour || pi.sole_colour || "",
-      combo, combo_pairs: total,
+      combo, combo_pairs: sizes.reduce((a, s) => a + s.pairs, 0),
+      ...(estimated ? { estimated: true } : {}),
       /* One group per size by default — the common case is a size filling its
          own cartons. Sizes are merged into one group when they share a box. */
-      groups: (sizes.length ? sizes : [{ size:"", pairs: 0 }])
-        .map(s => ({ sizes:[s], cartons: 0 })),
+      groups: sizes.map(s => ({ sizes:[s], cartons: 0 })),
     });
   }
   return {
@@ -208,4 +313,75 @@ export function draftFromOrder(order, sizesForCombo, dispatched = {}){
     date: null,     // stamped by the screen; this module takes no clock
     lines,
   };
+}
+
+/* Keep a sheet's PAIRS in step with what step 1 says is leaving, without
+   throwing away a single carton the packer has already counted. A size that
+   went to zero leaves its group (a group left empty goes too, unless it is a
+   mixed box being built); a size newly leaving is added as its own group. */
+export function syncSheetPairs(sheet, leaving, order, sizesForCombo){
+  const next = JSON.parse(JSON.stringify(sheet || { lines: [] }));
+  const fresh = draftFromOrder(order, sizesForCombo, leaving);
+  for(const freshLine of fresh.lines){
+    let line = next.lines.find(l => l.combo === freshLine.combo);
+    if(!line){ next.lines.push(freshLine); continue; }
+    const want = Object.fromEntries(freshLine.groups.flatMap(g => g.sizes).map(s => [s.size, s.pairs]));
+    const seen = new Set();
+    line.groups = line.groups.map(g => {
+      if(g.carton_group) return g;                        // a box shared across shoes is the packer's
+      const sizes = g.sizes.filter(sz => want[sz.size] > 0 && !seen.has(sz.size))
+        .map(sz => { seen.add(sz.size); return { ...sz, pairs: want[sz.size] }; });
+      return { ...g, sizes };
+    }).filter(g => g.carton_group || g.sizes.length || g.mixed);
+    for(const [size, pairs] of Object.entries(want))
+      if(!seen.has(size)) line.groups.push({ sizes:[{ size, pairs }], cartons: 0 });
+    line.combo_pairs = freshLine.combo_pairs;
+    if(freshLine.estimated) line.estimated = true; else delete line.estimated;
+  }
+  next.lines = next.lines.filter(l => fresh.lines.some(f => f.combo === l.combo)
+    || (l.groups || []).some(g => g.carton_group));
+  return next;
+}
+
+/* THE SHEET AGAINST THE ORDER — run on the screen AND on the server.
+   The server used to compare only the GRAND TOTAL, so a sheet could move 30
+   pairs from 7X10 to 11X1, or put pairs on a size the customer never ordered,
+   and still be accepted as long as the sum matched. Now:
+     - each range on the sheet must add up to what that range is dispatching
+     - on a line ordered size by size, a size must be one that was ordered and
+       cannot exceed what is still owed of it (earlier sheets subtracted). */
+export function checkAgainstOrder(sheet, order, dispatched = {}, previous = []){
+  const problems = [];
+  const built = buildPackingList(sheet || {});
+  const perCombo = {}, perSize = {};
+  for(const line of built.lines){
+    const combo = line.combo || "";
+    for(const g of line.groups) for(const sz of g.sizes){
+      perCombo[combo] = (perCombo[combo] || 0) + sz.pairs;
+      const b = perSize[combo] || (perSize[combo] = {});
+      b[sz.size] = (b[sz.size] || 0) + sz.pairs;
+    }
+  }
+  const leaving = {};
+  for(const [c, v] of Object.entries(dispatched || {})){
+    const n = v && typeof v === "object" ? Object.values(v).reduce((a, b) => a + pos(b), 0) : pos(v);
+    if(n) leaving[c] = n;
+  }
+  for(const combo of new Set([...Object.keys(perCombo), ...Object.keys(leaving)])){
+    if(!combo){ problems.push("A packing-list line is not tied to a size range of this order"); continue; }
+    if((perCombo[combo] || 0) !== (leaving[combo] || 0))
+      problems.push(`${combo}: the packing list has ${perCombo[combo] || 0} pairs but ${leaving[combo] || 0} are being dispatched`);
+  }
+  const balance = sizeBalance(order, previous);
+  for(const [combo, sizes] of Object.entries(perSize)){
+    const owed = balance[combo];
+    if(!owed) continue;                                   // ordered as a range: no size list to hold it to
+    for(const [size, pairs] of Object.entries(sizes)){
+      const row = owed.sizes[size];
+      if(!row){ problems.push(`${combo}: size ${size} was not ordered (ordered: ${Object.keys(owed.sizes).join(", ")})`); continue; }
+      if(pairs > row.remaining)
+        problems.push(`${combo} size ${size}: ${pairs} pairs packed but only ${row.remaining} of ${row.ordered} ordered are still owed`);
+    }
+  }
+  return problems;
 }

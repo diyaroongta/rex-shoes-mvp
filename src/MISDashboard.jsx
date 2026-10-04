@@ -2,7 +2,7 @@ import {delayReasons} from "../shared/delay-reasons.js";
 import React, { useMemo, useState } from "react";
 import { buildMisSnapshot } from "../shared/mis.js";
 import { plannedProductionRows, productionActualSummary } from "../shared/production-actuals.js";
-import { planVsActual, biggestGaps } from "../shared/plan-vs-actual.js";
+import { planVsActual, biggestGaps, planAdherence } from "../shared/plan-vs-actual.js";
 import { fromDay } from "../shared/engine.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 
@@ -14,7 +14,7 @@ const STATUS = {
 };
 
 const fmt = (value, digits=0) => Number(value || 0).toLocaleString("en-IN", {maximumFractionDigits:digits});
-const pct = value => `${fmt(value,1)}%`;
+const pct = value => value==null ? "—" : `${fmt(value,1)}%`;
 const niceDate = value => value
   ? new Date(`${String(value).slice(0,10)}T00:00:00`).toLocaleDateString("en-IN", {day:"numeric",month:"short",year:"numeric"})
   : "—";
@@ -186,6 +186,9 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
   /* Planned against achieved over time, week by week. Measured on the rows
      somebody REPORTED: an unreported row is missing, not a zero. */
   const vs=useMemo(()=>planVsActual(productionPlan,productionActuals),[productionPlan,productionActuals]);
+  /* Plan adherence: each plan row counts only up to what it planned, past days only. */
+  const adherence=useMemo(()=>planAdherence(productionPlan,productionActuals,today||snapshot.as_of),
+    [productionPlan,productionActuals,today,snapshot.as_of]);
   const [filter,setFilter]=useState("all");
   const [drill,setDrill]=useState(null);   // which figure is being taken apart
   const [search,setSearch]=useState("");
@@ -457,8 +460,47 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
         </>}
     </section>
 
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Plan adherence">
+      <div className="flex items-baseline gap-2 flex-wrap mb-1">
+        <h3 className="text-sm font-semibold text-slate-800">Plan adherence % — production plan vs actual achieved</h3>
+        <span className="text-[11px] text-slate-500">
+          Up to {adherence.as_of}. Each plan row counts only up to what it planned, so making extra of one job never hides a
+          shortfall on another. <b>Adherence</b> is over the rows reported; <b>strict</b> also counts unreported past rows as missed.
+        </span>
+      </div>
+      {!adherence.reported
+        ? <div className="text-sm text-slate-500 py-6 text-center">No production has been reported against a past plan day yet.</div>
+        : <>
+          <div className="flex gap-6 flex-wrap text-xs mb-3">
+            <Figure label="Plan adherence" value={pct(adherence.totals.adherence)}
+              tone={adherence.totals.adherence>=90?"#047857":adherence.totals.adherence>=75?"#B45309":"#B91C1C"} />
+            <Figure label="Strict (unreported = missed)" value={pct(adherence.totals.adherence_all)} />
+            <Figure label="Planned (past, reported)" value={fmt(adherence.totals.planned_reported)} />
+            <Figure label="Made to plan" value={fmt(adherence.totals.met_reported)}
+              detail={adherence.totals.shortfall>0?`${fmt(adherence.totals.shortfall)} pairs short of plan`:""} />
+            <Figure label="Reported" value={`${pct(adherence.totals.coverage)} of past rows`} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <table className="w-full text-xs"><thead><tr className="text-slate-500 text-left">
+              <th className="py-1">Week</th><th className="py-1 text-right">Planned</th><th className="py-1 text-right">Made to plan</th>
+              <th className="py-1 text-right">Adherence</th><th className="py-1 text-right">Strict</th></tr></thead>
+              <tbody>{adherence.weeks.map(w=><tr key={w.key} className="border-t border-slate-100">
+                <td className="py-1 font-semibold text-slate-800">{w.short_label||w.label}<div className="text-[10px] font-normal text-slate-400">{w.from} — {w.to}</div></td>
+                <td className="py-1 mono text-right">{fmt(w.planned)}</td><td className="py-1 mono text-right">{fmt(w.met)}</td>
+                <td className="py-1 mono text-right font-semibold">{w.adherence==null?"not reported":pct(w.adherence)}</td>
+                <td className="py-1 mono text-right text-slate-500">{pct(w.adherence_all)}</td></tr>)}</tbody></table>
+            <table className="w-full text-xs"><thead><tr className="text-slate-500 text-left">
+              <th className="py-1">Stage</th><th className="py-1 text-right">Planned</th><th className="py-1 text-right">Adherence</th><th className="py-1 text-right">Reported</th></tr></thead>
+              <tbody>{adherence.stages.map(st=><tr key={st.key} className="border-t border-slate-100">
+                <td className="py-1">{st.stage}</td><td className="py-1 mono text-right">{fmt(st.planned)}</td>
+                <td className="py-1 mono text-right font-semibold">{st.adherence==null?"—":pct(st.adherence)}</td>
+                <td className="py-1 mono text-right text-slate-500">{st.reported_rows}/{st.rows}</td></tr>)}</tbody></table>
+          </div>
+        </>}
+    </section>
+
     <div className="rounded-lg border border-blue-200 bg-blue-50 text-blue-900 px-3 py-2 text-xs">
-      <b>Data boundary:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement comes from the Daily plan vs achievement upload; dispatch comes from recorded packing reports. Factory OS does not ask for rejection or downtime figures because they are not part of the current operating model.
+      <b>Data boundary:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement, rejection, repair and cartons come from Daily plan vs achievement; dispatch comes from recorded packing reports. The plan skips Sundays and the holidays on Machine load.
       {production.recorded_rows===0&&<> Until achievement is uploaded, production output is <b>scheduled—not actual</b>.</>}
     </div>
   </div>;

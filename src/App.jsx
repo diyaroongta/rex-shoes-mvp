@@ -12,6 +12,8 @@ import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/int
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import { floorToday } from "../shared/floor-today.js";
 import StockAtHand from "./StockAtHand.jsx";
+import FinishedGoodsTab from "./FinishedGoodsTab.jsx";
+import FormatsTab from "./FormatsTab.jsx";
 import { withStockBalances } from "../shared/stock.js";
 import * as XLSX from "xlsx";
 import * as api from "./lib/client.js";
@@ -41,6 +43,7 @@ import { progressFrom } from "../shared/production-progress.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
 import { productionActualKey } from "../shared/production-actuals.js";
+import { DEFAULT_CALENDAR, isOffDay, holidayName } from "../shared/holidays.js";
 
 /* ------------- UI helpers (shared) ------------- */
 const SOLE_COLOR = {PVC:"#4f46e5",PU:"#0f9d6b",EVA:"#c2410c","STUCK-ON":"#7c3aed"};
@@ -94,12 +97,21 @@ export default function App({ user=null, onSignOut=null }={}){
      orders, and fed into compute(). */
   const [jobs, setJobs] = useState([]);
   const [productionActuals,setProductionActuals]=useState([]);
+  /* The finished-goods ledger: opening counts, MTS orders moved to stock,
+     pairs issued out. Read by the PI and the job order ("is it already made?")
+     and by the Finished goods screen. */
+  const [finishedMoves,setFinishedMoves]=useState([]);
+  const refreshFinished=async()=>{ try{ setFinishedMoves(await api.listFinishedStock()); }catch(_){ /* the screens still work; nothing is claimed in stock */ } };
+  useEffect(()=>{ refreshFinished(); },[]);
   const [dispatchLoading, setDispatchLoading] = useState(true);
   const [dispatchErr, setDispatchErr] = useState("");
   /* Days an order spends NOT being made. Editable on Machine load, because a
      placeholder nobody can correct is the one kind of assumption this app is
      not allowed to keep. */
   const [leadTimes, setLeadTimes] = useState({});
+  /* The working calendar. Sundays and the gazetted holidays until the factory
+     edits it on Machine load; the planner books nothing on an off day. */
+  const [calendar, setCalendar] = useState(DEFAULT_CALENDAR);
   const [caps, setCaps] = useState(()=>{const c={};for(const[k,w]of Object.entries(INPUTS.workcenters))c[k]=w.capacity_per_day;return c;});
   /* A role must never land on a screen it cannot open. The server is the only
      thing that actually enforces permissions; this just keeps the app honest
@@ -141,6 +153,7 @@ export default function App({ user=null, onSignOut=null }={}){
           .filter(([code])=>INPUTS.workcenters[code]))}));
       if(settings && settings.sla_targets) setTargets(settings.sla_targets);
       if(settings && settings.lead_time_rules) setLeadTimes(settings.lead_time_rules);
+      if(settings && settings.calendar) setCalendar(settings.calendar);
     }catch(e){ setLoadErr(e.message||String(e)); setOrders([]); }
   })(); },[]);
 
@@ -190,7 +203,7 @@ export default function App({ user=null, onSignOut=null }={}){
      three views of the same rows, so a change made on any tab has to reload
      all of them — editing an order from the PI database used to leave the
      schedule, dispatch and MIS showing the figures from before the edit. */
-  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProductionActuals(), refreshJobs()]); };
+  const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProductionActuals(), refreshJobs(), refreshFinished()]); };
 
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
@@ -223,11 +236,21 @@ export default function App({ user=null, onSignOut=null }={}){
     catch(e){ setLoadErr(e.message||String(e)); }
     refresh();
   };
-  const removeOrder = async no =>{
-    setOrders(os=>os.filter(o=>o.order_no!==no));                       // optimistic
-    try{ await api.deleteOrder(no); setFlash(`${no} removed from the schedule.`); }
-    catch(e){ setLoadErr(e.message||String(e)); }
-    refresh();
+  /* CANCEL, NOT JUST HIDE. Removing an order used to archive the order row
+     alone, leaving its job cards open, its production entries counting and
+     its packing reports in the Dispatch Book. It now cancels the whole chain
+     (api/_lib/cascade.js) after the clerk has seen what that chain is. */
+  const removeOrder = async (no, confirmDispatched=false) =>{
+    try{
+      const r=await api.cancelOrder(no, confirmDispatched);
+      const i=r.impact||{};
+      const bits=[i.job_cards&&i.job_cards.length?`${i.job_cards.length} job card${i.job_cards.length===1?"":"s"} cancelled`:"",
+        i.production_rows?`${i.production_rows} production entr${i.production_rows===1?"y":"ies"} removed`:"",
+        i.dispatches?`${i.dispatches} packing report${i.dispatches===1?"":"s"} undone`:"",
+        i.repair_moves?`${i.repair_moves} repair movement${i.repair_moves===1?"":"s"} removed`:""].filter(Boolean);
+      setFlash(`${no} cancelled${bits.length?` — ${bits.join(", ")}`:""}.`);
+    }catch(e){ setLoadErr(e.message||String(e)); }
+    await syncAll();
   };
   const editOrder = async (no, patch) => {
     await api.patchOrder(no, patch);     // server re-validates; errors surface in the panel
@@ -330,9 +353,9 @@ export default function App({ user=null, onSignOut=null }={}){
      before and after — computed, never described. */
   const replan = React.useCallback(extra => planInputs && compute(
     planInputs.orders, INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
-    {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units,
+    {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units, calendar,
      progress:progressFrom([...(productionActuals||[]), ...(extra||[])])}),
-    [planInputs,wcs,targets,planOverrides,productionActuals]);
+    [planInputs,wcs,targets,planOverrides,productionActuals,calendar]);
 
   const state = useMemo(()=> orders
     ? compute(
@@ -345,7 +368,7 @@ export default function App({ user=null, onSignOut=null }={}){
            netted against opening alone, so every receipt the store entered and
            every issue booked against a job card was invisible to the buying list. */
         INPUTS.articles, withStockBalances(INPUTS.materials, INPUTS.stock_meta), wcs, INPUTS.origin,
-        {...(targets?{targets}:{}), overrides:planOverrides,
+        {...(targets?{targets}:{}), overrides:planOverrides, calendar,
          /* Job cards are the unit of production. An order with no card is
             still planned whole, so nothing changes until one is issued. */
          units:productionUnits(orders.map(o=>({ ...o,
@@ -356,7 +379,7 @@ export default function App({ user=null, onSignOut=null }={}){
             the day after the entry — which is how a short day pushes the work
             behind it rather than quietly disappearing. */
          progress:progressFrom(productionActuals)})
-    : null, [orders,jobs,wcs,refTick,targets,planOverrides,productionActuals]);
+    : null, [orders,jobs,wcs,refTick,targets,planOverrides,productionActuals,calendar]);
 
   /* Ordered versus dispatched, from the same shared ledger the dispatch screen
      renders. An order that has shipped in full — or been closed short — is
@@ -431,6 +454,9 @@ export default function App({ user=null, onSignOut=null }={}){
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
       ["stock","Stock"],
     ]],
+    /* The factory's own sheets, downloadable: planning sheet, MTS/MTO stock,
+       packing report, raw-material count, purchase orders, job cards. */
+    ["Formats", [["formats","Formats & sheets"]]],
         ["Setup", [
       ["parties","Parties & terms"],
       /* Who work goes OUT to, as parties are who it comes IN from. */
@@ -616,7 +642,7 @@ export default function App({ user=null, onSignOut=null }={}){
             ))}
           </div>
           <div style={{display:intakeMode==="slip"?"block":"none"}}>
-            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} jobs={jobs} />
+            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} jobs={jobs} finishedMoves={finishedMoves} />
           </div>
           {intakeMode==="sheet" &&
             <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("orders"); }} />}
@@ -648,22 +674,25 @@ export default function App({ user=null, onSignOut=null }={}){
             screen. Same reason NewOrderFlow stays mounted behind the
             spreadsheet mode. */}
         <div style={{display:tab==="jobs"?"block":"none"}}>
-          <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} />
+          <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} finishedMoves={finishedMoves} />
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
-        {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals}
+        {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} jobs={jobs} calendar={calendar}
           replan={replan} onChanged={refreshProductionActuals} />}
         {tab==="plan" && <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={setPlanOverride} />}
         {tab==="procurement" && <ProcurementTab state={state} role={role}
           onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
-        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes} />}
+        {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
+          calendar={calendar} setCalendar={role==="admin"?setCalendar:null} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll}
           onOpenGatePass={canSeeTab(role,"gatepass")?(id=>{setGateFocus(id);setTab("gatepass");}):null} />}
         {tab==="gatepass" && <GatePassTab dispatches={dispatches} orders={orders||[]} onChanged={syncAll}
           focusId={gateFocus} />}
+        {tab==="finished" && <FinishedGoodsTab state={state} jobs={jobs} moves={finishedMoves} actuals={productionActuals} dispatches={dispatches} onChanged={syncAll} readOnly={readOnly||role==="sales"} />}
+        {tab==="formats" && <FormatsTab state={state} orders={orders||[]} jobs={jobs} moves={finishedMoves} actuals={productionActuals} calendar={calendar} dispatches={dispatches} />}
         {tab==="stock" && <StockTab state={state} jobs={jobs} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
@@ -723,7 +752,7 @@ const vlSummary = card => {
   return card.vl||"";
 };
 
-function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[]}){
+function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
   const [img,setImg]=useState(null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
@@ -1955,7 +1984,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[]}){
                   return {...cc, lines:merged};
                 }))} />
             </div>
-            <StockAtHand article={c.article} lines={c.lines} jobs={jobs} />
+            <StockAtHand article={c.article} lines={c.lines} jobs={jobs} finishedMoves={finishedMoves} />
             <details className="mt-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
               <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
               <div className="mt-2"><ArticleRules article={c.article} compact /></div>
@@ -2224,7 +2253,7 @@ const FLOW = [
   { step:2, group:"Job orders", tabs:[["jobs","Create Job Order"],["jobwork","Job Orders Database"]] },
   { step:3, group:"Production", tabs:[["schedule","Schedule"],["production_input","Daily plan vs achievement"],
                                       ["status","Production status"],["plan","Production plan"],["machines","Machine load"]] },
-  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["repair","Repair"]] },
+  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["finished","Finished goods"],["repair","Repair"]] },
 ];
 const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
 
@@ -2552,6 +2581,41 @@ function PiDatabaseTab({orders=[],jobs=[],shortfall,onScheduled,onChanged,onGoTo
   </div>;
 }
 
+/* What cancelling an order takes with it, shown BEFORE it is confirmed. */
+function CancelOrderPanel({o,onKeep,onConfirm}){
+  const [impact,setImpact]=useState(null);
+  const [err,setErr]=useState("");
+  useEffect(()=>{ let live=true;
+    api.orderImpact(o.order_no).then(r=>{ if(live) setImpact(r); }).catch(e=>{ if(live) setErr(String(e.message||e)); });
+    return ()=>{ live=false; }; },[o.order_no]);
+  const i=impact||{};
+  const shipped=(i.dispatches||0)>0;
+  return <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
+    <div className="text-sm text-rose-900">
+      Cancel <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty+(o.pending_pairs||0))} pairs for {o.party}?</div>
+    {!impact && !err && <div className="text-xs text-rose-700 mt-1">Checking what was raised against it…</div>}
+    {err && <div className="text-xs text-rose-700 mt-1">Could not check: {err}</div>}
+    {impact && <ul className="text-xs text-rose-800 mt-1 ml-4 list-disc">
+      <li>The order leaves the Order Book, the schedule, procurement and the MIS.</li>
+      <li>{i.job_cards.length
+        ? <><b>{i.job_cards.length} job card{i.job_cards.length===1?"":"s"}</b> ({i.job_cards.slice(0,6).join(", ")}{i.job_cards.length>6?"…":""}) — cancelled and archived; the challan numbers stay on record.</>
+        : "No job cards were issued."}</li>
+      <li>{i.production_rows?<><b>{i.production_rows}</b> daily production entr{i.production_rows===1?"y":"ies"} — removed.</>:"No production was recorded."}</li>
+      {i.repair_moves>0 && <li><b>{i.repair_moves}</b> repair movement{i.repair_moves===1?"":"s"} — removed.</li>}
+      <li>{shipped
+        ? <><b>{i.dispatches} packing report{i.dispatches===1?"":"s"} ({fmt(i.dispatched_pairs)} pairs)</b> — these goods LEFT the factory. They are undone (kept in the removed-dispatch record).</>
+        : "No packing reports were recorded."}</li>
+      {i.finished_moves>0 && <li><b>{i.finished_moves}</b> finished-stock movement{i.finished_moves===1?"":"s"} for this order — reversed.</li>}
+    </ul>}
+    <div className="flex gap-2 mt-2 justify-end flex-wrap">
+      <button onClick={onKeep} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
+      <button disabled={!impact} onClick={()=>onConfirm(shipped)}
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-600 text-white disabled:opacity-50">
+        {shipped?"Cancel order, job cards AND packing reports":"Cancel order and its job cards"}</button>
+    </div>
+  </div>;
+}
+
 function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
   const [confirmDel,setConfirmDel]=useState(null);
   const [editing,setEditing]=useState(null);
@@ -2690,16 +2754,9 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
           </td>
         </tr>
         {confirmDel===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
-          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 flex items-center gap-3 flex-wrap">
-            <div className="text-sm text-rose-900">
-              Remove <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty)} pairs for {o.party}?
-              <span className="block text-xs text-rose-700 mt-0.5">This cannot be undone, and every other order will be rescheduled.</span>
-            </div>
-            <div className="ml-auto flex gap-2">
-              <button onClick={()=>setConfirmDel(null)} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
-              <button onClick={()=>{setConfirmDel(null); onRemove(o.order_no);}} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-600 text-white">Remove order</button>
-            </div>
-          </div></td></tr>}
+          <CancelOrderPanel o={o} onKeep={()=>setConfirmDel(null)}
+            onConfirm={withDispatches=>{ setConfirmDel(null); onRemove(o.order_no, withDispatches); }} />
+        </td></tr>}
 
         {editing===o.order_no && <tr><td colSpan={10} className="px-2 pb-3">
           <EditOrder o={o} onCancel={()=>setEditing(null)}
@@ -3460,15 +3517,30 @@ function FloorToday({state}){
       ||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)
       ||String(a.unit_key||a.order_no).localeCompare(String(b.unit_key||b.order_no)))
       .map(u=>u.unit_key||u.order_no), [units]);
+  /* A SHUT DAY SHOWS THE NEXT WORKING DAY. On a Sunday or a holiday nothing
+     is planned, so "today" would be a wall of idle machines; the panel says
+     the factory is shut and shows what runs when it opens. */
+  const today = todayIso();
+  const shut = isOffDay(today, state.calendar);
+  const floorDay = React.useMemo(()=>{
+    let d = today;
+    for(let i=0; i<30 && isOffDay(d, state.calendar); i++){
+      const x = new Date(d+"T00:00:00Z"); x.setUTCDate(x.getUTCDate()+1); d = x.toISOString().slice(0,10);
+    }
+    return d;
+  }, [today, state.calendar]);
   const board = React.useMemo(
     () => floorToday({ units, workcenters:INPUTS.workcenters, queue,
-                       today:todayIso(), origin:INPUTS.origin }),
-    [units, queue]);
+                       today:floorDay, origin:INPUTS.origin }),
+    [units, queue, floorDay]);
 
   return <div className="mb-4">
     <div className="flex items-baseline gap-2 flex-wrap mb-2">
       <div className="serif text-base font-semibold text-slate-800">On the floor today</div>
-      <div className="text-xs text-slate-500">{niceDate(board.date)}</div>
+      {shut
+        ? <div className="text-xs font-semibold text-rose-700">
+            Factory shut today ({holidayName(today, state.calendar)||"Sunday"}) — showing the next working day, {niceDate(floorDay)}</div>
+        : <div className="text-xs text-slate-500">{niceDate(board.date)}</div>}
       <div className="text-xs text-slate-500 ml-auto">
         <b className="mono text-slate-700">{board.busy}</b> of {board.centres.length} machines running
         {board.pairs_today>0 && <> · <b className="mono text-slate-700">{fmt(board.pairs_today)}</b> pairs planned today</>}
@@ -3580,6 +3652,13 @@ function ScheduleTab({state,setPlanOverride}){
           <div className="relative flex flex-1" style={{height,borderRadius:4,overflow:"hidden",background:"#f6f8fb"}}>
             {days.map(d=>{
               const cell=byDay[d];
+              const iso=fromDay(d,INPUTS.origin);
+              /* A SHUT DAY IS NOT A WAITING DAY. Drawn hatched-grey and named,
+                 so a Sunday in the middle of a run reads as the factory being
+                 closed rather than the order queueing for a machine. */
+              if(isOffDay(iso,state.calendar)) return <div key={d}
+                title={`${niceDate(iso)} — ${holidayName(iso,state.calendar)||"Sunday"}: factory shut, nothing planned`}
+                style={{flex:1,borderRight:"1px solid #fff",background:"repeating-linear-gradient(90deg,#cbd5e1,#cbd5e1 1px,#eef2f6 1px,#eef2f6 3px)"}}/>;
               if(!cell){
                 const pre = d<rel;
                 return <div key={d} title={pre?("before order date ("+niceDate(o.order_date)+")"):""}
@@ -3663,13 +3742,14 @@ function ScheduleTab({state,setPlanOverride}){
     </div>
     <p className="text-sm text-slate-500 mb-1"><b>Press Adjust on any row</b> to overrule the plan for that order — run it first or later, pin its start date, move a stage to another machine, or force a stage to finish in a set number of days. <b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
     <details className="mb-3">
-      <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (5 rules)</summary>
+      <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (6 rules)</summary>
       <div className="text-xs text-slate-500 mt-1 leading-relaxed">
         1. Orders queue by <b>priority first</b>, then earliest order date, then order number. Every order starts at P2, so in practice that is first-in first-out until someone sets P1 to jump the queue or P3 to yield. <b>Adjust</b> on any row overrules all of that — a pinned queue position, start date, machine or stage duration is obeyed exactly, and what it costs is shown at the top.<br/>
         2. Each order follows its article route. A stage starts on the next planning day after the previous stage finishes; in-house Preparation appears once in that route and is not added again as a buffer.<br/>
         3. Each machine line has a daily capacity in pairs. An order takes whatever is free each day - rows higher in the queue get first claim, which is why lower rows show hatched waiting.<br/>
         4. An order never starts before its own order date (faint grey zone).<br/>
-        5. Dispatch is its own stage with its own capacity — the dispatch date is the day it finishes, not the day packing ends. Same inputs always give the same plan.
+        5. Dispatch is its own stage with its own capacity — the dispatch date is the day it finishes, not the day packing ends. Same inputs always give the same plan.<br/>
+        6. <b>Nothing is planned on a Sunday or a holiday</b> (the working calendar on Machine load). A run that reaches one carries on the next working day; only outside-stitching transit counts those days, because the lorry still moves.
       </div>
     </details>
     <div className="overflow-x-auto">
@@ -3685,7 +3765,14 @@ function ScheduleTab({state,setPlanOverride}){
       </div>
       {rows.map(o=>{
         const pri=PRI_STYLE[o.priority]||PRI_STYLE[3];
-        const batches=(unitsByOrder[o.order_no]||[]).filter(u=>u.unit_key!==o.order_no);
+        /* ONE CARD IS NOT A BREAKDOWN. An order released on a single job card
+           used to draw the same bars twice — the order's row and, under it, a
+           "card 12" row identical to it — because the card's key is not the
+           order number. Cards are listed beneath an order only when there is
+           more than one; a lone card is named on the order's own row. */
+        const allCards=(unitsByOrder[o.order_no]||[]).filter(u=>u.unit_key!==o.order_no);
+        const batches=allCards.length>1?allCards:[];
+        const soleCard=allCards.length===1?allCards[0]:null;
         return (
         <React.Fragment key={o.order_no}>
         <div className="flex items-center gap-2 mb-2">
@@ -3693,7 +3780,9 @@ function ScheduleTab({state,setPlanOverride}){
             {o.order_no} <span className="font-semibold rounded px-1" style={{fontSize:9,background:pri.bg,color:pri.fg}}>P{o.priority}</span>
             {o.overridden && <span className="font-semibold rounded px-1 ml-0.5" title="Planned by hand, not automatically"
               style={{fontSize:9,background:"#e0e7ff",color:"#3730a3"}}>manual</span>}<br/>
-            <span className="text-slate-400" style={{fontSize:9}}>{o.article.length>15?o.article.slice(0,14)+"…":o.article}</span></div>
+            <span className="text-slate-400" style={{fontSize:9}}>{o.article.length>15?o.article.slice(0,14)+"…":o.article}</span>
+            {soleCard && <><br/><span className="text-slate-500" style={{fontSize:9}}>
+              {soleCard.unit_kind==="balance"?"no card yet":`card ${soleCard.card_no||soleCard.job_id}`} · {fmt(soleCard.qty)} pairs</span></>}</div>
           <Bar o={o}/>
           {/* PINNED, like the order number on the left. The gantt scrolls
               sideways inside an 860px-minimum box, so an unpinned control at
@@ -3752,6 +3841,7 @@ function ScheduleTab({state,setPlanOverride}){
         <span key={k} className="mono text-xs flex items-center gap-1"><span style={{width:10,height:10,background:c,borderRadius:2,display:"inline-block"}}/>{STAGE_ABBR[k]||k}</span>))}
       <span className="mono text-xs flex items-center gap-1"><span style={{width:16,height:10,background:"repeating-linear-gradient(45deg,#7c3aed40,#7c3aed40 2px,#f1f4f8 2px,#f1f4f8 5px)",borderRadius:2,display:"inline-block"}}/>waiting (tinted by the stage it waits for)</span>
       <span className="mono text-xs flex items-center gap-1"><span style={{width:16,height:10,background:"#e7e9f0",borderRadius:2,display:"inline-block"}}/>before order date</span>
+      <span className="mono text-xs flex items-center gap-1"><span style={{width:16,height:10,background:"repeating-linear-gradient(90deg,#cbd5e1,#cbd5e1 1px,#eef2f6 1px,#eef2f6 3px)",borderRadius:2,display:"inline-block"}}/>Sunday / holiday — shut</span>
     </div>
   </div>;
 }
@@ -3873,7 +3963,7 @@ function ProcurementTab({state,role="admin",onStockChanged}){
   </div>;
 }
 
-function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTimes}){
+function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTimes,calendar,setCalendar}){
   // Derived from reference data, not hardcoded — add a work centre and it
   // appears here automatically. Ordered by production sequence so the strips
   // read the way the factory flows, and rows never re-order while editing.
@@ -3885,6 +3975,7 @@ function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTim
     <p className="text-xs text-slate-400 mb-4">Each molding machine runs one order at a time, but they run in parallel with each other. Capacities are placeholders until the factory confirms them.</p>
     <SlaTargets targets={targets} setTargets={setTargets} />
     <LeadTimes leadTimes={leadTimes} setLeadTimes={setLeadTimes} />
+    {setCalendar && <WorkCalendar calendar={calendar} setCalendar={setCalendar} />}
     <MoldingAssignment />
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
@@ -3911,19 +4002,92 @@ function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTim
         <div className="flex" style={{height:16,borderRadius:4,overflow:"hidden",background:"#f8fafc",border:"1px solid #eef0f4"}}>
           {days.map(d=>{
             const u=(load[d]||0)/cap;
+            const iso=fromDay(d,INPUTS.origin);
+            if(isOffDay(iso,calendar)) return <div key={d} title={`${niceDate(iso)}: ${holidayName(iso,calendar)||"Sunday"} — factory shut`}
+              style={{flex:1,background:"repeating-linear-gradient(90deg,#e2e8f0,#e2e8f0 1px,#f1f5f9 1px,#f1f5f9 3px)",borderRight:"1px solid #fff"}}/>;
             const bg = u<=0 ? "transparent" : u>=0.999 ? "#dc2626" : u>=0.75 ? "#d97706" : "#4f46e5";
-            return <div key={d} title={`${niceDate(fromDay(d,INPUTS.origin))}: ${fmt(load[d]||0)} / ${fmt(cap)} pairs (${Math.round(u*100)}%)`}
+            return <div key={d} title={`${niceDate(iso)}: ${fmt(load[d]||0)} / ${fmt(cap)} pairs (${Math.round(u*100)}%)`}
               style={{flex:1,background:bg,opacity:u<=0?1:0.45+0.55*Math.min(u,1),borderRight:"1px solid #fff"}}/>;
           })}
         </div>
       </div>);
     })}
     <div className="flex gap-3 mt-1 flex-wrap">
-      <Leg c="#dc2626" t="full (100%)"/><Leg c="#d97706" t="75–99%"/><Leg c="#4f46e5" t="partly used"/><Leg c="#f8fafc" t="free" border/>
+      <Leg c="#dc2626" t="full (100%)"/><Leg c="#d97706" t="75–99%"/><Leg c="#4f46e5" t="partly used"/><Leg c="#f8fafc" t="free" border/><Leg c="#e2e8f0" t="Sunday / holiday — shut"/>
     </div>
   </div>;
 }
 function Leg({c,t,border}){return <span className="mono text-xs flex items-center gap-1"><span style={{width:12,height:10,background:c,border:border?"1px solid #e2e8f0":"none",borderRadius:2,display:"inline-block"}}/>{t}</span>;}
+
+/* THE WORKING CALENDAR. Sundays and the gazetted holidays are the seed; the
+   factory edits the list (most shut longer at Diwali and Holi). Saved to
+   settings, and the whole plan is recomputed — nothing is booked on an off day. */
+const WEEKDAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+function WorkCalendar({calendar,setCalendar}){
+  const cal=calendar||DEFAULT_CALENDAR;
+  const [draft,setDraft]=useState(()=>({weekly_off:[...(cal.weekly_off||[0])],holidays:[...(cal.holidays||[])]}));
+  const [add,setAdd]=useState({date:"",name:""});
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [open,setOpen]=useState(false);
+  const today=todayIso();
+  const upcoming=draft.holidays.filter(h=>h.date>=today);
+  const dirty=JSON.stringify(draft)!==JSON.stringify({weekly_off:cal.weekly_off||[0],holidays:cal.holidays||[]});
+  async function save(){
+    setBusy(true); setMsg("");
+    try{ const v=await api.putSettings({calendar:draft});
+         setCalendar(v.calendar); setDraft({weekly_off:[...v.calendar.weekly_off],holidays:[...v.calendar.holidays]});
+         setMsg("Saved — the plan has been recalculated around the new calendar."); }
+    catch(e){ setMsg(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+  return <div className="mb-5 border border-slate-200 rounded-xl p-3.5">
+    <div className="flex items-baseline gap-2 flex-wrap">
+      <div className="text-sm font-semibold text-slate-700">Working calendar — no planning on off days</div>
+      <span className="text-xs text-slate-500">
+        Shut every <b>{draft.weekly_off.map(d=>WEEKDAYS[d]).join(", ")||"— (seven-day week)"}</b> ·
+        {" "}{upcoming.length} upcoming holiday{upcoming.length===1?"":"s"}</span>
+      <button onClick={()=>setOpen(v=>!v)} className="ml-auto text-xs font-semibold text-indigo-700">{open?"Hide":"Edit holidays"}</button>
+    </div>
+    <p className="text-xs text-slate-500 mt-1">
+      Nothing is booked on a weekly off-day or a holiday on any machine; a run that reaches one carries on the next working day.
+      The list starts from the Government of India gazetted holidays — add the days the factory itself shuts (e.g. extra Diwali days).
+      Dates marked <i>tentative</i> depend on the moon; confirm them nearer the time.</p>
+    {open && <div className="mt-3">
+      <div className="flex gap-3 flex-wrap mb-2">
+        {WEEKDAYS.map((w,i)=><label key={w} className="text-xs text-slate-600 flex items-center gap-1">
+          <input type="checkbox" checked={draft.weekly_off.includes(i)}
+            onChange={e=>setDraft(d=>({...d,weekly_off:e.target.checked?[...d.weekly_off,i].sort():d.weekly_off.filter(x=>x!==i)}))}/>
+          {w}</label>)}
+      </div>
+      <div className="flex gap-2 items-end flex-wrap mb-2">
+        <label className="text-xs text-slate-600">Date
+          <input type="date" value={add.date} onChange={e=>setAdd(a=>({...a,date:e.target.value}))}
+            className="block mt-0.5 border border-slate-300 rounded px-2 py-1 mono text-xs"/></label>
+        <label className="text-xs text-slate-600">Name
+          <input value={add.name} onChange={e=>setAdd(a=>({...a,name:e.target.value}))} placeholder="e.g. Diwali (2nd day)"
+            className="block mt-0.5 border border-slate-300 rounded px-2 py-1 text-xs w-48"/></label>
+        <button disabled={!add.date} onClick={()=>{ setDraft(d=>({...d,holidays:[...d.holidays.filter(h=>h.date!==add.date),{date:add.date,name:add.name.trim()}].sort((a,z)=>a.date.localeCompare(z.date))})); setAdd({date:"",name:""}); }}
+          className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-700 bg-white disabled:opacity-40">Add holiday</button>
+      </div>
+      <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-lg">
+        <table className="w-full text-xs"><tbody>
+          {draft.holidays.map(h=><tr key={h.date} className="border-t border-slate-100" style={{opacity:h.date<today?0.45:1}}>
+            <td className="mono px-2 py-1">{h.date}</td>
+            <td className="text-slate-500">{WEEKDAYS[new Date(h.date+"T00:00:00Z").getUTCDay()]}</td>
+            <td>{h.name||"Holiday"}{h.tentative && <i className="text-amber-700"> · tentative</i>}</td>
+            <td className="text-right pr-2"><button onClick={()=>setDraft(d=>({...d,holidays:d.holidays.filter(x=>x.date!==h.date)}))}
+              className="text-rose-700 underline">remove</button></td>
+          </tr>)}
+        </tbody></table>
+      </div>
+      <button disabled={busy||!dirty} onClick={save}
+        className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+        {busy?"Saving…":"Save calendar"}</button>
+    </div>}
+    {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
+  </div>;
+}
 
 /* Which PVC machine each article runs on. Unassigned articles fall back to
    rotary, which makes rotary look busier than it is — so this is worth setting

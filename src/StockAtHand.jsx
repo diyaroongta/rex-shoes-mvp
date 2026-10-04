@@ -1,50 +1,70 @@
 import React from "react";
 import { materialCheck } from "../shared/can-we-make-it.js";
-import { onHandFor } from "../shared/finished-goods.js";
+import { finishedStock, stockForOrder } from "../shared/finished-stock.js";
+import { comboSizesForArticle } from "../shared/bridge.js";
 import { REF as INPUTS } from "./lib/refdata.js";
 
 const fmt = (n,d=0)=>n==null||isNaN(n)?"—":Number(n).toLocaleString("en-IN",{maximumFractionDigits:d});
 
-/* CAN WE MAKE IT, ASKED WHILE THERE IS STILL A CHOICE.
-   The answer only existed after the order was saved, on the procurement
-   screen — one commitment too late. It is the same register balance and the
-   same BOM those screens use, so it cannot disagree with them.
-   It says MATERIALS, in those words: this system holds no finished-goods
-   stock, so it cannot claim there are pairs already on a shelf. */
-export default function StockAtHand({ article, lines, jobs = [] }){
+/* CAN WE MAKE IT — AND IS IT ALREADY MADE? Asked while there is still a choice,
+   on the PI and on the job order, BEFORE a duplicate job card is written.
+
+   1. FINISHED STOCK, SIZE BY SIZE. Pairs of this article already on the shelf
+      (opening stock, MTS orders moved to stock, stock job cards that came back),
+      matched against the sizes being ordered. Shown first and in full, because
+      making a pair that is already boxed is the costliest mistake on this screen.
+   2. RAW MATERIAL, against the same register and BOM procurement uses.
+
+   This component used to crash the whole PI screen for any article with no BOM
+   (REX GOLA PLUS among them): the no-BOM branch rendered `madeAlready` before
+   the line that declared it. Both answers are now computed before either is
+   rendered. */
+export default function StockAtHand({ article, lines, jobs = [], finishedMoves = [] }){
   const check = React.useMemo(
     () => materialCheck(lines, (INPUTS.articles||{})[article],
                         INPUTS.materials||{}, INPUTS.stock_meta||{}),
     [article, lines]);
   const pairs = (lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0);
-  /* ALREADY MADE, NOT JUST BUYABLE. Pairs of this very article that came back
-     on a job card raised for STOCK — the factory's own shoes, not a
-     customer's. "None recorded" is shown as nothing at all rather than as a
-     zero, because the two are different answers. */
-  const onHand = React.useMemo(()=>onHandFor(jobs||[], article), [jobs, article]);
+  const stock = React.useMemo(()=>finishedStock(finishedMoves||[], jobs||[]), [finishedMoves, jobs]);
+  const vl = ((lines||[])[0]||{}).vl;
+  const onHand = React.useMemo(
+    ()=>stockForOrder(stock, article, lines, combo=>comboSizesForArticle(article, combo, vl)),
+    [stock, article, lines, vl]);
   if(!pairs) return null;
+
+  const madeAlready = onHand.any
+    ? <div role="alert" className="mt-3 text-xs rounded-lg border-2 border-emerald-400 bg-emerald-50 text-emerald-900 px-3 py-2">
+        <b>Already in finished stock — check before issuing a job card.</b>{" "}
+        {onHand.wanted>0
+          ? <>{fmt(onHand.covered)} of the {fmt(onHand.wanted)} pairs ordered can come straight off the shelf.</>
+          : <>Sizes in this range are on the shelf.</>}
+        <table className="mt-1.5 text-[11px]"><thead><tr className="text-emerald-800/70">
+          <th className="text-left pr-4">Size</th><th className="text-right pr-4">Ordered</th>
+          <th className="text-right pr-4">In stock</th><th className="text-right">Can supply</th></tr></thead>
+          <tbody>{onHand.sizes.map(s=><tr key={s.size}>
+            <td className="mono pr-4">{s.size}</td>
+            <td className="mono text-right pr-4">{s.wanted==null?"range":fmt(s.wanted)}</td>
+            <td className="mono text-right pr-4">{fmt(s.on_hand)}</td>
+            <td className="mono text-right font-semibold">{s.cover==null?"—":fmt(s.cover)}</td></tr>)}</tbody></table>
+        <div className="mt-1 text-emerald-800/80">
+          Supply these from stock (Dispatch → Finished goods → issue to the order) and raise a job card only for the balance,
+          so the same pairs are not made twice.</div>
+      </div>
+    : null;
 
   if(!check.costed) return <>
     {madeAlready}
     <div className="mt-3 text-xs rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2">
-      <b>No BOM rates on file for {article}.</b> Nothing can be checked against the store, and this
-      article will ask for no material at all when it is planned.
+      <b>Raw material: no BOM rates on file for {article}.</b> Nothing can be checked against the store, and this
+      article will ask for no material at all when it is planned. Add its BOM (Data &amp; BOM, or Packing &amp; BOM rules → add a size range).
     </div></>;
 
-  const madeAlready = onHand && onHand.pairs>0
-    ? <div className="mt-2 text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2">
-        <b>{fmt(onHand.pairs)} pairs of {article} are already made</b> and sitting in finished stock
-        {onHand.size_list.length>0 && <> — {onHand.size_list.map(s=>`${s.size}: ${fmt(s.pairs)}`).join(", ")}</>}.
-        {" "}Check whether any of this order can come out of it before more is made.
-      </div>
-    : null;
-
   const tone = check.can_make ? {b:"#a7f3d0",bg:"#ecfdf5",fg:"#065f46"} : {b:"#fed7aa",bg:"#fff7ed",fg:"#9a3412"};
-  return <>{madeAlready}<details className="mt-3 rounded-lg border px-3 py-2" style={{borderColor:tone.b,background:tone.bg}}>
+  return <>{madeAlready}<details open={!check.can_make} className="mt-3 rounded-lg border px-3 py-2" style={{borderColor:tone.b,background:tone.bg}}>
     <summary className="text-xs font-semibold cursor-pointer" style={{color:tone.fg}}>
       {check.can_make
-        ? `Materials for these ${fmt(pairs)} pairs are in the store`
-        : `${check.short_count+check.unknown_count} of ${check.materials} materials short for these ${fmt(pairs)} pairs`}
+        ? `Raw material: everything for these ${fmt(pairs)} pairs is in the store`
+        : `Raw material: ${check.short_count+check.unknown_count} of ${check.materials} materials short for these ${fmt(pairs)} pairs`}
     </summary>
     <div className="text-[11px] mt-2" style={{color:tone.fg}}>
       Against the stock register as it stands. It does not set anything aside, and it does not
@@ -68,4 +88,3 @@ export default function StockAtHand({ article, lines, jobs = [] }){
     </div>}
   </details></>;
 }
-

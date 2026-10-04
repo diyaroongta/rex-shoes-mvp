@@ -28,7 +28,7 @@ export const shortDate = iso => {
 /* Job Order creation. The Order Book supplies the article and ceiling; the
    operator supplies who receives it, the date and the exact size-wise cutting
    quantities. The Job Card is its printable document, not another workflow. */
-export default function JobCardTab({ orders=[], initialOrderNo="", embedded=false, onIssued=null, active=true }){
+export default function JobCardTab({ orders=[], initialOrderNo="", embedded=false, onIssued=null, active=true, finishedMoves=[] }){
   const [fabricators,setFabricators]=useState(null);
   const [jobs,setJobs]=useState(null);
   const [orderNo,setOrderNo]=useState("");
@@ -327,7 +327,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
           Issuing already books the materials OUT of the register; until now
           nothing said beforehand whether they were there to book. Same check
           the PI screen makes, so the two cannot give different answers. */}
-      <StockAtHand article={order&&order.article_code} lines={lines} jobs={jobs||[]}/>
+      <StockAtHand article={order&&order.article_code} lines={lines} jobs={jobs||[]} finishedMoves={finishedMoves}/>
       <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 

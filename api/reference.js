@@ -1,4 +1,5 @@
 import { db, q } from "./_lib/db.js";
+import { planAddRange } from "../shared/add-range.js";
 import { fail, wrap } from "./_lib/http.js";
 import { INPUTS } from "../shared/inputs.js";
 import { articleCode, existingArticleCode, mergeBom } from "../shared/bom-import.js";
@@ -589,6 +590,25 @@ export default wrap(async (req, res) => {
         newly_coded:Object.keys(result.assigned).length });
     }
 
+    /* A NEW SIZE RANGE on an existing article — e.g. big 11–12 on GOLA PLUS —
+       without re-uploading the whole workbook. Rates are copied only from a
+       range the person names; pack quantity and MRP only as typed. See
+       shared/add-range.js. Master data: the reference allowlist keeps it to
+       admin and the data manager. */
+    if(body.add_combo && typeof body.add_combo === "object"){
+      const pre = planAddRange(await current(), body.add_combo);
+      if(pre.problems.length) return fail(res, 400, pre.problems.join("; "));
+      let plan = null;
+      await mutateReference("add-range", pre.article, async ref => {
+        plan = planAddRange(ref, body.add_combo);
+        if(plan.problems.length) reject(plan.problems.join("; "));
+        plan.apply(ref);
+        return { combo:plan.combo };
+      });
+      return res.status(200).json({ ok:true, article:plan.article, combo:plan.combo, sizes:plan.sizes,
+        copied_from:plan.copied_from, warnings:plan.warnings });
+    }
+
     /* A material the BOM has never mentioned. Today one can only be born from a
        BOM upload, and the Stock register refuses a figure against a material it
        does not know — so a delivery of something new cannot be recorded at all
@@ -756,7 +776,7 @@ export default wrap(async (req, res) => {
         }
         for(const [f, v] of Object.entries(fields)){
           if(f === "rec_add") continue;
-          if(["category","size"].includes(f)){ cur[f] = String(v).slice(0,60); continue; }
+          if(["category","size","supplier"].includes(f)){ cur[f] = String(v).slice(0,60); continue; }
           if(!["opening","rec","issue","min_stock","min","rate"].includes(f))
             reject(`unknown stock field: ${f}`);
           const n = Number(v);

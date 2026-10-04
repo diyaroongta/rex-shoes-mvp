@@ -1,6 +1,7 @@
 import { q } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { INPUTS } from "../shared/inputs.js";
+import { DEFAULT_CALENDAR, normalizeCalendar } from "../shared/holidays.js";
 
 /* Day offsets from the order date by which each stage should be finished.
    These decide On track / At risk / Delayed — they are the factory's promise
@@ -33,7 +34,9 @@ const DEFAULTS = () => {
   const capacities = {};
   for(const [k, w] of Object.entries(INPUTS.workcenters)) capacities[k] = w.capacity_per_day;
   return { capacities, sla_targets: DEFAULT_TARGETS, pi_terms: DEFAULT_PI_TERMS,
-           lead_time_rules: { ...(INPUTS.lead_time_rules || {}) } };
+           lead_time_rules: { ...(INPUTS.lead_time_rules || {}) },
+           /* Sundays off and the gazetted holidays until the factory edits it. */
+           calendar: DEFAULT_CALENDAR };
 };
 
 /* Work centres come from the reference document in the database, not from the
@@ -53,7 +56,9 @@ async function workCentres(){
 export default wrap(async (req, res) => {
   if(req.method === "GET"){
     const { rows } = await q("select value from settings where id = 1");
-    return res.status(200).json(rows.length ? rows[0].value : DEFAULTS());
+    if(!rows.length) return res.status(200).json(DEFAULTS());
+    const value = rows[0].value || {};
+    return res.status(200).json(value.calendar ? value : { ...value, calendar: DEFAULT_CALENDAR });
   }
 
   if(req.method === "PUT"){
@@ -118,6 +123,14 @@ export default wrap(async (req, res) => {
       }
       value.pi_terms = { ...(base.pi_terms || {}), ...(prev.pi_terms||{}), ...t };
     } else if(prev.pi_terms) value.pi_terms = prev.pi_terms;
+
+    /* The working calendar — weekly off-day and holidays. Replaced whole:
+       a holiday removed on the screen has to disappear, which a merge cannot do. */
+    if(patch.calendar != null){
+      const { calendar, problems } = normalizeCalendar(patch.calendar);
+      if(problems.length) return fail(res, 400, problems.slice(0,5).join("; "));
+      value.calendar = calendar;
+    } else value.calendar = prev.calendar || base.calendar;
 
     if(req.body.pi_config && typeof req.body.pi_config === "object")
       value.pi_config = req.body.pi_config;
