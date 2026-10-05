@@ -31,7 +31,7 @@ async function jobWork(req, res){
     const { rows } = await q(
       `select id, fabricator, fabricator_type, article, stage, order_no, qty,
               received, shortage, status, slip, sample, sample_status, rate,
-              payable, note, issued_on, card, archived
+              payable, note, issued_on, card, archived, coalesce(cancelled,false) as cancelled
          from job_work
         where ($1::boolean is true or archived = false)
         order by status, issued_on desc, id desc`,

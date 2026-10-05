@@ -39,6 +39,7 @@ import ProfilesTab from "./ProfilesTab.jsx";
 import ChangePassword from "./ChangePassword.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
 import { productionUnits } from "../shared/production-units.js";
+import { materialDone } from "../shared/material-demand.js";
 import { progressFrom } from "../shared/production-progress.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
@@ -174,7 +175,10 @@ export default function App({ user=null, onSignOut=null }={}){
      did not arrive, and the difference is a plan that silently reverts to
      scheduling whole orders. */
   const refreshJobs=async()=>{
-    try{ setJobs(await api.listJobWork()); }
+    /* WITH archived cards: archiving files a finished card away, it does not
+       un-make it. Loading only the working list let an archived card's pairs
+       fall back into "waiting for a job card" — and onto the buying list. */
+    try{ setJobs((await api.listJobWork(true)).filter(j=>!j.cancelled)); }
     catch(e){ setLoadErr(`Could not load job cards, so the plan may be showing whole orders: ${e.message||e}`); }
   };
   useEffect(()=>{ refreshJobs(); },[]);
@@ -345,24 +349,28 @@ export default function App({ user=null, onSignOut=null }={}){
     const mapped = orders.map(o=>({ ...o,
       stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
       printing:(o.pi&&o.pi.printing)||o.printing||false }));
-    return { orders:mapped, units:productionUnits(mapped, jobs) };
-  },[orders,jobs]);
+    const units=productionUnits(mapped, jobs);
+    /* Pairs finished on a closed card, received, or dispatched need no more
+       raw material — so they leave procurement. */
+    return { orders:mapped, units, materialDone:materialDone(units, jobs, dispatches) };
+  },[orders,jobs,dispatches]);
 
   /* Re-plan with extra achievement rows folded in, without saving anything.
      This is what lets the daily input screen show the consequence of an entry
      before and after — computed, never described. */
   const replan = React.useCallback(extra => planInputs && compute(
-    planInputs.orders, INPUTS.articles, INPUTS.materials, wcs, INPUTS.origin,
-    {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units, calendar,
+    planInputs.orders, INPUTS.articles, withStockBalances(INPUTS.materials, INPUTS.stock_meta), wcs, INPUTS.origin,
+    {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units, calendar, materialDone:planInputs.materialDone,
      progress:progressFrom([...(productionActuals||[]), ...(extra||[])])}),
     [planInputs,wcs,targets,planOverrides,productionActuals,calendar]);
 
-  const state = useMemo(()=> orders
+  /* ONE set of plan inputs for the live plan and for "what would this entry
+     change" — two copies had already drifted (the re-plan netted against the
+     opening stock alone). */
+  const state = useMemo(()=> planInputs
     ? compute(
-        // stitching/printing live on the pi blob; lift them so the engine sees them
-        orders.map(o=>({ ...o,
-          stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
-          printing:(o.pi&&o.pi.printing)||o.printing||false })),
+        // stitching/printing live on the pi blob; planInputs lifts them so the engine sees them
+        planInputs.orders,
         /* The stock sheet's own balance — opening + received - issued — not the
            opening figure. The register has always shown that sum; the planner
            netted against opening alone, so every receipt the store entered and
@@ -371,15 +379,15 @@ export default function App({ user=null, onSignOut=null }={}){
         {...(targets?{targets}:{}), overrides:planOverrides, calendar,
          /* Job cards are the unit of production. An order with no card is
             still planned whole, so nothing changes until one is issued. */
-         units:productionUnits(orders.map(o=>({ ...o,
-           stitching:(o.pi&&o.pi.stitching)||o.stitching||"inhouse",
-           printing:(o.pi&&o.pi.printing)||o.printing||false })), jobs),
+         units:planInputs.units,
+         /* Closed, received or dispatched pairs need no more material. */
+         materialDone:planInputs.materialDone,
          /* What the floor reported it actually made. A finished stage books no
             more capacity; a stage part done is re-planned for the balance from
             the day after the entry — which is how a short day pushes the work
             behind it rather than quietly disappearing. */
          progress:progressFrom(productionActuals)})
-    : null, [orders,jobs,wcs,refTick,targets,planOverrides,productionActuals,calendar]);
+    : null, [planInputs,wcs,refTick,targets,planOverrides,productionActuals,calendar]);
 
   /* Ordered versus dispatched, from the same shared ledger the dispatch screen
      renders. An order that has shipped in full — or been closed short — is

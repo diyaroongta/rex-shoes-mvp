@@ -569,6 +569,7 @@ Each of these was a real bug found in production. Most have a regression test no
 | A variable used before it was declared | `StockAtHand` rendered `madeAlready` in its no-BOM branch above the `const` that declared it, so every article with no BOM (GOLA PLUS) crashed the PI and job-order screens with a TDZ error. |
 | Cancelling the order, not what hung off it | Removing an order only set `active=false`; its job cards stayed open, its production and repair entries kept counting, its packing reports stayed. Deleting a PI hard-deleted orders, which a production entry's foreign key refused. `api/_lib/cascade.js` cancels the whole chain, previewed first. |
 | Adherence measured as achievement | Summing actual/planned lets 600-against-500 hide 400-against-500. Plan adherence caps each row at its plan and counts past days only (`planAdherence`). |
+| Buying for shoes already made | Procurement multiplied the BOM by every live order's FULL quantity, and an order stays live after it ships, so a dispatched order and a closed job card kept their material on the buying list. `shared/material-demand.js` names the pairs closed, received or dispatched and `compute()` nets them at zero (`opts.materialDone`). Separately, the app loaded job cards WITHOUT archived ones, so archiving a finished card dropped its pairs back into the balance and onto the buying list; archived cards are loaded now, cancelled ones are not. |
 
 ---
 

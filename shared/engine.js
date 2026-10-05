@@ -703,7 +703,24 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     });
   }
   const sla=slaEval(sched, riskWindow, targets);
-  const netted=netting(rollup(planned,articles),materials);
+  /* WHAT STILL NEEDS MATERIAL. `opts.materialDone` (shared/material-demand.js)
+     names the pairs of each unit that are finished, received or shipped; they
+     are netted at zero. Without it, a dispatched order and a closed job card
+     kept their whole BOM on the buying list. Absent, nothing is subtracted. */
+  const doneMap=opts.materialDone||{};
+  const stillToMake=u=>{
+    const d=doneMap[u.unit_key||u.order_no];
+    if(!d) return u;
+    const used={};
+    const lines=(u.lines||[]).map(l=>{
+      const take=Math.min(Number(l.qty)||0,Math.max(0,(d[l.combo]||0)-(used[l.combo]||0)));
+      used[l.combo]=(used[l.combo]||0)+take;
+      return take?{...l,qty:(Number(l.qty)||0)-take,sizes:null}:l;
+    });
+    return {...u,lines};
+  };
+  const demand=units.map(stillToMake);
+  const netted=netting(rollup(demand,articles),materials);
   /* Attributed in the order the plan actually runs, so re-sequencing the queue
      moves the shortfall onto whichever PI now waits for the stock. Batches are
      walked in their own plan sequence: a card released in March takes the
@@ -713,7 +730,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
      pairs still waiting for a card take what is left. That ordering is the
      honest one — a card that exists is ahead of one that has not been written
      — and it keeps the buying list covering the whole order book. */
-  const consumption=[...queueOrder(scheduled,expanded.overrides),...pending];
+  const consumption=[...queueOrder(scheduled,expanded.overrides),...pending].map(stillToMake);
   const byUnit=netByOrder(consumption,articles,materials,consumption.map(u=>u.order_no));
   const unitOf=new Map(units.map(u=>[u.unit_key||u.order_no,u]));
   const byOrder={};

@@ -115,7 +115,10 @@ export function productionUnits(orders = [], jobs = []){
   const all = Array.isArray(jobs) ? jobs : [];
   const units = [];
   for(const order of orders || []){
-    const mine = all.filter(job => String(job && job.order_no || "") === String(order.order_no || ""));
+    /* A card cancelled with its order is not work; an ARCHIVED card is — it was
+       finished and filed, and its pairs must not fall back into the balance. */
+    const mine = all.filter(job => !(job && job.cancelled)
+      && String(job && job.order_no || "") === String(order.order_no || ""));
     const carded = mine.filter(carriesCard);
     if(!carded.length){
       /* Issuing a PI creates an ORDER, not a production release. Previously
