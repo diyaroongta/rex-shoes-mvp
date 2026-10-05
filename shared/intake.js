@@ -198,11 +198,15 @@ export function buildPhotoCards(parsed, reference){
 
        Resolving the article per line and then grouping by article handles both
        without either family knowing about the other. */
-    const articleFor = lineType => {
-      if(!lineType) return matched;
-      const withType = matchArticle(`${order.category || ""} ${lineType}`, order.color);
+    /* A ROW CAN NAME ITS OWN COLOUR AND CLOSURE ("Gala (V) WHT"), so both are
+       read per line before falling back to the order's. */
+    const probeFor = (lineType, lineColor) => [`${order.category || ""} ${lineType || ""}`.trim(), lineColor || order.color];
+    const articleFor = (lineType, lineColor) => {
+      if(!lineType && !lineColor) return matched;
+      const withType = matchArticle(...probeFor(lineType, lineColor));
       return withType && articles[withType] ? withType : matched;
     };
+    const probeByArticle = new Map();
     const article = matched;
 
     /* GROUP BY ARTICLE. A sheet writing SPIKE with a Velcro section and a Lace
@@ -219,7 +223,8 @@ export function buildPhotoCards(parsed, reference){
         // on a legacy family the written (L) is what selects the other article,
         // so asking the (V) article what type it allows would always say V.
         const written = cleanType(rawLine.type || rawLine.vl || order.type || order.vl);
-        const article = articleFor(written);
+        const article = articleFor(written, rawLine.color);
+        if(!probeByArticle.has(article)) probeByArticle.set(article, probeFor(written, rawLine.color));
         const available = articleTypes(article);
         const inferred = inferredType(article, order, rawLine);
         // With no closure written, keep all of the article's ranges available.
@@ -357,7 +362,9 @@ export function buildPhotoCards(parsed, reference){
           vl: present.length === 1 ? present[0] : "",
           types: present,
           matched: !!matched,
-          ambiguous: matchAmbiguous(order.category, order.color),
+          /* Judged on what THIS card was matched from — the row's own closure
+             and colour where it wrote them. */
+          ambiguous: matchAmbiguous(...(probeByArticle.get(article) || [order.category, order.color])),
           raw: `${order.category || ""} ${order.color || ""}`.trim(),
           lines,
         });

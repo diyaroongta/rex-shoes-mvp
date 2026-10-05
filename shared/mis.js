@@ -105,7 +105,11 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     const rawBalance = Math.max(0, qty - dispatched);
     const pending = shipment.closesOrder ? 0 : rawBalance;
     const shortage = shipment.closesOrder ? rawBalance : 0;
-    const health = STATUS[order.sla] || STATUS.waiting;
+    /* Every job card closed: production is done and the order waits for the
+       lorry, which is not "waiting for a job card". */
+    const health = order.production_complete
+      ? { key: "on_track", label: "Made — awaiting dispatch" }
+      : (STATUS[order.sla] || STATUS.waiting);
     const bottleneck = worstStage(order);
     const completed=shipment.closesOrder||dispatched>=qty;
     const completedOn=completed?(shipment.closedDate||shipment.latestDate):null;

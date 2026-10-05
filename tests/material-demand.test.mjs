@@ -56,5 +56,31 @@ test("a card CANCELLED with its order is not work", () => {
   const units = productionUnits([order], [card(1, 960, { cancelled:true })]);
   assert.deepEqual(units.map(u => u.unit_kind), ["balance"]);
 });
+console.log("\nA closed job card leaves the schedule");
+test("a closed card books no machine and is not a plan row", () => {
+  const s = plan([card(1, 480, { status:"closed", received:480 }), card(2, 480)], []);
+  assert.deepEqual(s.units.map(u => u.card_no), ["JC2"]);
+  const booked = Object.values(s.daily_load.CUTTING || {}).reduce((a, b) => a + b, 0);
+  assert.equal(Math.round(booked), 480, "only the open card is cut");
+});
+test("its pairs still count on the order — nothing shrinks on the MIS", () => {
+  const o = plan([card(1, 480, { status:"closed", received:480 }), card(2, 480)], []).orders.find(x => x.order_no === "JO1");
+  assert.equal(o.qty, 960);
+  assert.equal(o.made_pairs, 480);
+});
+test("every card closed: the order is made, not 'waiting for a job card'", () => {
+  const o = plan([card(1, 960, { status:"closed", received:960 })], []).orders.find(x => x.order_no === "JO1");
+  assert.equal(o.production_complete, true);
+  assert.deepEqual(o.stages, []);
+  assert.equal(o.qty, 960);
+  assert.equal(o.batches[0].closed, true);
+});
+test("cards closed but a balance still unreleased: it is waiting, not done", () => {
+  const o = plan([card(1, 480, { status:"closed", received:480 })], []).orders.find(x => x.order_no === "JO1");
+  assert.equal(o.production_complete, undefined);
+  assert.equal(o.pending_pairs, 480);
+  assert.equal(o.qty + o.pending_pairs, 960);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exitCode = failed ? 1 : 0;

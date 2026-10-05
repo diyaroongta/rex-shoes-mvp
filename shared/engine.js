@@ -650,7 +650,11 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
      come back as `pending_release` for a list of orders still to be put on a
      card, and they still count in PROCUREMENT (below), because the material
      has to be bought long before a card is written. */
-  const scheduled=units.filter(u=>u.unit_kind!=="balance");
+  /* A CLOSED job card is finished — the factory's rule is that it leaves the
+     schedule (and procurement). It books no machine; its pairs are reported on
+     the order as `made_pairs` and stay inside `qty`, so no total shrinks. */
+  const scheduled=units.filter(u=>u.unit_kind!=="balance"&&!u.closed);
+  const closedUnits=units.filter(u=>u.unit_kind!=="balance"&&u.closed);
   const pending=units.filter(u=>u.unit_kind==="balance");
 
   const expanded=overridesForUnits(scheduled, overrides);
@@ -719,7 +723,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     });
     return {...u,lines};
   };
-  const demand=units.map(stillToMake);
+  const demand=units.filter(u=>!u.closed).map(stillToMake);
   const netted=netting(rollup(demand,articles),materials);
   /* Attributed in the order the plan actually runs, so re-sequencing the queue
      moves the shortfall onto whichever PI now waits for the stock. Batches are
@@ -802,6 +806,17 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     .sort((a,z)=>a.order_date<z.order_date?-1:a.order_date>z.order_date?1:
                  a.order_no<z.order_no?-1:1);
   const pendingByOrder=new Map(pendingRelease.map(r=>[r.order_no,r]));
+  const madeByOrder=new Map();
+  for(const u of closedUnits){
+    const no=u.source_order_no||u.order_no;
+    const m=madeByOrder.get(no)||{pairs:0,batches:[]};
+    const pairs=(u.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0);
+    m.pairs+=pairs;
+    m.batches.push({unit_key:u.unit_key,unit_kind:u.unit_kind,card_no:u.card_no||null,fabricator:u.fabricator||null,
+      job_id:u.job_id||null,qty:pairs,order_date:u.order_date,closed:true,
+      release_date:null,dispatch_date:null,dispatch_day:null,sla:null,overridden:false,override:normalizeOverride(null)});
+    madeByOrder.set(no,m);
+  }
   const viewsByOrder=new Map();
   for(const v of unitViews){
     const list=viewsByOrder.get(v.order_no)||[]; list.push(v); viewsByOrder.set(v.order_no,list);
@@ -818,15 +833,20 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       release_date:v.release_date,dispatch_date:v.dispatch_date,dispatch_day:v.dispatch_day,
       sla:v.sla,overridden:v.overridden,override:v.override}));
     const waiting=pendingByOrder.get(o.order_no)||null;
+    const made=madeByOrder.get(o.order_no)||{pairs:0,batches:[]};
     const waitingFields={
       pending_pairs: waiting?waiting.pairs:0,
       pending_lines: waiting?waiting.lines:[],
+      made_pairs: made.pairs,
     };
     /* A PI has been issued but production has not released a card. This is a
        valid Order Book row, not a schedule row: zero on cards, the complete
        order waiting, and no invented release/dispatch/SLA dates. */
     if(!views.length){
       const art=articles[o.article_code];
+      /* Every card closed and nothing left to release: production is DONE.
+         Not "waiting for a job card" — it is made and waiting for dispatch. */
+      const madeAll=made.pairs>0&&!waiting;
       return {
         order_no:o.order_no, party:o.party, article:o.article_code, article_code:o.article_code,
         ...(seenNoBom.has(o.article_code) ? { bom_missing:true } : {}),
@@ -836,14 +856,15 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
         sole_type:art.sole_type, pi:o.pi||{},
         stitching:o.stitching||((o.pi||{}).stitching)||"inhouse",
         printing:!!(o.printing||((o.pi||{}).printing)),
-        qty:0, priority:o.priority, order_date:o.order_date, lines:o.lines||[],
+        qty:made.pairs, priority:o.priority, order_date:o.order_date, lines:o.lines||[],
         unknown_combos:(o.lines||[]).filter(l=>!art.combos[l.combo]).map(l=>l.combo),
         release_date:null, release_delay_days:null,
-        dispatch_date:null, dispatch_day:null, lead_days:null, sla:null, stages:[],
-        batches:[], batch_count:0, ...waitingFields,
+        dispatch_date:null, dispatch_day:null, lead_days:null, sla:madeAll?"on_track":null, stages:[],
+        ...(madeAll?{production_complete:true}:{}),
+        batches:made.batches, batch_count:made.batches.length, ...waitingFields,
       };
     }
-    if(views.length===1 && views[0].unit_key===o.order_no)
+    if(views.length===1 && views[0].unit_key===o.order_no && !made.pairs)
       return {...views[0], lines:o.lines, batches, batch_count:1, ...waitingFields};
     const stageRows=new Map();
     for(const v of views) for(const st of v.stages){
@@ -859,12 +880,12 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       overridden:views.some(v=>v.overridden),
       plan_warnings:[...views.flatMap(v=>v.plan_warnings),
                      ...sched.warnings.filter(w=>w.order_no===o.order_no)],
-      qty:views.reduce((a,v)=>a+v.qty,0), lines:o.lines, order_date:o.order_date,
+      qty:views.reduce((a,v)=>a+v.qty,0)+made.pairs, lines:o.lines, order_date:o.order_date,
       release_date:fromDay(releaseDay,origin),
       release_delay_days:releaseDay-Math.max(0,dayIndex(o.order_date,origin)),
       dispatch_date:fromDay(dispatchDay,origin), dispatch_day:dispatchDay,
       lead_days:dispatchDay-releaseDay, sla:worst, stages,
-      batches, batch_count:views.length, ...waitingFields};
+      batches:[...batches,...made.batches], batch_count:views.length+made.batches.length, ...waitingFields};
   }).sort((a,b)=>{
     const ad=Number.isFinite(a.dispatch_day)?a.dispatch_day:Infinity;
     const bd=Number.isFinite(b.dispatch_day)?b.dispatch_day:Infinity;

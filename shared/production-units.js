@@ -78,6 +78,9 @@ function jobUnit(order, job){
     unit_key: `${order.order_no}#JC${job.id}`,
     unit_kind: "job",
     job_id: job.id,
+    /* A CLOSED card is finished work: it is not scheduled again and buys no
+       material, but its pairs still count as released (they were made). */
+    closed: String(job.status || "") === "closed",
     card_no: String((job.card && job.card.card_no) || job.id || "").trim(),
     fabricator: job.fabricator || "",
     job_stage: job.stage || "",

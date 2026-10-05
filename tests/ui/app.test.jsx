@@ -1155,6 +1155,19 @@ describe("the production plan can be overruled by hand",()=>{
     expect(screen.queryByText(/over capacity/)).not.toBeInTheDocument();
   });
 
+  /* Once its job card closes, an order is finished work: off the board. */
+  it("takes an order off the schedule once its job card is closed",async()=>{
+    mocks.listOrders.mockResolvedValue(twoOrders);
+    mocks.listJobWork.mockResolvedValue([
+      {...issuedJob(twoOrders[0],901),status:"closed",received:issuedJob(twoOrders[0],901).qty},
+      issuedJob(twoOrders[1],902)]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Schedule");
+    expect(await screen.findByRole("button",{name:"Adjust the plan for JOB"})).toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:"Adjust the plan for JOA"})).toBeNull();
+  });
+
   it("hands an order back to the automatic planner",async()=>{
     mocks.listOrders.mockResolvedValue([{...twoOrders[0],plan_override:{seq:1}},twoOrders[1]]);
     const user=userEvent.setup();

@@ -3608,7 +3608,8 @@ function ScheduleTab({state,setPlanOverride}){
   const [editing,setEditing]=React.useState(null);
   const PRI_STYLE = {1:{bg:"#fee2e2",fg:"#b91c1c"},2:{bg:"#f1f5f9",fg:"#475569"},3:{bg:"#f8fafc",fg:"#94a3b8"}};
   const overrides=Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]));
-  const rows=queueOrder(state.orders, overrides);
+  /* An order whose job cards are all CLOSED is finished and leaves the board. */
+  const rows=queueOrder(state.orders, overrides).filter(o=>!o.production_complete);
   /* A DATE WINDOW, NOT THE WHOLE HORIZON.
      The board drew every order across every day it spanned — on live data a
      100-day range squeezed into ~750px, which is 7px a day: the stage bars
