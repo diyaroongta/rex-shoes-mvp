@@ -8,7 +8,7 @@ import { compute, fromDay, dayIndex, queueOrder, STAGE_SEQUENCE, TRANSIT_STAGE, 
 import { sourceOrderOf } from "../shared/pi-split.js";
 import { owedForPi } from "../shared/job-orders.js";
 import { DEFAULT_PRICES, inr, matchArticle, singlePackQty, pairsPerCarton, readPrompt, articleTypes, articleTypeCombos, comboSizesForArticle, comboType } from "../shared/bridge.js";
-import { buildPhotoCards, sizesNotWritten, uncostedCartons } from "../shared/intake.js";
+import { buildPhotoCards, sizesNotWritten, uncostedCartons, remapLine, rekeySizes } from "../shared/intake.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import { floorToday } from "../shared/floor-today.js";
 import StockAtHand from "./StockAtHand.jsx";
@@ -1263,29 +1263,17 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
      Velcro line stays Velcro and a Lace line stays Lace instead of the shoe
      being flattened onto one half. */
   function remapForArticle(card,art){
-    const oldCombos=articleTypeCombos(card.article);
     const colours={
       sole_colour:colourForNewArticle(card.sole_colour,card.article,art,"sole_colour"),
       upper_colour:colourForNewArticle(card.upper_colour,card.article,art,"upper_colour"),
     };
-    const combos=articleTypeCombos(art);
-    const lines=(card.lines||[]).map((l,k)=>{
-      const foundPos=oldCombos.indexOf(l.combo);
-      const oldPos=foundPos>=0?foundPos:k;
-      const combo=combos[Math.min(oldPos,combos.length-1)]||combos[0];
-      const ppc=packQty(art,combo)??"";
-      const sizes=comboSizesForArticle(art,combo);          // the range decides the roll
-      const type=comboType(art,combo);
-      if(card.fromPi){
-        const qty=Number(l.qty)||Object.values(l.sizes||{}).reduce((a,b)=>a+(Number(b)||0),0);
-        const base=Math.floor(qty/Math.max(1,sizes.length)), rem=qty-base*sizes.length;
-        return {...l,combo,type,ppc,qty,sizes:Object.fromEntries(sizes.map((s,n)=>[s,base+(n<rem?1:0)])),size_order:sizes};
-      }
-      // Not a PI card: any exact sizes were keyed to the OLD article's size
-      // list. Keeping them against a new list silently strands pairs, so they
-      // are dropped and the line reverts to a carton count.
-      const keep=l.sizes && Object.keys(l.sizes).every(s=>sizes.includes(String(s)));
-      return {...l,combo,type,ppc,size_order:sizes,...(keep?{}:{sizes:undefined})};
+    /* BY THE SIZES WRITTEN, NEVER BY POSITION. Each line moves to the new
+       article's range that holds its sizes, keeping them; a line no range
+       holds is left unmatched for the clerk (shared/intake.js remapLine).
+       Mapping by list position put an unmatched "8X10" on "11X12". */
+    const lines=(card.lines||[]).map(l=>{
+      const moved=remapLine(l,art);
+      return moved.ppc===""&&moved.combo?{...moved,ppc:packQty(art,moved.combo)??""}:moved;
     });
     const present=[...new Set(lines.map(l=>l.type).filter(Boolean))];
     return {...card,...colours,article:art,vl:present.length===1?present[0]:"",types:present,matched:true,lines};
@@ -1845,8 +1833,15 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
                         article, both rolls — picking a Lace range simply makes
                         that line Lace. */}
                     <select value={l.combo || ""} onChange={e=>{const combo=e.target.value;
+                        const order=comboSizesForArticle(c.article,combo);
+                        /* KEEP THE WRITTEN SIZES. Clearing them turned "11 over 3"
+                           into 18 each of 11s, 12s and 13s on the invoice. They are
+                           re-spelled for the chosen range; a size it does not hold
+                           stays visible as not in the range rather than vanishing. */
+                        const kept=l.sizes?rekeySizes(l.sizes,order):null;
                         setLine(i,k,{combo,single:undefined,exact:true,type:comboType(c.article,combo),
-                          ppc:packQty(c.article,combo)??"",size_order:comboSizesForArticle(c.article,combo),sizes:undefined});}}
+                          ppc:packQty(c.article,combo)??"",size_order:order,
+                          sizes:kept&&Object.keys(kept.sizes).length&&!kept.stranded.length?kept.sizes:(kept?l.sizes:undefined)});}}
                       className="border rounded-lg px-1.5 py-1 mono bg-white" style={{fontSize:11, borderColor:l.exact?"#e2e8f0":"#f59e0b", background:l.exact?"#fff":"#fffbeb"}}>
                       {!l.combo && <option value="">— pick a combo —</option>}
                       {articleTypeCombos(c.article).map(cb=>{ const t=comboType(c.article,cb);

@@ -396,3 +396,69 @@ export function sizesNotWritten(raw, sizeOrder){
   if(!written.size) return [];                 // nothing written: nothing to compare against
   return (sizeOrder || []).filter(s => !written.has(bare(s)));
 }
+
+/* ---------------- MOVING A LINE TO A DIFFERENT ARTICLE OR RANGE ----------------
+   Two screen actions used to throw the slip away:
+     - Changing the card's PRODUCT mapped each line onto the new article's
+       range BY POSITION in the range list — so an unmatched "8X10" (line 7)
+       became the new article's 7th range, "11X12", and was invoiced as 11s/12s
+       at that range's MRP.
+     - Re-picking a line's RATE BASIS cleared its exact sizes, so "11 over 3"
+       (54 pairs of size 11) was printed as 18 each of 11s, 12s and 13s.
+   Both now follow the SIZES THE SLIP WROTE. A line keeps its sizes; it moves
+   only to a range that actually contains them; and where none does it is left
+   UNMATCHED for the clerk to pick, which prices to nothing and says so —
+   never a guess that prints. */
+
+/* The sizes a line was written with: its exact sizes, else the endpoints of
+   the range it was written as ("8X10"), spelled by the run it was read in. */
+export function writtenSizes(line){
+  const exact = line && line.sizes && typeof line.sizes === "object"
+    ? Object.keys(line.sizes).filter(k => Number(line.sizes[k]) > 0) : [];
+  if(exact.length) return { sizes: exact, exact: true };
+  const raw = String((line && line.raw) || "").trim();
+  const parts = raw ? raw.split(/[X×|]/i).map(s => s.trim()).filter(Boolean) : [];
+  const smallRun = ((line && line.size_order) || []).length > 0 && line.size_order.every(s => /s$/i.test(String(s)));
+  return { sizes: parts.map(p => smallRun && !/s$/i.test(p) ? `${p}s` : p), exact: false };
+}
+
+/* Re-key exact sizes onto a range's own spelling ("11" ↔ "11s"). Sizes the
+   range does not contain are returned as `stranded`, never dropped quietly. */
+export function rekeySizes(sizes, order){
+  const out = {}, stranded = [];
+  for(const [size, q] of Object.entries(sizes || {})){
+    const n = Number(q) || 0;
+    if(!n) continue;
+    const hit = (order || []).find(o => String(o) === String(size))
+      || (order || []).find(o => sizeSpellings(size).includes(String(o)));
+    if(hit) out[hit] = (out[hit] || 0) + n; else stranded.push(String(size));
+  }
+  return { sizes: out, stranded };
+}
+
+export function remapLine(line, article){
+  const combos = articleTypeCombos(article);
+  const { sizes: written, exact } = writtenSizes(line);
+  const place = combo => {
+    const order = comboSizesForArticle(article, combo);
+    const rekeyed = exact ? rekeySizes(line.sizes, order) : { sizes: undefined, stranded: [] };
+    return { ...line, combo, exact: true, single: undefined, type: comboType(article, combo) || line.type || "",
+      ppc: pairsPerCarton(article, combo) ?? "", size_order: order,
+      ...(exact ? { sizes: rekeyed.sizes } : {}) };
+  };
+  /* The same range exists on the new article (GOLA VELCRO → GOLA LACE): keep it
+     when it still holds every written size. */
+  if(line.combo && combos.includes(line.combo)){
+    const order = comboSizesForArticle(article, line.combo);
+    if(!exact || rekeySizes(line.sizes, order).stranded.length === 0) return place(line.combo);
+  }
+  if(written.length){
+    const hits = exact
+      ? combos.filter(c => rekeySizes(line.sizes, comboSizesForArticle(article, c)).stranded.length === 0)
+      : (() => { const m = exactCombo(article, "", written); return m.combo ? [m.combo] : (m.candidates || []); })();
+    if(hits.length === 1) return place(hits[0]);
+    return { ...line, combo: null, exact: false, type: line.type || "", ppc: "",
+      single: written.join("×"), candidates: hits, size_order: written };
+  }
+  return { ...line, combo: null, exact: false, ppc: "", single: line.single || "", size_order: [] };
+}

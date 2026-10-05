@@ -2,7 +2,7 @@
    came back as ONE card on GOLA VELCRO BLACK holding every row's sizes. */
 import assert from "node:assert/strict";
 import { setReference, matchArticle, matchAmbiguous, readPrompt } from "../shared/bridge.js";
-import { buildPhotoCards } from "../shared/intake.js";
+import { buildPhotoCards, remapLine, rekeySizes } from "../shared/intake.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){ try { fn(); passed++; console.log("  pass  " + name); } catch(e){ failed++; console.log("  FAIL  " + name + "\n        " + e.message); } }
@@ -52,5 +52,29 @@ test("the reader is told a headed row is a separate product and (L) after a name
   assert.match(p, /\(L\) = Lace/);
   assert.match(p, /WORKED EXAMPLE 4/);
 });
+console.log("\nMoving a line keeps what the slip wrote");
+test("changing the product never puts a line on a range by POSITION", () => {
+  /* "8X10" read as Small found no range; the card was changed to another Gola
+     and the line landed on that article's 7th range, 11X12. */
+  const line = { combo:null, exact:false, raw:"8X10", size_order:["8s","10s"], cartons:2, qty:0 };
+  const moved = remapLine(line, VB);
+  assert.notEqual(moved.combo, "11X12B");
+  assert.equal(moved.combo, null, "no Small 8-10 range on this article: left for the clerk");
+});
+test("a written range moves to the new article's range with the same endpoints", () => {
+  const moved = remapLine({ combo:null, raw:"8X10", size_order:["8","9","10"], cartons:2 }, LB);
+  assert.equal(moved.combo, "8X10B");
+  assert.equal(moved.exact, true);
+});
+test("a single size keeps its pairs on that size — no even split across the range", () => {
+  const moved = remapLine({ combo:"11X13", exact:true, raw:"11", sizes:{ "11s":54 }, size_order:["11s","12s","13s"], cartons:3, qty:54 }, LB);
+  assert.equal(moved.combo, "11X13");
+  assert.deepEqual(moved.sizes, { "11s":54 });
+});
+test("re-picking the rate basis re-spells the sizes and never drops them", () => {
+  assert.deepEqual(rekeySizes({ "11":54 }, ["11s","12s","13s"]), { sizes:{ "11s":54 }, stranded:[] });
+  assert.deepEqual(rekeySizes({ "8":20 }, ["11s","12s"]).stranded, ["8"]);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exitCode = failed ? 1 : 0;
