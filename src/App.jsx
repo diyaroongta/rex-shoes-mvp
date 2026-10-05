@@ -3976,7 +3976,6 @@ function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTim
     <SlaTargets targets={targets} setTargets={setTargets} />
     <LeadTimes leadTimes={leadTimes} setLeadTimes={setLeadTimes} />
     {setCalendar && <WorkCalendar calendar={calendar} setCalendar={setCalendar} />}
-    <MoldingAssignment />
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
       const cap=caps[code];
@@ -4089,54 +4088,8 @@ function WorkCalendar({calendar,setCalendar}){
   </div>;
 }
 
-/* Which PVC machine each article runs on. Unassigned articles fall back to
-   rotary, which makes rotary look busier than it is — so this is worth setting
-   before trusting any molding utilisation figure. */
-function MoldingAssignment(){
-  const pvc=Object.entries(INPUTS.articles).filter(([,a])=>a.sole_type==="PVC");
-  const [draft,setDraft]=useState({});
-  const [busy,setBusy]=useState(false);
-  const [msg,setMsg]=useState("");
-  if(!pvc.length) return null;
-  const unassigned=pvc.filter(([k,a])=>!(draft[k]??a.molding_machine)).length;
-
-  async function save(){
-    const patch={};
-    for(const [k,v] of Object.entries(draft)) patch[k]=v||null;
-    if(!Object.keys(patch).length) return;
-    setBusy(true);
-    try{ await api.patchReference({molding_machine:patch}); await reloadReference();
-         setMsg("Saved — the plan has been recalculated."); setDraft({}); }
-    catch(e){ setMsg(String(e.message||e)); }
-    finally{ setBusy(false); }
-  }
-
-  return <div className="mb-5 border border-slate-200 rounded-xl p-3.5">
-    <div className="text-sm font-semibold text-slate-700 mb-1">PVC molding — rotary or vertical</div>
-    <p className="text-xs text-slate-500 mb-3">
-      PVC articles run on one of two machines. Anything left unset falls back to <b>rotary</b>,
-      which inflates rotary&rsquo;s load and understates vertical&rsquo;s.
-      {unassigned>0 && <span className="text-amber-700"> {unassigned} of {pvc.length} still unset.</span>}
-    </p>
-    <div className="flex gap-2 flex-wrap">
-      {pvc.map(([k,a])=>{
-        const cur=draft[k]??a.molding_machine??"";
-        return <label key={k} className="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
-          <div className="font-semibold">{k}</div>
-          <select value={cur} onChange={e=>setDraft(d=>({...d,[k]:e.target.value}))}
-            className="block mt-1 text-sm border rounded-lg px-2 py-1 bg-white"
-            style={{borderColor:cur?"#e2e8f0":"#f59e0b"}}>
-            <option value="">Not set — defaults to rotary</option>
-            <option value="ROTARY">PVC rotary</option>
-            <option value="VERTICAL">PVC vertical</option>
-          </select></label>;})}
-    </div>
-    {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
-    <button disabled={busy||!Object.keys(draft).length} onClick={save}
-      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
-      {busy?"Saving…":"Save assignments"}</button>
-  </div>;
-}
+/* The PVC rotary/vertical choice is set per article on Catalogue (and by the
+   reference upload); the long grid that repeated it here was removed. */
 
 /* How On track / At risk / Delayed is decided — stated plainly and editable,
    because these targets are the factory's delivery promise, not a constant. */
