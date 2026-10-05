@@ -252,6 +252,45 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
     {dispatchError && <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
       Dispatch history could not be loaded. Order health is visible, but last-30-day dispatch KPIs are incomplete: {String(dispatchError).slice(0,160)}
     </div>}
+    {/* Order health leads the dashboard: the one table management reads first. */}
+    <section className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
+      <div className="flex items-start gap-3 flex-wrap mb-3">
+        <div><h2 className="serif text-lg font-semibold">Complete order health</h2><p className="text-xs text-slate-500 mt-1">One management row per order with delivery outlook and dispatch completion.</p></div>
+        <div className="ml-auto flex gap-2 flex-wrap items-center">
+          <input aria-label="Search executive orders" value={search} onChange={event=>setSearch(event.target.value)} placeholder="Order, PI, customer, article…" className="border border-slate-300 rounded-lg px-3 py-1.5 text-xs" style={{width:220}} />
+          <select aria-label="Customer" value={customer} onChange={e=>{setCustomer(e.target.value);setOpenOrder(null);}}
+            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white" style={{maxWidth:260}}>
+            <option value="">All customers ({customers.length})</option>
+            {customers.map(c=><option key={c.name} value={c.name}>
+              {c.name} · {fmt(c.pairs)} pr{c.late?` · ${c.late} late`:""}</option>)}
+          </select>
+          {customer && <button onClick={()=>{setCustomer("");setOpenOrder(null);}}
+            className="text-xs font-semibold text-indigo-700">Clear</button>}
+          {[["all","All",snapshot.total_orders],["waiting","Waiting",snapshot.status.waiting.count],["on_track","On time",snapshot.status.on_track.count],["at_risk","At risk",snapshot.status.at_risk.count],["breach","Delayed",snapshot.status.breach.count]].map(([key,label,count])=><button key={key} onClick={()=>setFilter(key)} aria-pressed={filter===key} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold" style={{background:filter===key?"#0F2233":"#fff",color:filter===key?"#fff":"#52606D",borderColor:filter===key?"#0F2233":"#D7DEE6"}}>{label} · {count}</button>)}
+        </div>
+      </div>
+      <table className="w-full text-xs" style={{minWidth:1000}}>
+        <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
+          <th className="text-left py-2">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th><th className="text-right">Pairs</th><th className="text-left">Health</th><th className="text-left">Order date</th><th className="text-left">Planned dispatch</th><th className="text-right">Production days</th><th className="text-left">Dispatch completion</th><th className="text-right">Pending / shortage</th>
+        </tr></thead>
+        <tbody>{visible.map(order=><React.Fragment key={order.order_no}>
+          <tr onClick={()=>setOpenOrder(openOrder===order.order_no?null:order.order_no)}
+            className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
+            style={{background:openOrder===order.order_no?"#F6F8FA":undefined}}>
+          <td className="py-2"><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi_no||"No PI"}</div></td>
+          <td>{order.party||"—"}</td><td>{order.article}</td><td className="mono text-right">{fmt(order.qty)}</td>
+          <td><StatusPill status={order.status}/>{order.bottleneck&&<div className="text-slate-400 mt-1">{order.bottleneck}</div>}</td>
+          <td className="mono">{niceDate(order.order_date)}</td><td className="mono">{niceDate(order.dispatch_date)}</td><td className="mono text-right">{fmt(order.lead_days,1)}</td>
+          <td><div className="flex justify-between gap-2 mb-1"><span className="mono">{fmt(order.dispatched)} / {fmt(order.qty)}</span><span className="mono text-slate-400">{pct(order.completion_pct)}</span></div><Progress value={order.completion_pct} color={order.completion_pct>=100?"#047857":"#0B6BCB"}/></td>
+          <td className="mono text-right"><div className={order.pending?"text-amber-700":"text-emerald-700"}>{fmt(order.pending)} pending</div>{order.shortage>0&&<div className="text-rose-700">{fmt(order.shortage)} short</div>}</td>
+        </tr>
+        {openOrder===order.order_no && <tr><td colSpan={10} className="px-3 pb-3" style={{background:"#F6F8FA"}}>
+          <OrderWhy detail={openDetail} order={order} fmt={fmt} niceDate={niceDate}/>
+        </td></tr>}
+        </React.Fragment>)}</tbody>
+      </table>
+      {!visible.length && <div className="text-sm text-slate-500 text-center py-8">No orders match this dashboard filter.</div>}
+    </section>
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
       <Kpi label="Total live orders" value={fmt(snapshot.total_orders)} detail={`${fmt(snapshot.total_pairs)} ordered pairs`} testId="kpi-total-orders" />
       <Kpi label="Waiting for job card" drill="waiting" onDrill={setDrill} open={drill==="waiting"} value={fmt(snapshot.status.waiting.count)} detail="PI issued, not released to production" tone={STATUS.waiting.color} pale={STATUS.waiting.pale} testId="kpi-waiting" />
@@ -375,44 +414,6 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
       </div>
     </section>
 
-    <section className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
-      <div className="flex items-start gap-3 flex-wrap mb-3">
-        <div><h2 className="serif text-lg font-semibold">Complete order health</h2><p className="text-xs text-slate-500 mt-1">One management row per order with delivery outlook and dispatch completion.</p></div>
-        <div className="ml-auto flex gap-2 flex-wrap items-center">
-          <input aria-label="Search executive orders" value={search} onChange={event=>setSearch(event.target.value)} placeholder="Order, PI, customer, article…" className="border border-slate-300 rounded-lg px-3 py-1.5 text-xs" style={{width:220}} />
-          <select aria-label="Customer" value={customer} onChange={e=>{setCustomer(e.target.value);setOpenOrder(null);}}
-            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white" style={{maxWidth:260}}>
-            <option value="">All customers ({customers.length})</option>
-            {customers.map(c=><option key={c.name} value={c.name}>
-              {c.name} · {fmt(c.pairs)} pr{c.late?` · ${c.late} late`:""}</option>)}
-          </select>
-          {customer && <button onClick={()=>{setCustomer("");setOpenOrder(null);}}
-            className="text-xs font-semibold text-indigo-700">Clear</button>}
-          {[["all","All",snapshot.total_orders],["waiting","Waiting",snapshot.status.waiting.count],["on_track","On time",snapshot.status.on_track.count],["at_risk","At risk",snapshot.status.at_risk.count],["breach","Delayed",snapshot.status.breach.count]].map(([key,label,count])=><button key={key} onClick={()=>setFilter(key)} aria-pressed={filter===key} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold" style={{background:filter===key?"#0F2233":"#fff",color:filter===key?"#fff":"#52606D",borderColor:filter===key?"#0F2233":"#D7DEE6"}}>{label} · {count}</button>)}
-        </div>
-      </div>
-      <table className="w-full text-xs" style={{minWidth:1000}}>
-        <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
-          <th className="text-left py-2">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th><th className="text-right">Pairs</th><th className="text-left">Health</th><th className="text-left">Order date</th><th className="text-left">Planned dispatch</th><th className="text-right">Production days</th><th className="text-left">Dispatch completion</th><th className="text-right">Pending / shortage</th>
-        </tr></thead>
-        <tbody>{visible.map(order=><React.Fragment key={order.order_no}>
-          <tr onClick={()=>setOpenOrder(openOrder===order.order_no?null:order.order_no)}
-            className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
-            style={{background:openOrder===order.order_no?"#F6F8FA":undefined}}>
-          <td className="py-2"><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi_no||"No PI"}</div></td>
-          <td>{order.party||"—"}</td><td>{order.article}</td><td className="mono text-right">{fmt(order.qty)}</td>
-          <td><StatusPill status={order.status}/>{order.bottleneck&&<div className="text-slate-400 mt-1">{order.bottleneck}</div>}</td>
-          <td className="mono">{niceDate(order.order_date)}</td><td className="mono">{niceDate(order.dispatch_date)}</td><td className="mono text-right">{fmt(order.lead_days,1)}</td>
-          <td><div className="flex justify-between gap-2 mb-1"><span className="mono">{fmt(order.dispatched)} / {fmt(order.qty)}</span><span className="mono text-slate-400">{pct(order.completion_pct)}</span></div><Progress value={order.completion_pct} color={order.completion_pct>=100?"#047857":"#0B6BCB"}/></td>
-          <td className="mono text-right"><div className={order.pending?"text-amber-700":"text-emerald-700"}>{fmt(order.pending)} pending</div>{order.shortage>0&&<div className="text-rose-700">{fmt(order.shortage)} short</div>}</td>
-        </tr>
-        {openOrder===order.order_no && <tr><td colSpan={10} className="px-3 pb-3" style={{background:"#F6F8FA"}}>
-          <OrderWhy detail={openDetail} order={order} fmt={fmt} niceDate={niceDate}/>
-        </td></tr>}
-        </React.Fragment>)}</tbody>
-      </table>
-      {!visible.length && <div className="text-sm text-slate-500 text-center py-8">No orders match this dashboard filter.</div>}
-    </section>
 
     <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-baseline gap-2 flex-wrap mb-1">

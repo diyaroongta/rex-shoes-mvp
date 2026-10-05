@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import MISDashboard from "../../src/MISDashboard.jsx";
@@ -107,9 +107,9 @@ describe("the dashboard answers by customer, and says why",()=>{
   it("opens an order and gives the reasons, worst first",async()=>{
     const user=userEvent.setup();
     render(<MISDashboard state={withReasons} dispatches={[]} today="2026-08-26"/>);
-    // Click the row in the full order table, not the attention summary.
-    const rows=screen.getAllByText("O-RISK");
-    await user.click(rows[rows.length-1]);
+    // Click the row in the full order table (now the first section), not the attention summary.
+    const table=screen.getByText("Complete order health").closest("section");
+    await user.click(within(table).getByText("O-RISK"));
 
     expect(screen.getByText(/Why it sits where it does/)).toBeInTheDocument();
     // The machine queue, named and costed — and by the machine's real name.
