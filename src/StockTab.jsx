@@ -46,8 +46,11 @@ function guessCategory(name){
    separate jobs — "what have we got" and "a delivery just came in" — and each
    now has a screen of its own. Correcting a figure is still possible, but it
    is a deliberate act on ONE row, from View stock. */
-export default function StockTab({ state, onChanged, jobs=null }){
-  const [mode,setMode]=useState("view");
+/* `mode` fixes the page — Add Stock, Check Stock and Add New Material are
+   separate menu pages now. Without it the old tab strip still works. */
+export default function StockTab({ state, onChanged, jobs=null, mode:fixedMode=null, onViewAll=null }){
+  const [ownMode,setMode]=useState("view");
+  const mode=fixedMode||ownMode;
   const [material,setMaterial]=useState({name:"",uom:"",colour:"",opening:"",min:"",rate:""});
   const [materialMsg,setMaterialMsg]=useState("");
   const [materialErr,setMaterialErr]=useState("");
@@ -56,16 +59,16 @@ export default function StockTab({ state, onChanged, jobs=null }){
   const refreshed=async()=>{ setVersion(v=>v+1); if(onChanged) await onChanged(); };
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-    <div role="tablist" aria-label="Stock" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4">
+    {!fixedMode && <div role="tablist" aria-label="Stock" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4">
       {[["add","Add Stock"],["view","View Stock"],["material","Add New Material"]].map(([k,label])=>
         <button key={k} role="tab" aria-selected={mode===k} onClick={()=>setMode(k)}
           className="text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors"
           style={mode===k
             ? {background:"#fff",color:"#1e293b",boxShadow:"0 1px 2px rgba(15,23,42,.12)"}
             : {background:"transparent",color:"#64748b"}}>{label}</button>)}
-    </div>
+    </div>}
     {mode==="view" ? <ViewStock version={version} onSaved={refreshed} />
-      : mode==="add" ? <AddStock version={version} onSaved={refreshed} onViewAll={()=>setMode("view")} />
+      : mode==="add" ? <AddStock version={version} onSaved={refreshed} onViewAll={onViewAll||(()=>setMode("view"))} />
       : <div>
           <div className="text-sm font-semibold text-slate-800 mb-1">Add New Material</div>
           <div className="text-xs text-slate-500 mb-3">Use this only when the material is not already in the BOM material master.</div>
@@ -100,6 +103,7 @@ export function stockRows(){
       key, sn:i+1, category: md.category ?? guessCategory(m.name),
       name: m.name, size: md.size ?? "", uom: m.uom, notes: m.notes,
       opening, rec, issue, stock, min, rate, value: stock * rate, counted,
+      supplier: md.supplier || "", supplier_rate: md.supplier_rate ?? null, dispatch_location: md.dispatch_location || "",
       low: min > 0 && stock < min,
       alert: min > 0 && stock < min,
       order_qty: min > 0 && stock < min ? min-stock : 0,
@@ -301,13 +305,14 @@ function StockDetail({ row, onSaved }){
   const [edit,setEdit]=useState(null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
-  const FIELDS=[["opening","Opening"],["rec","Received"],["issue","Issued"],["min","Minimum"],["rate","Rate ₹"]];
+  const FIELDS=[["opening","Opening"],["rec","Received"],["issue","Issued"],["min","Minimum"],["rate","Rate ₹"],["supplier_rate","Supplier rate ₹"]];
+  const TEXT=["category","size","supplier","dispatch_location"];
 
   async function save(){
     const clean={};
     for(const [f,v] of Object.entries(edit)){
       if(v===""||v==null) continue;
-      if(["category","size"].includes(f)){ if(String(v)!==String(row[f]||"")) clean[f]=String(v); continue; }
+      if(TEXT.includes(f)){ if(String(v)!==String(row[f]||"")) clean[f]=String(v); continue; }
       const n=Number(v);
       if(!Number.isFinite(n)||n<0){ setErr(`${f} must be 0 or more`); return; }
       if(n!==Number(row[f])) clean[f]=n;
@@ -335,8 +340,11 @@ function StockDetail({ row, onSaved }){
       <span className={cell} style={{borderColor:"#6366f1"}}><span className="text-[11px] text-slate-500 block">In stock</span>
         <b className="mono">{fmt(row.stock)} {row.uom}</b></span>
       <span className="text-xs text-slate-500 ml-2">Rate {row.rate?`₹${fmt(row.rate)} / ${row.uom}`:"not set"}</span>
+      <span className="text-xs text-slate-500 ml-2">Supplier <b className="text-slate-700">{row.supplier||"not set"}</b>
+        {row.supplier_rate!=null&&<> · ₹{fmt(row.supplier_rate)}/{row.uom}</>}{row.dispatch_location&&<> · from {row.dispatch_location}</>}</span>
       <button onClick={()=>setEdit({category:row.category||"",size:row.size||"",opening:row.opening,
-          rec:row.rec,issue:row.issue,min:row.min,rate:row.rate})}
+          rec:row.rec,issue:row.issue,min:row.min,rate:row.rate,supplier:row.supplier||"",
+          supplier_rate:row.supplier_rate??"",dispatch_location:row.dispatch_location||""})}
         className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Correct figures</button>
     </div>
     {row.notes&&Object.keys(row.notes).length>0&&<div className="text-[11px] text-slate-500 mt-2">
@@ -354,6 +362,12 @@ function StockDetail({ row, onSaved }){
       <label className="text-xs text-slate-600">Size
         <input value={edit.size} onChange={e=>setEdit(d=>({...d,size:e.target.value}))}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-24"/></label>
+      <label className="text-xs text-slate-600">Supplier
+        <input value={edit.supplier} aria-label={`Supplier for ${row.name}`} onChange={e=>setEdit(d=>({...d,supplier:e.target.value}))}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-40"/></label>
+      <label className="text-xs text-slate-600">Dispatch location
+        <input value={edit.dispatch_location} aria-label={`Dispatch location for ${row.name}`} onChange={e=>setEdit(d=>({...d,dispatch_location:e.target.value}))}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-36"/></label>
       {FIELDS.map(([f,label])=>
         <label key={f} className="text-xs text-slate-600">{label}
           <input type="number" min="0" value={edit[f]} aria-label={`${label} for ${row.name}`}
@@ -516,7 +530,7 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
   if(!name) problems.push("A material name is required");
   if(!uom) problems.push("A unit of measure is required — it is part of the material's identity");
   if(clash) problems.push(`${key} is already on the material list`);
-  for(const [f,label] of [["opening","Opening stock"],["min","Minimum"],["rate","Rate"]]){
+  for(const [f,label] of [["opening","Opening stock"],["min","Minimum"],["rate","Rate"],["supplier_rate","Supplier rate"]]){
     const v=draft[f];
     if(v!=="" && v!=null && (!Number.isFinite(Number(v)) || Number(v)<0)) problems.push(`${label} must be 0 or more`);
   }
@@ -527,7 +541,11 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
       await api.addMaterial({ name, uom, colour: colour||null,
         opening: draft.opening===""?0:Number(draft.opening),
         min: draft.min===""?0:Number(draft.min),
-        rate: draft.rate===""?0:Number(draft.rate) });
+        rate: draft.rate===""?0:Number(draft.rate),
+        /* WHO IT IS BOUGHT FROM — carried onto every purchase order for it. */
+        supplier: String(draft.supplier||"").trim()||null,
+        supplier_rate: draft.supplier_rate===""||draft.supplier_rate==null?null:Number(draft.supplier_rate),
+        dispatch_location: String(draft.dispatch_location||"").trim()||null });
       await reloadReference();
       await onSaved();
     }catch(e){ onError(e.message||String(e)); }
@@ -561,6 +579,20 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
         <input type="number" min="0" step="0.01" value={draft.rate} aria-label="Rate"
           onChange={e=>set("rate",e.target.value)}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-24 mono text-right"/></label>
+    </div>
+    <div className="text-xs font-semibold text-slate-700 mt-3 mb-1">Supplier</div>
+    <div className="flex gap-3 flex-wrap items-end">
+      <label className="text-xs text-slate-600">Supplier name
+        <input value={draft.supplier||""} aria-label="Supplier name" onChange={e=>set("supplier",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56"/></label>
+      <label className="text-xs text-slate-600">Supplier rate (₹ per unit)
+        <input type="number" min="0" step="0.01" value={draft.supplier_rate||""} aria-label="Supplier rate"
+          onChange={e=>set("supplier_rate",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-28 mono text-right"/></label>
+      <label className="text-xs text-slate-600">Dispatch location
+        <input value={draft.dispatch_location||""} aria-label="Dispatch location" onChange={e=>set("dispatch_location",e.target.value)}
+          placeholder="Where the supplier ships from"
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-48"/></label>
       <button onClick={save} disabled={saving||problems.length>0}
         className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-50">
         {saving?"Adding…":"Add material"}</button>

@@ -96,3 +96,19 @@ it("no longer carries finished goods — they are shoes, not raw material",()=>{
   expect(screen.queryByRole("tab",{name:"Finished Goods"})).toBeNull();
   expect(screen.queryByRole("tab",{name:"MTO Stock"})).toBeNull();
 });
+
+/* Add New Material is its own page now, and records who supplies it. */
+it("adds a new material with its supplier, supplier rate and dispatch location",async()=>{
+  const user=userEvent.setup();
+  apiMocks.addMaterial.mockResolvedValue({ok:true});
+  render(<StockTab mode="material"/>);
+  expect(screen.queryByRole("tab",{name:"Add Stock"})).toBeNull();            // a page, not a tab strip
+  await user.type(screen.getByLabelText("Material name"),"EVA SHEET");
+  await user.type(screen.getByLabelText("Unit of measure"),"PCS");
+  await user.type(screen.getByLabelText("Supplier name"),"Shree Polymers");
+  await user.type(screen.getByLabelText("Supplier rate"),"42.5");
+  await user.type(screen.getByLabelText("Dispatch location"),"Bahadurgarh");
+  await user.click(screen.getByRole("button",{name:"Add material"}));
+  expect(apiMocks.addMaterial).toHaveBeenCalledWith(expect.objectContaining({
+    name:"EVA SHEET",uom:"PCS",supplier:"Shree Polymers",supplier_rate:42.5,dispatch_location:"Bahadurgarh"}));
+});

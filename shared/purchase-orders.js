@@ -102,3 +102,52 @@ export function validatePurchaseReceipt(input={},order={}){
     return {ok:true,value:{po_no,received_on,note,lines}};
   }catch(error){ return {ok:false,error:error.message||String(error)}; }
 }
+
+/* PO TRACKING — the three questions the buyer asks every morning:
+     outstanding  POs still expecting goods (open or part received)
+     received     POs that came in full
+     pending      what is still to arrive, in units and in rupees, and how
+                  much of it is already past its expected date
+   Derived from the receipt log, like everything else here. */
+export function purchaseOrderSummary(orders = [], today = ""){
+  const live = (orders || []).map(purchaseOrderProgress);
+  const outstanding = live.filter(o => o.status === "open" || o.status === "partial");
+  const pendingValue = outstanding.reduce((sum, o) =>
+    sum + o.lines.reduce((s, l) => s + (Number(l.balance_qty) || 0) * (Number(l.rate) || 0), 0), 0);
+  const overdue = outstanding.filter(o => today && o.expected_on && String(o.expected_on).slice(0,10) < today);
+  return {
+    total: live.length,
+    outstanding: outstanding.length,
+    open: live.filter(o => o.status === "open").length,
+    partial: live.filter(o => o.status === "partial").length,
+    received: live.filter(o => o.status === "received").length,
+    cancelled: live.filter(o => o.status === "cancelled").length,
+    pending_lines: outstanding.reduce((n, o) => n + o.lines.filter(l => l.balance_qty > 1e-6).length, 0),
+    pending_value: Math.round(pendingValue * 100) / 100,
+    overdue: overdue.length,
+    overdue_po_nos: overdue.map(o => o.po_no),
+  };
+}
+
+/* THE PREFILLED PO TEMPLATE, filled from the stock register: one PO group per
+   SUPPLIER, the supplier's rate (else the register rate), and where the
+   supplier dispatches from. A material with no supplier recorded gets its own
+   group with the supplier left BLANK — the upload then refuses it until a
+   supplier is typed, rather than a PO going to nobody. */
+export function templateRows(materials = [], stockMeta = {}, date = ""){
+  const groups = new Map();
+  const rows = [];
+  for(const m of materials || []){
+    const meta = stockMeta[m.material_key] || {};
+    const supplier = String(meta.supplier || "").trim();
+    const key = supplier || "\u0000unassigned";
+    if(!groups.has(key)) groups.set(key, `PO-${groups.size + 1}`);
+    const rate = meta.supplier_rate != null && meta.supplier_rate !== "" ? Number(meta.supplier_rate)
+      : (m.rate != null ? Number(m.rate) : (meta.rate != null ? Number(meta.rate) : ""));
+    rows.push([groups.get(key), supplier, date, "",
+      meta.dispatch_location ? `Dispatch from: ${meta.dispatch_location}` : "",
+      m.material_key, m.name, m.uom, Number(m.shortfall) || "", rate === 0 ? "" : rate]);
+  }
+  /* Same supplier together, unassigned last, so each PO reads as one block. */
+  return rows.sort((a, z) => (a[1] === "") - (z[1] === "") || Number(a[0].slice(3)) - Number(z[0].slice(3)));
+}

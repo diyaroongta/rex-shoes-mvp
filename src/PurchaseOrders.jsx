@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import * as api from "./lib/client.js";
 import { todayIso } from "./lib/today.js";
-import { purchaseOrderProgress } from "../shared/purchase-orders.js";
+import { purchaseOrderProgress, purchaseOrderSummary, templateRows } from "../shared/purchase-orders.js";
+import { REF as INPUTS } from "./lib/refdata.js";
 import { parsePurchaseOrderRows, PURCHASE_ORDER_TEMPLATE_HEADERS } from "../shared/purchase-order-import.js";
 
 const fmt=(n,d=2)=>Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:d});
@@ -20,8 +21,9 @@ function Status({value}){
 export default function PurchaseOrders({materials=[],allMaterials=materials,canCreate=true,canReceive=true,onStockChanged}){
   const [orders,setOrders]=useState([]),[loading,setLoading]=useState(true),[error,setError]=useState("");
   const [screen,setScreen]=useState(canCreate?"upload":"register"),[chosen,setChosen]=useState(null);
-  const [supplier,setSupplier]=useState(""),[poDate,setPoDate]=useState(todayIso()),[expected,setExpected]=useState("");
-  const [additional,setAdditional]=useState(""),[selected,setSelected]=useState({}),[busy,setBusy]=useState(false);
+  const [busy,setBusy]=useState(false);
+  /* Tracking filter on the register: everything, outstanding, received. */
+  const [show,setShow]=useState("outstanding");
   const [receiving,setReceiving]=useState(null),[receiptDate,setReceiptDate]=useState(todayIso());
   const [receiptQty,setReceiptQty]=useState({}),[receiptNote,setReceiptNote]=useState("");
   const [uploadPreview,setUploadPreview]=useState(null),[uploadName,setUploadName]=useState("");
@@ -33,24 +35,10 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
   const live=useMemo(()=>orders.map(purchaseOrderProgress),[orders]);
   const detail=chosen?live.find(o=>o.po_no===chosen)||null:null;
 
-  function toggle(material,on){
-    setSelected(current=>{const next={...current};if(on)next[material.material_key]={...material,
-      ordered_qty:Number(material.shortfall)||0,rate:material.rate==null?"":material.rate};else delete next[material.material_key];return next;});
-  }
-  function lineField(key,field,value){setSelected(current=>({...current,[key]:{...current[key],[field]:value}}));}
-  async function create(){
-    const lines=Object.values(selected).map(m=>({material_key:m.material_key,name:m.name,uom:m.uom,
-      ordered_qty:Number(m.ordered_qty),...(String(m.rate??"").trim()===""?{}:{rate:Number(m.rate)})}));
-    setBusy(true);setError("");
-    try{
-      const made=await api.createPurchaseOrder({supplier,po_date:poDate,expected_on:expected||null,
-        additional_information:additional,lines});
-      await load();setChosen(made.po_no);setScreen("register");setSupplier("");setExpected("");setAdditional("");setSelected({});
-    }catch(e){setError(`Could not create purchase order: ${e.message||e}`);}finally{setBusy(false);}
-  }
   function downloadTemplate(){
-    const rows=materials.map(material=>["PO-1","",todayIso(),"","",material.material_key,material.name,
-      material.uom,Number(material.shortfall)||"",material.rate==null?"":Number(material.rate)]);
+    /* Filled from the stock register: one PO group per supplier, the
+       supplier's rate and dispatch location (shared/purchase-orders.js). */
+    const rows=templateRows(materials, INPUTS.stock_meta||{}, todayIso());
     const sheet=XLSX.utils.aoa_to_sheet([PURCHASE_ORDER_TEMPLATE_HEADERS,...rows]);
     sheet["!cols"]=[{wch:14},{wch:25},{wch:13},{wch:20},{wch:38},{wch:30},{wch:34},{wch:12},{wch:18},{wch:14}];
     sheet["!autofilter"]={ref:`A1:J${Math.max(1,rows.length+1)}`};
@@ -60,7 +48,7 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
       ["1. One row is one material. Do not rename the headings."],
       ["2. Rows with the same PO GROUP become one purchase order."],
       ["3. Use a new PO GROUP when the supplier or terms change (PO-2, PO-3, etc.)."],
-      ["4. Supplier and PO date are required. Expected delivery, rate and additional information are optional."],
+      ["4. Supplier and PO date are required. Supplier, rate and dispatch location are pre-filled from the stock register where it has them."],
       ["5. Enter dates as YYYY-MM-DD. Keep MATERIAL KEY unchanged."],
       ["6. You may enter supplier/dates/additional information once per group; Factory OS applies them to that group."],
       ["7. Upload the completed workbook, review every warning, then create the POs together."],
@@ -121,7 +109,6 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
       <div className="text-sm font-semibold text-slate-800 mr-2">Purchase orders</div>
       {canCreate&&<button onClick={()=>setScreen("upload")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="upload"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>Upload PO Excel</button>}
       <button onClick={()=>setScreen("register")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="register"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>PO register</button>
-      {canCreate&&<button onClick={()=>setScreen("create")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="create"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>Manual backup</button>}
       <span className="ml-auto text-xs text-slate-500">{live.filter(o=>["open","partial"].includes(o.status)).length} open</span>
     </div>
     {error&&<div role="alert" className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3" data-noprint>{error}</div>}
@@ -129,7 +116,7 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
 
     {screen==="upload"&&canCreate&&<div data-noprint className="rounded-xl border border-indigo-200 bg-white p-4">
       <div className="text-sm font-semibold text-slate-800">Create purchase orders from Excel</div>
-      <p className="text-xs text-slate-600 mt-1 mb-3">Download the buying list, fill supplier, dates, quantity and rate, then upload it here. One file can create several POs.</p>
+      <p className="text-xs text-slate-600 mt-1 mb-3">Download the buying list — supplier, supplier rate and dispatch location come straight from the stock register, one PO group per supplier. Check dates and quantities, then upload it here. Materials with no supplier on the register are left blank for you to fill.</p>
       <div className="flex gap-2 flex-wrap items-center">
         <button onClick={downloadTemplate} className="text-xs font-semibold rounded-lg px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50">Download prefilled PO template</button>
         <label className="text-xs font-semibold rounded-lg px-3 py-2 bg-indigo-600 text-white cursor-pointer">Upload completed Excel
@@ -146,39 +133,25 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
       </div>}
     </div>}
 
-    {screen==="create"&&canCreate&&<div data-noprint className="rounded-xl border border-indigo-200 bg-white p-4">
-      <div className="grid gap-3 md:grid-cols-4 mb-3">
-        <label className="text-xs text-slate-600 md:col-span-2">Supplier *
-          <input aria-label="Supplier" value={supplier} onChange={e=>setSupplier(e.target.value)} className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5"/></label>
-        <label className="text-xs text-slate-600">PO date *
-          <input aria-label="PO date" type="date" value={poDate} onChange={e=>setPoDate(e.target.value)} className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono"/></label>
-        <label className="text-xs text-slate-600">Expected delivery
-          <input aria-label="Expected delivery" type="date" value={expected} onChange={e=>setExpected(e.target.value)} className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5 mono"/></label>
-      </div>
-      <label className="text-xs text-slate-600 block mb-3">Additional information
-        <textarea aria-label="Additional information" value={additional} onChange={e=>setAdditional(e.target.value)} rows={2}
-          placeholder="Terms, delivery instructions, contact or any other PO note"
-          className="block mt-1 w-full text-sm border border-slate-300 rounded-lg px-2 py-1.5"/></label>
-      <div className="text-xs font-semibold text-slate-700 mb-1">Choose from the current buying list</div>
-      {!materials.length?<div className="text-xs text-slate-500 py-3">There is no current material shortfall to put on a PO.</div>:
-      <div className="overflow-x-auto"><table className="w-full text-xs" style={{minWidth:700}}>
-        <thead><tr className="text-slate-500"><th className="text-left py-1">Use</th><th className="text-left">Material</th><th className="text-right">Shortfall</th><th className="text-right">Order qty</th><th className="text-right">Rate</th><th className="text-left">UOM</th></tr></thead>
-        <tbody>{materials.map(m=>{const picked=selected[m.material_key];return <tr key={m.material_key} className="border-t border-slate-100">
-          <td className="py-1.5"><input aria-label={`Add ${m.name} to PO`} type="checkbox" checked={!!picked} onChange={e=>toggle(m,e.target.checked)}/></td>
-          <td>{m.name}</td><td className="text-right mono">{fmt(m.shortfall)}</td>
-          <td className="text-right">{picked?<input aria-label={`${m.name} ordered quantity`} type="number" min="0" step="any" value={picked.ordered_qty} onChange={e=>lineField(m.material_key,"ordered_qty",e.target.value)} className="w-24 text-right border border-slate-300 rounded px-1 py-0.5 mono"/>:"—"}</td>
-          <td className="text-right">{picked?<input aria-label={`${m.name} rate`} type="number" min="0" step="any" value={picked.rate} onChange={e=>lineField(m.material_key,"rate",e.target.value)} className="w-24 text-right border border-slate-300 rounded px-1 py-0.5 mono"/>:"—"}</td>
-          <td className="pl-2 mono text-slate-500">{m.uom}</td></tr>;})}</tbody>
-      </table></div>}
-      <button disabled={busy||!supplier.trim()||!Object.keys(selected).length} onClick={create}
-        className="mt-3 text-xs font-semibold rounded-lg px-3 py-1.5 bg-indigo-600 text-white disabled:opacity-40">{busy?"Creating…":"Generate purchase order"}</button>
-    </div>}
-
     {screen==="register"&&<div data-noprint>
+      {/* PO TRACKING — outstanding, received, and what is still to arrive. */}
+      {!loading&&!!live.length&&(()=>{ const t=purchaseOrderSummary(orders,todayIso());
+        const tile=(k,label,value,sub,tone)=><button key={k} onClick={()=>setShow(k)} aria-pressed={show===k}
+          className="text-left rounded-xl border px-3 py-2" style={{borderColor:show===k?"#4f46e5":"#e2e8f0",background:"#fff"}}>
+          <div className="text-[11px] text-slate-500">{label}</div>
+          <div className="mono text-lg font-semibold" style={{color:tone||"#1e293b"}}>{value}</div>
+          {sub&&<div className="text-[10px] text-slate-500">{sub}</div>}</button>;
+        return <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          {tile("outstanding","Outstanding POs",t.outstanding,`${t.open} open · ${t.partial} part received${t.overdue?` · ${t.overdue} overdue`:""}`,t.overdue?"#b91c1c":undefined)}
+          {tile("pending","Pending to arrive",`₹${fmt(t.pending_value,0)}`,`${t.pending_lines} material line${t.pending_lines===1?"":"s"}`)}
+          {tile("received","Received in full",t.received,null,"#047857")}
+          {tile("all","All POs",t.total,t.cancelled?`${t.cancelled} cancelled`:null)}
+        </div>; })()}
       {loading?<div className="text-sm text-slate-500 py-4">Loading purchase orders…</div>:!live.length?<div className="text-sm text-slate-500 py-4">No purchase orders yet.</div>:
       <div className="overflow-x-auto"><table className="w-full text-sm" style={{minWidth:850}}>
         <thead><tr className="text-xs uppercase tracking-wide text-slate-500"><th className="text-left py-2">PO</th><th className="text-left">Supplier</th><th className="text-left">Expected</th><th className="text-left">Materials</th><th className="text-right">Value</th><th className="text-left">Status</th><th></th></tr></thead>
-        <tbody>{live.map(order=><React.Fragment key={order.po_no}><tr className="border-t border-slate-200 bg-white">
+        <tbody>{live.filter(o=>show==="all"?true:show==="received"?o.status==="received"
+          :o.status==="open"||o.status==="partial").map(order=><React.Fragment key={order.po_no}><tr className="border-t border-slate-200 bg-white">
           <td className="py-2 mono font-semibold">{order.po_no}</td><td>{order.supplier}</td><td className="text-xs mono">{nice(order.expected_on)}</td>
           <td className="text-xs">{order.lines.length} · {order.lines.filter(l=>l.balance_qty<=1e-6).length} complete</td>
           <td className="text-right mono">{order.lines.some(l=>l.rate!=null)?`₹${fmt(order.value)}`:"—"}</td>

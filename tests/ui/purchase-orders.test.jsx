@@ -22,17 +22,24 @@ beforeEach(()=>{vi.clearAllMocks();mocks.list.mockResolvedValue([]);mocks.create
   mocks.receive.mockResolvedValue({...order,status:"partial"});mocks.cancel.mockResolvedValue({status:"cancelled"});});
 
 describe("purchase-order UI",()=>{
-  it("generates a PO from a shortfall and keeps Additional information",async()=>{
-    const user=userEvent.setup();render(<PurchaseOrders materials={[material]}/>);
-    await user.click(await screen.findByRole("button",{name:"Manual backup"}));
-    await user.type(screen.getByLabelText("Supplier"),"ABC Materials");
-    await user.type(screen.getByLabelText("Additional information"),"Deliver before noon");
-    await user.click(screen.getByLabelText("Add MESH to PO"));
-    await user.click(screen.getByRole("button",{name:"Generate purchase order"}));
-    await waitFor(()=>expect(mocks.create).toHaveBeenCalled());
-    expect(mocks.create.mock.calls[0][0]).toMatchObject({supplier:"ABC Materials",
-      additional_information:"Deliver before noon",
-      lines:[{material_key:"MESH||MTR",ordered_qty:100,rate:12}]});
+  /* The manual PO form duplicated the prefilled Excel route and was removed. */
+  it("has no Manual backup route — POs come from the prefilled template",async()=>{
+    render(<PurchaseOrders materials={[material]}/>);
+    expect(await screen.findByRole("button",{name:"Upload PO Excel"})).toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:"Manual backup"})).toBeNull();
+  });
+
+  it("tracks outstanding, pending and received POs",async()=>{
+    const done={...order,po_no:"PO-2026-000002",receipts:[{received_on:"2026-10-01",lines:[{material_key:"MESH||MTR",quantity:100}]}]};
+    mocks.list.mockResolvedValue([order,done]);const user=userEvent.setup();
+    render(<PurchaseOrders materials={[material]}/>);
+    await user.click(await screen.findByRole("button",{name:"PO register"}));
+    expect(await screen.findByText("Outstanding POs")).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:/Pending to arrive/})).toHaveTextContent("₹1,200");  // 100 MTR × ₹12 still to arrive
+    expect(screen.getByText("PO-2026-000001")).toBeInTheDocument();
+    expect(screen.queryByText("PO-2026-000002")).toBeNull();                 // received: not outstanding
+    await user.click(screen.getByRole("button",{name:/Received in full/}));
+    expect(screen.getByText("PO-2026-000002")).toBeInTheDocument();
   });
 
   it("checks an uploaded workbook and creates its PO groups together",async()=>{

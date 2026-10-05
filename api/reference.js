@@ -627,9 +627,12 @@ export default wrap(async (req, res) => {
         if(!Number.isFinite(n) || n < 0) throw new Error(`${label} must be 0 or more`);
         return n;
       };
-      let opening, min, rate;
-      try{ opening = num(m.opening,"Opening stock"); min = num(m.min,"Minimum"); rate = num(m.rate,"Rate"); }
+      let opening, min, rate, supplierRate;
+      try{ opening = num(m.opening,"Opening stock"); min = num(m.min,"Minimum"); rate = num(m.rate,"Rate");
+           supplierRate = num(m.supplier_rate,"Supplier rate"); }
       catch(e){ return fail(res, 400, e.message); }
+      const supplier = String(m.supplier || "").replace(/\s+/g," ").trim().slice(0,120);
+      const dispatchLocation = String(m.dispatch_location || "").replace(/\s+/g," ").trim().slice(0,120);
 
       /* Checked BEFORE the transaction so the answer is a sentence rather than
          a 500. The in-transaction check below stays as the real guard — two
@@ -654,7 +657,9 @@ export default wrap(async (req, res) => {
           ...(String(m.colour||"").trim() ? { colour: String(m.colour).trim().toUpperCase() } : {}) };
         ref.stock_meta = ref.stock_meta || {};
         ref.stock_meta[key] = { opening, rec:0, issue:0,
-          ...(min ? { min_stock:min } : {}), ...(rate ? { rate } : {}) };
+          ...(min ? { min_stock:min } : {}), ...(rate ? { rate } : {}),
+          ...(supplier ? { supplier } : {}), ...(supplierRate ? { supplier_rate:supplierRate } : {}),
+          ...(dispatchLocation ? { dispatch_location:dispatchLocation } : {}) };
         created = ref.materials[key];
       });
       }catch(e){
@@ -776,8 +781,8 @@ export default wrap(async (req, res) => {
         }
         for(const [f, v] of Object.entries(fields)){
           if(f === "rec_add") continue;
-          if(["category","size","supplier"].includes(f)){ cur[f] = String(v).slice(0,60); continue; }
-          if(!["opening","rec","issue","min_stock","min","rate"].includes(f))
+          if(["category","size","supplier","dispatch_location"].includes(f)){ cur[f] = String(v).slice(0,120); continue; }
+          if(!["opening","rec","issue","min_stock","min","rate","supplier_rate"].includes(f))
             reject(`unknown stock field: ${f}`);
           const n = Number(v);
           if(!isFinite(n) || n < 0) reject(`${f} for ${key} must be 0 or more`);

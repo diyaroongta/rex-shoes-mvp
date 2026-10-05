@@ -458,9 +458,14 @@ export default function App({ user=null, onSignOut=null }={}){
     ]],
     ...FLOW.map(({group, tabs}) => [group, tabs.map(([k,label]) =>
       k==="orders" ? [k,label,{n:lateCount, tone:"#BE123C"}] : [k,label])]),
+    /* Four pages, in the order the store works: goods come IN, the register
+       is CHECKED, what is short is BOUGHT, and a material nobody has stocked
+       before is CREATED. They were tabs inside one Stock screen. */
     ["Materials", [
+      ["stock_add","Add Stock"],
+      ["stock","Check Stock"],
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
-      ["stock","Stock"],
+      ["material_new","Add New Material"],
     ]],
     /* The factory's own sheets, downloadable: planning sheet, MTS/MTO stock,
        packing report, raw-material count, purchase orders, job cards. */
@@ -701,7 +706,9 @@ export default function App({ user=null, onSignOut=null }={}){
           focusId={gateFocus} />}
         {tab==="finished" && <FinishedGoodsTab state={state} jobs={jobs} moves={finishedMoves} actuals={productionActuals} dispatches={dispatches} onChanged={syncAll} readOnly={readOnly||role==="sales"} />}
         {tab==="formats" && <FormatsTab state={state} orders={orders||[]} jobs={jobs} moves={finishedMoves} actuals={productionActuals} calendar={calendar} dispatches={dispatches} />}
-        {tab==="stock" && <StockTab state={state} jobs={jobs} onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="stock_add" && <StockTab mode="add" state={state} onChanged={()=>setRefTick(t=>t+1)} onViewAll={()=>setTab("stock")} />}
+        {tab==="stock" && <StockTab mode="view" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="material_new" && <StockTab mode="material" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
         {tab==="catalogue" && <CatalogueTab
@@ -2307,8 +2314,12 @@ const VIEWS = {
   production_input:{title:"Daily plan vs achievement",sub:"Enter what was made against the day's plan; the balance re-plans from the next day"},
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
-  procurement: {title:"Procurement",        sub:"What to buy, netted against stock"},
-  stock:       {title:"Stock",              sub:"What is in the store, and deliveries coming in"},
+  procurement: {title:"Procurement",        sub:"What to buy, purchase orders, and what is still to arrive"},
+  stock_add:   {title:"Add Stock",          sub:"Goods received into the store"},
+  stock:       {title:"Check Stock",        sub:"What is in the store, counted against the register"},
+  material_new:{title:"Add New Material",   sub:"A material the store has not stocked before — with its supplier"},
+  finished:    {title:"Finished goods",     sub:"MTS and MTO stock — made shoes waiting to ship"},
+  formats:     {title:"Formats & sheets",   sub:"The factory's own sheets, filled from the system"},
   parties:     {title:"Parties & terms",    sub:"Customers and their agreed commercial terms"},
   fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},

@@ -40,7 +40,7 @@ const MATERIAL_KEYS = ["new_material"];
 const PLAN_KEYS = ["plan_override","priority"];
 
 const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","gatepass","finished","formats","schedule",
-                   "production_input","plan","machines","procurement","stock","parties","fabricators",
+                   "production_input","plan","machines","stock_add","stock","procurement","material_new","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
 export const ROLE_DEFS = {
@@ -94,19 +94,19 @@ export const ROLE_DEFS = {
   procurement: {
     label:"Procurement Officer",
     summary:"Works the buying list and records what has come in. Cannot change a BOM.",
-    tabs:["mis","procurement","stock","orders","schedule","formats"],
+    tabs:["mis","stock_add","stock","procurement","material_new","orders","schedule","formats"],
     writes:[], reference:"stock", purchase_orders:"all",
   },
   store: {
     label:"Store / Inventory Keeper",
     summary:"Stock in, stock out and physical counts. Nothing else.",
-    tabs:["stock","procurement","formats"],
+    tabs:["stock_add","stock","procurement","material_new","formats"],
     writes:[], reference:"stock", purchase_orders:"receive",
   },
   data: {
     label:"Catalogue & BOM Data Manager",
     summary:"Owns the article master: BOM workbooks, sizes, packing and MRP.",
-    tabs:["mis","catalogue","rules","data","fabricators","stock","procurement"],
+    tabs:["mis","catalogue","rules","data","fabricators","stock","procurement","material_new"],
     writes:["catalogue"], reference:"all",
   },
   auditor: {
