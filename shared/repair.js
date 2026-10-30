@@ -217,3 +217,25 @@ export function repairProductionPlan(entries = [], orders = [], today = ""){
     || a.order_no.localeCompare(b.order_no)
     || a.size.localeCompare(b.size, undefined, { numeric:true }));
 }
+
+/* REPAIR REJECTION RATIO — of the shoes sent for repair, how many were then
+   rejected. That is what the phrase says, and it is the figure the Repair
+   screen already records; the Upper Store alerts on it per article once the
+   factory sets a limit. Rejected over SENT, not over pairs produced (that is
+   `repairRate`, a different question). Null when nothing was sent. */
+export function repairRejection(entries = [], orders = []){
+  const articleOf = Object.fromEntries((orders || []).map(o => [clean(o.order_no), clean(o.article_code || o.article) || "—"]));
+  const by = new Map();
+  const overall = { sent:0, rejected:0, ratio:null };
+  for(const rec of Object.values(repairLedger(entries))){
+    const article = articleOf[rec.order_no] || "—";
+    const r = by.get(article) || { article, sent:0, rejected:0, ratio:null };
+    r.sent += rec.sent; r.rejected += rec.rejected;
+    by.set(article, r);
+    overall.sent += rec.sent; overall.rejected += rec.rejected;
+  }
+  const ratio = r => r.sent > 0 ? Math.round(r.rejected / r.sent * 1000) / 10 : null;
+  overall.ratio = ratio(overall);
+  return { overall, articles: [...by.values()].map(r => ({ ...r, ratio:ratio(r) }))
+    .sort((a, z) => (z.ratio ?? -1) - (a.ratio ?? -1) || a.article.localeCompare(z.article)) };
+}

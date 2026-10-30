@@ -446,7 +446,7 @@ async function jobCardDocs(req, res){
    LOCKS the log first: "no issue above available stock" is checked against the
    log, and two keepers issuing the last 40 uppers at once would otherwise both
    be told there were 40. */
-const UPPER_COLS = `id, kind, article, colour, size, qty, order_no, job_card_no, source_type, source,
+const UPPER_COLS = `id, kind, article, colour, size, qty, order_no, job_card_no, mts, rework, source_type, source,
   destination, damaged_at, rack, reason, status, moved_on, created_by, approved_by, approved_at, created_at`;
 const upperRow = r => ({ ...r, qty:Number(r.qty), moved_on: r.moved_on instanceof Date
   ? `${r.moved_on.getFullYear()}-${String(r.moved_on.getMonth()+1).padStart(2,"0")}-${String(r.moved_on.getDate()).padStart(2,"0")}`
@@ -484,11 +484,11 @@ async function upperStore(req, res){
       for(const m of rows){
         const { rows:ins } = await client.query(
           `insert into upper_store (kind, article, colour, size, qty, order_no, job_card_no, source_type, source,
-                                    destination, damaged_at, rack, reason, status, moved_on, created_by)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, coalesce($15::date, current_date), $16)
+                                    destination, damaged_at, rack, reason, status, moved_on, created_by, mts, rework)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, coalesce($15::date, current_date), $16, $17, $18)
            returning ${UPPER_COLS}`,
           [m.kind, m.article, m.colour, m.size, m.qty, m.order_no, m.job_card_no, m.source_type, m.source,
-           m.destination, m.damaged_at, m.rack, m.reason, m.status, m.moved_on, who]);
+           m.destination, m.damaged_at, m.rack, m.reason, m.status, m.moved_on, who, m.mts, m.rework]);
         saved.push(upperRow(ins[0]));
       }
       return { saved };

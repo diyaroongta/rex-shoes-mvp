@@ -1583,6 +1583,21 @@ describe("upper store",()=>{
     expect(client.query).toHaveBeenCalledWith("rollback");
   });
 
+  it("refuses a receipt with no order and no MTS, and stores the MTS flag when given",async()=>{
+    lockedClient([]);
+    const base={kind:"in",article:"SPIKE",size:"8",qty:5,source_type:"line",source:"New Durga Line",job_card_no:"JC1"};
+    const bad=response();
+    await dispatchHandler(req("POST",{moves:[base]}),bad);
+    expect(bad.statusCode).toBe(400);
+    expect(bad.body.error).toMatch(/order number, or mark it MTS/);
+    const client=lockedClient([]);
+    const ok=response();
+    await dispatchHandler(req("POST",{moves:[{...base,mts:true}]}),ok);
+    expect(ok.statusCode).toBe(201);
+    const ins=client.query.mock.calls.find(([s])=>String(s).includes("insert into upper_store"));
+    expect(ins[1].slice(-2)).toEqual([true,false]);
+  });
+
   it("files a count adjustment as PENDING",async()=>{
     lockedClient([IN]);
     const res=response();
@@ -1629,7 +1644,8 @@ describe("upper store",()=>{
     const res=response();
     await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body:{upper_store_rules:{moving_days:15}}},res);
     expect(res.statusCode).toBe(200);
-    expect(res.body.upper_store_rules).toEqual({moving_days:15,fabrication_due_days:null,rejection_alert_pct:null});
+    expect(res.body.upper_store_rules).toEqual({moving_days:15,fabrication_due_days:null,rejection_alert_pct:null,
+      repair_rejection_alert_pct:null});
     const bad=response();
     await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body:{upper_store_rules:{moving_days:0}}},bad);
     expect(bad.statusCode).toBe(400);

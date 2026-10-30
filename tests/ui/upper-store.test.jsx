@@ -4,7 +4,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const api=vi.hoisted(()=>({listUpperStore:vi.fn(),addUpperMoves:vi.fn(),decideUpperAdjust:vi.fn(),
-  setUpperTag:vi.fn(),deleteUpperMove:vi.fn(),getSettings:vi.fn(),listFabricators:vi.fn(),putSettings:vi.fn()}));
+  setUpperTag:vi.fn(),deleteUpperMove:vi.fn(),getSettings:vi.fn(),listFabricators:vi.fn(),putSettings:vi.fn(),
+  listRepairs:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>api);
 const ref=vi.hoisted(()=>({REF:{articles:{SPIKE:{combo_order:["7X9"],combos:{"7X9":{sizes:["7","8","9"],rates:{}}}}},materials:{}}}));
 vi.mock("../../src/lib/refdata.js",()=>({REF:ref.REF,reload:vi.fn(async()=>{})}));
@@ -19,6 +20,7 @@ beforeEach(()=>{
   api.listUpperStore.mockResolvedValue({moves:[IN],tags:[]});
   api.getSettings.mockResolvedValue({});
   api.listFabricators.mockResolvedValue([]);
+  api.listRepairs.mockResolvedValue([]);
   api.addUpperMoves.mockResolvedValue({saved:1,pending:1});
 });
 
@@ -79,4 +81,44 @@ it("the store in-charge approves",async()=>{
   await user.click(screen.getByRole("tab",{name:/Physical count/}));
   await user.click(screen.getByRole("button",{name:"Approve"}));
   expect(api.decideUpperAdjust).toHaveBeenCalledWith(2,"approve");
+});
+
+/* QC at receipt: the passed uppers go into stock, the failed ones into QC
+   hold with their defect — and the receipt needs an order or an explicit MTS. */
+it("records a receipt as passed and failed, against MTS",async()=>{
+  const user=userEvent.setup();
+  render(<UpperStoreTab role="store" orders={[]} jobs={[]} dispatches={[]} />);
+  await screen.findByText("SPIKE");
+  await user.click(screen.getByRole("tab",{name:"Stock in & QC"}));
+  await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
+  await user.type(screen.getByLabelText("Colour"),"BLUE");
+  await user.type(screen.getByLabelText("Source"),"New Durga Line");
+  await user.type(screen.getByLabelText("Passed size 8s"),"40");
+  await user.type(screen.getByLabelText("Failed size 8s"),"3");
+  await user.click(screen.getByRole("button",{name:/Record 40 passed, 3 failed/}));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/order number, or mark it MTS/);
+  expect(screen.getByRole("alert")).toHaveTextContent(/defect/);
+  await user.selectOptions(screen.getByLabelText("Order"),"__MTS__");
+  await user.type(screen.getByLabelText("Defect"),"open stitch");
+  await user.click(screen.getByRole("button",{name:/Record 40 passed, 3 failed/}));
+  await waitFor(()=>expect(api.addUpperMoves).toHaveBeenCalled());
+  const rows=api.addUpperMoves.mock.calls[0][0];
+  expect(rows).toEqual([
+    expect.objectContaining({kind:"in",size:"8s",qty:40,mts:true,order_no:null,source:"New Durga Line"}),
+    expect.objectContaining({kind:"qc_failed",size:"8s",qty:3,mts:true,reason:"open stitch"}),
+  ]);
+});
+
+it("sends held uppers back to their maker for rework",async()=>{
+  const user=userEvent.setup();
+  api.listUpperStore.mockResolvedValue({moves:[IN,{id:2,kind:"qc_failed",article:"SPIKE",colour:"BLUE",size:"8s",qty:5,
+    source:"New Durga Line",source_type:"line",reason:"open stitch",order_no:"JO1",status:"approved",moved_on:"2026-10-01"}],tags:[]});
+  render(<UpperStoreTab role="store" orders={[]} jobs={[]} dispatches={[]} />);
+  await screen.findByText("SPIKE");
+  await user.click(screen.getByRole("tab",{name:/QC & rework \(1\)/}));
+  expect(screen.getByText("open stitch")).toBeInTheDocument();
+  await user.type(screen.getByLabelText("Quantity for New Durga Line SPIKE size 8s"),"5");
+  await user.click(screen.getByRole("button",{name:"Send for rework"}));
+  await waitFor(()=>expect(api.addUpperMoves).toHaveBeenCalled());
+  expect(api.addUpperMoves.mock.calls[0][0][0]).toMatchObject({kind:"rework_out",qty:5,source:"New Durga Line"});
 });

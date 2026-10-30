@@ -457,7 +457,7 @@ alter table job_work add column if not exists cancelled boolean not null default
 -- sits PENDING until the store in-charge approves it.
 create table if not exists upper_store (
   id           bigserial primary key,
-  kind         text        not null check (kind in ('in','out','returned','damaged','adjust')),
+  kind         text        not null,
   article      text        not null,
   colour       text        not null default '',
   size         text        not null,
@@ -478,6 +478,16 @@ create table if not exists upper_store (
   created_at   timestamptz not null default now()
 );
 create index if not exists upper_store_key_idx on upper_store (article, colour, size);
+-- QC at receipt and rework. A failed upper is held (`qc_failed`), sent back to
+-- its maker (`rework_out`) and comes back passed (`rework_in`) or fails again
+-- (`qc_failed` with rework = true). Every first receipt carries an order
+-- number OR mts = true. The kind check is (re)set here rather than inline, so
+-- a database that already has the table picks up the new kinds.
+alter table upper_store add column if not exists mts    boolean not null default false;
+alter table upper_store add column if not exists rework boolean not null default false;
+alter table upper_store drop constraint if exists upper_store_kind_check;
+alter table upper_store add constraint upper_store_kind_check
+  check (kind in ('in','out','returned','damaged','adjust','qc_failed','rework_out','rework_in'));
 
 -- A manual moving / non-moving tag per article and colour, always with a
 -- reason. No row means the automatic rule (days since the last issue) decides.

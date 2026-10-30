@@ -7,13 +7,18 @@ import { families, labelFor } from "../shared/product-codes.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import { pairsPerCarton } from "../shared/bridge.js";
 import { upperStoreAccess } from "../shared/permissions.js";
+import { repairRejection } from "../shared/repair.js";
 import { validateUpperMoves, upperStock, upperLedger, onHandBySize, movingStatus, outsideFabrication,
-         upperShortage, rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts,
+         upperShortage, rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, qcQueue,
          UPPER_KINDS, SOURCE_TYPES, DESTINATIONS, DAMAGE_AT, HOLD_REASONS, AGE_BUCKETS } from "../shared/upper-store.js";
 
 const fmt = n => (n==null||isNaN(n)) ? "—" : Number(n).toLocaleString("en-IN");
 const input = "block mt-0.5 text-sm border border-slate-300 rounded-lg px-2 py-1 bg-white";
-const ALERT_LABEL = { non_moving:"Non-moving", low_stock:"Low stock", fabrication_overdue:"Fabrication overdue", rejection:"Rejection" };
+const ALERT_LABEL = { non_moving:"Non-moving", low_stock:"Low stock", fabrication_overdue:"Fabrication overdue",
+                      rejection:"QC rejection", repair_rejection:"Repair rejection" };
+/* The order picker's value for an MTS receipt. Never a real order number —
+   it becomes `mts:true` with no order, never an order called "MTS". */
+const MTS = "__MTS__";
 
 /* UPPER STORE — stitched uppers between the stitching line / outside
    fabrication and pasting / moulding. Every figure on this screen is derived
@@ -24,6 +29,7 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
   const [data,setData]=useState(null);
   const [rules,setRules]=useState(()=>normalizeUpperRules({}).rules);
   const [fabricators,setFabricators]=useState([]);
+  const [repairs,setRepairs]=useState([]);
   const [view,setView]=useState("stock");
   const [err,setErr]=useState("");
 
@@ -38,6 +44,9 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
     load();
     api.getSettings().then(s=>{ if(s&&s.upper_store_rules) setRules(normalizeUpperRules(s.upper_store_rules).rules); }).catch(()=>{});
     api.listFabricators().then(f=>setFabricators(Array.isArray(f)?f:[])).catch(()=>{});
+    /* The Repair screen is the record of shoes sent for repair; its figures
+       drive the repair rejection alert. */
+    api.listRepairs().then(r=>setRepairs(Array.isArray(r)?r:[])).catch(()=>{});
   },[active]);
 
   const moves = (data&&data.moves)||[];
@@ -54,11 +63,14 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
   const shortage = useMemo(()=>upperShortage(orders,moves,done),[orders,moves,done]);
   const fabrication = useMemo(()=>outsideFabrication(jobs,today,rules.fabrication_due_days),[jobs,today,rules.fabrication_due_days]);
   const ratios = useMemo(()=>rejectionRatios(moves),[moves]);
-  const alerts = useMemo(()=>upperAlerts({moving,shortage,fabrication,ratios,rules}),[moving,shortage,fabrication,ratios,rules]);
+  const repair = useMemo(()=>repairRejection(repairs,orders),[repairs,orders]);
+  const alerts = useMemo(()=>upperAlerts({moving,shortage,fabrication,ratios,repair,rules}),[moving,shortage,fabrication,ratios,repair,rules]);
   const pending = moves.filter(m=>m.kind==="adjust"&&m.status==="pending");
+  const qcWaiting = useMemo(()=>qcQueue(moves).length,[moves]);
 
   const tabs = [["stock","Live stock"],
-    ...(access?[["in","Stock in"],["out","Issue"],["back","Return / damage"]]:[]),
+    ...(access?[["in","Stock in & QC"],["out","Issue"],["back","Return / damage"]]:[]),
+    ["qc",`QC & rework${qcWaiting?` (${qcWaiting})`:""}`],
     ["count",`Physical count${pending.length?` (${pending.length})`:""}`],
     ["ledger","Ledger"],["reports","Reports"]];
 
@@ -76,9 +88,10 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
       {view==="in" && <MoveForm kind="in" moves={moves} orders={orders} fabricators={fabricators} onSaved={load} />}
       {view==="out" && <MoveForm kind="out" moves={moves} orders={orders} fabricators={fabricators} onSaved={load} />}
       {view==="back" && <MoveForm kind="back" moves={moves} orders={orders} fabricators={fabricators} onSaved={load} />}
+      {view==="qc" && <QcRework moves={moves} access={access} onSaved={load} />}
       {view==="count" && <PhysicalCount moves={moves} access={access} pending={pending} onSaved={load} />}
       {view==="ledger" && <Ledger moves={moves} access={access} onChanged={load} />}
-      {view==="reports" && <Reports moving={moving} shortage={shortage} fabrication={fabrication} ratios={ratios}
+      {view==="reports" && <Reports moving={moving} shortage={shortage} fabrication={fabrication} ratios={ratios} repair={repair}
         rules={rules} setRules={setRules} canEditRules={canEditRules} access={access} onTagged={load} />}
     </>}
   </div>;
@@ -92,11 +105,12 @@ function Alerts({ alerts, rules }){
           <ul className="text-xs text-amber-900 space-y-0.5">
             {alerts.map((a,i)=><li key={i}><b>{ALERT_LABEL[a.kind]}</b> · {a.text}</li>)}</ul></div>
       : <div className="text-xs text-slate-500">No alerts.</div>}
-    {(rules.fabrication_due_days==null || rules.rejection_alert_pct==null) &&
+    {(rules.fabrication_due_days==null || rules.rejection_alert_pct==null || rules.repair_rejection_alert_pct==null) &&
       <div className="text-[11px] text-slate-500 mt-1">
         {rules.fabrication_due_days==null && "Fabrication overdue is off until a turnaround is set. "}
-        {rules.rejection_alert_pct==null && "The rejection alert is off until a level is set. "}
-        Both are under Reports.</div>}
+        {rules.rejection_alert_pct==null && "The QC rejection alert is off until a limit is set. "}
+        {rules.repair_rejection_alert_pct==null && "The repair rejection alert is off until a limit is set. "}
+        Set them under Reports.</div>}
   </div>;
 }
 
@@ -113,7 +127,7 @@ function LiveStock({ stock, moving }){
     <div className="overflow-x-auto rounded-xl border border-slate-200">
       <table className="w-full text-sm" style={{minWidth:720}}><thead>
         <tr className="text-[11px] uppercase tracking-wide text-slate-500 bg-slate-50">
-          {["Article","Colour","In store","By size","Rack","Out at pasting / moulding","Status"].map(h=>
+          {["Article","Colour","In store","By size","Rack","Out at pasting / moulding","QC hold / at maker","Status"].map(h=>
             <th key={h} className={`px-3 py-2 ${h==="In store"?"text-right":"text-left"}`}>{h}</th>)}</tr></thead>
         <tbody>{stock.groups.map(g=>{
           const st = statusOf.get(`${g.article}||${g.colour}`);
@@ -129,6 +143,7 @@ function LiveStock({ stock, moving }){
             </td>
             <td className="px-3 py-2 text-xs">{g.racks.join(", ")||"—"}</td>
             <td className="px-3 py-2 text-xs mono">{fmt(g.at.PASTING)} / {fmt(g.at.MOULDING)}</td>
+            <td className="px-3 py-2 text-xs mono" title="Failed QC: not available stock">{fmt(g.qc_hold)} / {fmt(g.rework)}</td>
             <td className="px-3 py-2 text-xs">{st
               ? <span title={st.reason} className="font-semibold" style={{color:st.status==="moving"?"#047857":"#b45309"}}>
                   {st.status==="moving"?"Moving":"Non-moving"}{st.manual?" (set)":""}<div className="font-normal text-slate-500">{st.reason}</div></span>
@@ -159,6 +174,8 @@ function MoveForm({ kind, moves, orders, fabricators, onSaved }){
   const [colour,setColour]=useState("");
   const [date,setDate]=useState(todayIso());
   const [qty,setQty]=useState({});
+  const [failed,setFailed]=useState({});
+  const [defect,setDefect]=useState("");
   const [sourceType,setSourceType]=useState("line");
   const [source,setSource]=useState("");
   const [orderNo,setOrderNo]=useState("");
@@ -171,15 +188,18 @@ function MoveForm({ kind, moves, orders, fabricators, onSaved }){
   const [busy,setBusy]=useState(false),[err,setErr]=useState(""),[msg,setMsg]=useState("");
 
   const sizes = article ? articleSizes(article) : [];
-  const total = Object.values(qty).reduce((a,v)=>a+(Number(v)||0),0);
+  const sum = o => Object.values(o).reduce((a,v)=>a+(Number(v)||0),0);
+  const passedTotal = sum(qty), failedTotal = kind==="in" ? sum(failed) : 0;
+  const total = passedTotal + failedTotal;
   const held = useMemo(()=>onHandBySize(moves,article,colour),[moves,article,colour]);
   const orderList = orders.filter(o=>!article || (o.article_code||o.article)===article);
   const sourceList = fabricators.filter(f=>sourceType==="line"?f.type==="internal_line":f.type==="external");
   const movementKind = kind==="back" ? backKind : kind;
   const showHeld = movementKind==="out" || (movementKind==="damaged" && damagedAt==="STORE");
+  const mts = kind==="in" && orderNo===MTS;
 
   function pickArticle(a){
-    setArticle(a); setQty({});
+    setArticle(a); setQty({}); setFailed({});
     /* The article master's upper colour is a starting point, never a default
        invented here; an article with none starts blank. */
     setColour(String(((INPUTS.articles||{})[a]||{}).upper_colour||""));
@@ -187,26 +207,34 @@ function MoveForm({ kind, moves, orders, fabricators, onSaved }){
   async function submit(){
     setErr(""); setMsg("");
     if(!article){ setErr("Choose the article."); return; }
+    const base = { article, colour, moved_on:date, order_no:mts?null:(orderNo||null), mts,
+      job_card_no:jobCard||null, source_type:kind==="in"?sourceType:null, source:kind==="in"?source||null:null };
+    /* A receipt is inspected as it arrives: the PASSED uppers go into stock,
+       the FAILED ones into QC hold with their defect — two movements from one
+       count, so the maker's rejection ratio has both halves. */
     const rows = Object.entries(qty).filter(([,v])=>Number(v)).map(([size,v])=>({
-      kind:movementKind, article, colour, size, qty:Number(v), moved_on:date,
-      order_no:orderNo||null, job_card_no:jobCard||null,
-      source_type:kind==="in"?sourceType:null, source:(kind==="in"||movementKind==="damaged")?source||null:null,
+      ...base, kind:movementKind, size, qty:Number(v),
       rack:kind==="in"?rack:null, destination:movementKind==="out"||movementKind==="returned"?destination:null,
       damaged_at:movementKind==="damaged"?damagedAt:null, reason }));
+    if(kind==="in") for(const [size,v] of Object.entries(failed)) if(Number(v))
+      rows.push({ ...base, kind:"qc_failed", size, qty:Number(v), reason:defect });
     /* The same check the server makes, so "short" is said here, beside the
        quantities, rather than as a refusal after Save. */
     const { problems } = validateUpperMoves(rows, moves);
     if(problems.length){ setErr(problems.slice(0,6).join("; ")); return; }
     setBusy(true);
     try{
-      const r = await api.addUpperMoves(rows);
-      setMsg(`${fmt(total)} uppers recorded across ${r.saved} size${r.saved===1?"":"s"}.`); setQty({});
+      await api.addUpperMoves(rows);
+      setMsg(kind==="in"
+        ? `${fmt(passedTotal)} passed into stock${failedTotal?`, ${fmt(failedTotal)} held in QC for rework`:""}.`
+        : `${fmt(total)} uppers recorded.`);
+      setQty({}); setFailed({});
       await onSaved();
     }catch(e){ setErr(String(e.message||e)); }
     finally{ setBusy(false); }
   }
 
-  const heading = { in:"Uppers received from a stitching line or an outside fabricator",
+  const heading = { in:"Uppers received from a stitching line or an outside fabricator, checked at QC",
     out:"Uppers issued to pasting or moulding, against a production order",
     back:"Unused uppers back from the floor, or damaged / rejected uppers" }[kind];
   return <div>
@@ -234,36 +262,94 @@ function MoveForm({ kind, moves, orders, fabricators, onSaved }){
         <label className="text-xs text-slate-600">{movementKind==="out"?"Issue to":"Back from"}
           <select value={destination} onChange={e=>setDestination(e.target.value)} aria-label="Destination" className={input}>
             {Object.entries(DESTINATIONS).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></label>}
-      {movementKind==="damaged" && <>
+      {movementKind==="damaged" &&
         <label className="text-xs text-slate-600">Where
           <select value={damagedAt} onChange={e=>setDamagedAt(e.target.value)} aria-label="Damaged where" className={input}>
-            {Object.entries(DAMAGE_AT).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></label>
-        <label className="text-xs text-slate-600">Made by (optional)
-          <input list="upper-makers" value={source} onChange={e=>setSource(e.target.value)} aria-label="Made by" className={`${input} w-40`}/>
-          <datalist id="upper-makers">{fabricators.map(f=><option key={f.name} value={f.name}/>)}</datalist></label>
-      </>}
-      <label className="text-xs text-slate-600">Order {movementKind==="out"?"(required)":kind==="in"?"or job card":"(optional)"}
+            {Object.entries(DAMAGE_AT).filter(([k])=>k!=="QC").map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></label>}
+      <label className="text-xs text-slate-600">Order {movementKind==="out"||kind==="in"?"(required)":"(optional)"}
         <select value={orderNo} onChange={e=>setOrderNo(e.target.value)} aria-label="Order" className={`${input} max-w-[14rem]`}>
           <option value="">—</option>
+          {kind==="in" && <option value={MTS}>MTS — made for stock, no order</option>}
           {orderList.map(o=><option key={o.order_no} value={o.order_no}>{o.order_no} · {o.party}</option>)}</select></label>
-      {kind==="in" && <label className="text-xs text-slate-600">Job card
+      {kind==="in" && <label className="text-xs text-slate-600">Job card (optional)
         <input value={jobCard} onChange={e=>setJobCard(e.target.value)} aria-label="Job card" className={`${input} mono w-24`}/></label>}
       <label className="text-xs text-slate-600 flex-1 min-w-40">{movementKind==="damaged"?"Reason (required)":"Note"}
         <input value={reason} onChange={e=>setReason(e.target.value)} aria-label="Reason" className={`${input} w-full`}/></label>
     </div>
     {article && (sizes.length
-      ? <div className="flex gap-2 flex-wrap mb-3">{sizes.map(sz=><label key={sz} className="text-[11px] text-slate-500 text-center">{sz}
-          <input type="number" min="0" value={qty[sz]??""} aria-label={`Uppers of size ${sz}`}
+      ? <div className="flex gap-2 flex-wrap mb-3">{sizes.map(sz=><div key={sz} className="text-[11px] text-slate-500 text-center">{sz}
+          <input type="number" min="0" value={qty[sz]??""} aria-label={kind==="in"?`Passed size ${sz}`:`Uppers of size ${sz}`}
+            placeholder={kind==="in"?"pass":""}
             onChange={e=>setQty(q=>({...q,[sz]:e.target.value}))}
             className="block w-16 border rounded px-1 py-0.5 mono text-right text-sm"
             style={{borderColor:showHeld && Number(qty[sz])>(held[sz]||0)?"#e11d48":"#cbd5e1"}}/>
-          {showHeld && <span className="mono">{fmt(held[sz]||0)} held</span>}</label>)}</div>
+          {kind==="in" && <input type="number" min="0" value={failed[sz]??""} aria-label={`Failed size ${sz}`} placeholder="fail"
+            onChange={e=>setFailed(q=>({...q,[sz]:e.target.value}))}
+            className="block w-16 mt-1 border border-rose-200 rounded px-1 py-0.5 mono text-right text-sm"/>}
+          {showHeld && <span className="mono">{fmt(held[sz]||0)} held</span>}</div>)}</div>
       : <div className="text-xs text-amber-700 mb-3">This article has no size ranges on file.</div>)}
+    {kind==="in" && failedTotal>0 &&
+      <label className="block text-xs text-slate-600 mb-3">Defect found at QC (required)
+        <input value={defect} onChange={e=>setDefect(e.target.value)} aria-label="Defect"
+          className={`${input} w-full max-w-md`}/></label>}
     <button disabled={busy||!total} onClick={submit}
       className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
-      {busy?"Saving…":`Record ${fmt(total)} uppers`}</button>
+      {busy?"Saving…":kind==="in"&&failedTotal?`Record ${fmt(passedTotal)} passed, ${fmt(failedTotal)} failed`:`Record ${fmt(total)} uppers`}</button>
     {err && <div role="alert" className="mt-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}
     {msg && <div className="mt-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">{msg}</div>}
+  </div>;
+}
+
+/* QC & REWORK — every failed upper still unresolved, by maker. Each one is
+   either still here in QC hold, or out with its maker for rework. From hold it
+   is sent back or scrapped; from the maker it comes back passed, or fails
+   again and returns to hold. */
+function QcRework({ moves, access, onSaved }){
+  const rows = useMemo(()=>qcQueue(moves),[moves]);
+  const [qty,setQty]=useState({}), [note,setNote]=useState({});
+  const [err,setErr]=useState(""), [msg,setMsg]=useState(""), [busy,setBusy]=useState(false);
+  const keyOf = r => `${r.source}|${r.article}|${r.colour}|${r.size}`;
+  async function act(r, kind, extra = {}){
+    setErr(""); setMsg("");
+    const k = keyOf(r), n = Number(qty[k]);
+    const row = { kind, article:r.article, colour:r.colour, size:r.size, qty:n, source:r.source,
+                  source_type:r.source_type, moved_on:todayIso(), reason:note[k]||"", ...extra };
+    const { problems } = validateUpperMoves([row], moves);
+    if(problems.length){ setErr(problems.join("; ")); return; }
+    setBusy(true);
+    try{ await api.addUpperMoves([row]); setQty(q=>({...q,[k]:""})); setNote(q=>({...q,[k]:""}));
+         setMsg("Recorded."); await onSaved(); }
+    catch(e){ setErr(String(e.message||e)); }
+    finally{ setBusy(false); }
+  }
+  if(!rows.length) return <div className="text-sm text-slate-500 text-center py-8">No upper is waiting on QC or rework.</div>;
+  const btn = "underline font-semibold mr-2 disabled:opacity-40";
+  return <div className="overflow-x-auto">
+    <p className="text-xs text-slate-500 mb-3">Failed uppers are never available stock. Send them back to the maker for rework,
+      receive them back when they pass, or scrap them with a reason. A reworked upper that fails again comes back into QC hold.</p>
+    {err && <div role="alert" className="mb-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}
+    {msg && <div className="mb-2 text-xs text-emerald-800">{msg}</div>}
+    <table className="w-full text-xs" style={{minWidth:900}}><thead><tr className="sign text-slate-500">
+      {["Maker","Article","Colour","Size","In QC hold","With maker","Defects",...(access?["Qty","Note / defect",""]:[])].map(h=>
+        <th key={h} className={`py-2 px-2 ${["In QC hold","With maker"].includes(h)?"text-right":"text-left"}`}>{h}</th>)}</tr></thead>
+      <tbody>{rows.map(r=>{ const k=keyOf(r); return <tr key={k} className="border-t border-slate-100 align-top">
+        <td className="px-2 py-1 font-medium">{r.source}</td><td className="px-2">{r.article}</td><td className="px-2">{r.colour||"—"}</td>
+        <td className="px-2 mono">{r.size}</td>
+        <td className="px-2 mono text-right font-semibold text-amber-700">{fmt(r.hold)}</td>
+        <td className="px-2 mono text-right font-semibold text-indigo-700">{fmt(r.rework)}</td>
+        <td className="px-2 text-slate-600">{r.defects.join("; ")}</td>
+        {access && <>
+          <td className="px-2"><input type="number" min="0" value={qty[k]??""} aria-label={`Quantity for ${r.source} ${r.article} size ${r.size}`}
+            onChange={e=>setQty(q=>({...q,[k]:e.target.value}))} className="w-16 border border-slate-300 rounded px-1 py-0.5 mono text-right"/></td>
+          <td className="px-2"><input value={note[k]??""} aria-label={`Note for ${r.source} ${r.article} size ${r.size}`}
+            onChange={e=>setNote(q=>({...q,[k]:e.target.value}))} className="w-32 border border-slate-300 rounded px-1 py-0.5"/></td>
+          <td className="px-2 whitespace-nowrap">
+            {r.hold>0 && <><button disabled={busy} onClick={()=>act(r,"rework_out")} className={`${btn} text-indigo-700`}>Send for rework</button>
+              <button disabled={busy} onClick={()=>act(r,"damaged",{damaged_at:"QC"})} className={`${btn} text-rose-700`}>Scrap</button></>}
+            {r.rework>0 && <><button disabled={busy} onClick={()=>act(r,"rework_in")} className={`${btn} text-emerald-700`}>Back — passed</button>
+              <button disabled={busy} onClick={()=>act(r,"qc_failed",{rework:true})} className={`${btn} text-amber-700`}>Back — failed again</button></>}
+          </td></>}
+      </tr>;})}</tbody></table>
   </div>;
 }
 
@@ -352,6 +438,7 @@ function Ledger({ moves, access, onChanged }){
     catch(e){ setErr(String(e.message||e)); }
   }
   const detail = m => m.kind==="in" ? `${SOURCE_TYPES[m.source_type]||""}: ${m.source||""}${m.rack?` · rack ${m.rack}`:""}`
+    : ["qc_failed","rework_out","rework_in"].includes(m.kind) ? `${m.source||""}${m.rework?" · after rework":""}`
     : m.kind==="damaged" ? `${DAMAGE_AT[m.damaged_at]||""}${m.source?` · made by ${m.source}`:""}`
     : DESTINATIONS[m.destination]||"";
   if(!moves.length) return <div className="text-sm text-slate-500 text-center py-8">No movements recorded yet.</div>;
@@ -367,16 +454,16 @@ function Ledger({ moves, access, onChanged }){
         <td className="px-2">{(UPPER_KINDS[m.kind]||{}).label||m.kind}{m.status!=="approved"&&<span className="text-indigo-700"> ({m.status})</span>}</td>
         <td className="px-2">{m.article}</td><td className="px-2">{m.colour||"—"}</td><td className="px-2 mono">{m.size}</td>
         <td className="px-2 mono text-right text-emerald-700">{m.effect>0?fmt(m.effect):""}</td>
-        <td className="px-2 mono text-right text-rose-700">{m.effect<0?fmt(-m.effect):m.effect===0&&m.kind==="damaged"?`(${fmt(m.qty)})`:""}</td>
+        <td className="px-2 mono text-right text-rose-700">{m.effect<0?fmt(-m.effect):m.effect===0&&m.status==="approved"&&m.kind!=="adjust"?`(${fmt(m.qty)})`:""}</td>
         <td className="px-2 mono text-right font-semibold">{fmt(m.balance)}</td>
-        <td className="px-2 mono">{[m.order_no,m.job_card_no].filter(Boolean).join(" · ")}</td>
+        <td className="px-2 mono">{[m.mts?"MTS":m.order_no,m.job_card_no].filter(Boolean).join(" · ")}</td>
         <td className="px-2 text-slate-600">{detail(m)}</td><td className="px-2 text-slate-500">{m.reason||""}</td>
         <td className="px-2 text-right">{access && <button onClick={()=>remove(m)} className="text-rose-700 underline">delete</button>}</td>
       </tr>)}</tbody></table>
   </div>;
 }
 
-function Reports({ moving, shortage, fabrication, ratios, rules, setRules, canEditRules, access, onTagged }){
+function Reports({ moving, shortage, fabrication, ratios, repair, rules, setRules, canEditRules, access, onTagged }){
   const [err,setErr]=useState("");
   const [tagging,setTagging]=useState(null);
   async function saveTag(t){
@@ -442,13 +529,30 @@ function Reports({ moving, shortage, fabrication, ratios, rules, setRules, canEd
     </section>
 
     <section>
-      <div className="text-sm font-semibold text-slate-700">Rejection by maker</div>
-      <div className="text-xs text-slate-500 mt-1 mb-2">Damaged / rejected uppers recorded with who made them, against what was received from them.</div>
-      {!ratios.length ? <div className="text-xs text-slate-500">No receipts or rejections with a maker yet.</div>
-        : <table className="w-full text-xs" style={{minWidth:480}}><thead><tr className="sign text-slate-500">
-            <th className={th}>Line / vendor</th><th className={thr}>Received</th><th className={thr}>Rejected</th><th className={thr}>Ratio</th></tr></thead>
+      <div className="text-sm font-semibold text-slate-700">QC by maker</div>
+      <div className="text-xs text-slate-500 mt-1 mb-2">Failed at first inspection against everything that line or vendor sent in.
+        Reworked uppers that fail again are shown beside it, not counted twice.</div>
+      {!ratios.length ? <div className="text-xs text-slate-500">Nothing has been inspected yet.</div>
+        : <table className="w-full text-xs" style={{minWidth:720}}><thead><tr className="sign text-slate-500">
+            {["Line / vendor","Inspected","Passed","Failed","Rejection","Sent for rework","Back passed","Failed again","Scrapped"].map((h,i)=>
+              <th key={h} className={i?thr:th}>{h}</th>)}</tr></thead>
           <tbody>{ratios.map(r=><tr key={r.source} className="border-t border-slate-100">
-            <td className="px-2 py-1">{r.source}</td><td className="px-2 mono text-right">{fmt(r.received)}</td>
+            <td className="px-2 py-1">{r.source}</td>
+            {[r.inspected,r.passed,r.failed].map((v,i)=><td key={i} className="px-2 mono text-right">{fmt(v)}</td>)}
+            <td className="px-2 mono text-right font-semibold">{r.ratio==null?"—":`${r.ratio}%`}</td>
+            {[r.sent_for_rework,r.reworked_back,r.failed_again,r.scrapped].map((v,i)=><td key={i} className="px-2 mono text-right">{fmt(v)}</td>)}
+          </tr>)}</tbody></table>}
+    </section>
+
+    <section>
+      <div className="text-sm font-semibold text-slate-700">Repair rejection</div>
+      <div className="text-xs text-slate-500 mt-1 mb-2">From the Repair screen: of the shoes sent for repair, how many were then rejected.
+        {repair.overall.ratio!=null && <> Overall <b>{repair.overall.ratio}%</b> ({fmt(repair.overall.rejected)} of {fmt(repair.overall.sent)}).</>}</div>
+      {!repair.articles.length ? <div className="text-xs text-slate-500">Nothing has been sent for repair.</div>
+        : <table className="w-full text-xs" style={{minWidth:420}}><thead><tr className="sign text-slate-500">
+            <th className={th}>Article</th><th className={thr}>Sent for repair</th><th className={thr}>Rejected</th><th className={thr}>Ratio</th></tr></thead>
+          <tbody>{repair.articles.map(r=><tr key={r.article} className="border-t border-slate-100">
+            <td className="px-2 py-1">{r.article}</td><td className="px-2 mono text-right">{fmt(r.sent)}</td>
             <td className="px-2 mono text-right">{fmt(r.rejected)}</td>
             <td className="px-2 mono text-right font-semibold">{r.ratio==null?"—":`${r.ratio}%`}</td></tr>)}</tbody></table>}
     </section>
@@ -477,9 +581,11 @@ function TagEditor({ row, onSave, onCancel }){
    their own 7; the other two are blank — and their alerts silent — until
    somebody says what they are. */
 function RulesEditor({ rules, setRules, canEdit }){
-  const [draft,setDraft]=useState({ moving_days:rules.moving_days, fabrication_due_days:rules.fabrication_due_days??"", rejection_alert_pct:rules.rejection_alert_pct??"" });
+  const [draft,setDraft]=useState({ moving_days:rules.moving_days, fabrication_due_days:rules.fabrication_due_days??"", rejection_alert_pct:rules.rejection_alert_pct??"",
+    repair_rejection_alert_pct:rules.repair_rejection_alert_pct??"" });
   const [err,setErr]=useState(""),[msg,setMsg]=useState("");
-  useEffect(()=>{ setDraft({ moving_days:rules.moving_days, fabrication_due_days:rules.fabrication_due_days??"", rejection_alert_pct:rules.rejection_alert_pct??"" }); },[rules]);
+  useEffect(()=>{ setDraft({ moving_days:rules.moving_days, fabrication_due_days:rules.fabrication_due_days??"", rejection_alert_pct:rules.rejection_alert_pct??"",
+    repair_rejection_alert_pct:rules.repair_rejection_alert_pct??"" }); },[rules]);
   async function save(){
     setErr(""); setMsg("");
     const { rules:next, problems } = normalizeUpperRules(draft);
@@ -497,7 +603,8 @@ function RulesEditor({ rules, setRules, canEdit }){
     <div className="flex gap-3 flex-wrap items-end">
       {field("moving_days","Moving if issued within","days")}
       {field("fabrication_due_days","Fabrication overdue after","days")}
-      {field("rejection_alert_pct","Alert when rejection reaches","%")}
+      {field("rejection_alert_pct","QC rejection alert at","%")}
+      {field("repair_rejection_alert_pct","Repair rejection alert at","%")}
       {canEdit && <button onClick={save} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white">Save rules</button>}
     </div>
     {err && <div role="alert" className="mt-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}

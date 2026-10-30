@@ -1,7 +1,7 @@
 /* Repair, between production and dispatch. Run: npm test */
 import assert from "node:assert/strict";
 import { validateMovement, repairLedger, heldByRepair, heldByCombo, repairTotals, repairRate,
-         repairProductionPlan, MOVEMENTS }
+         repairProductionPlan, repairRejection, MOVEMENTS }
   from "../shared/repair.js";
 
 let passed = 0, failed = 0;
@@ -219,6 +219,17 @@ test("overdue and today's dispatch repairs come first", () => {
   assert.deepEqual(rows.map(r=>[r.order_no,r.status]), [
     ["LATE","Dispatch overdue"], ["TODAY","Dispatch today"], ["LATER","Before dispatch"],
   ]);
+});
+
+console.log("\nR — repair rejection ratio, for the Upper Store alert");
+
+test("rejected over SENT for repair, per article, null when nothing was sent", () => {
+  const orders = [{ order_no:"JO1", article_code:"SPIKE" }, { order_no:"JO2", article_code:"SPIKE" }, { order_no:"JO3", article_code:"GOLA" }];
+  const r = repairRejection([ev("JO1","8","sent",20), ev("JO1","8","rejected",2), ev("JO2","9","sent",30),
+                             ev("JO2","9","returned",27), ev("JO2","9","rejected",3)], orders);
+  assert.deepEqual(r.articles, [{ article:"SPIKE", sent:50, rejected:5, ratio:10 }]);
+  assert.deepEqual(r.overall, { sent:50, rejected:5, ratio:10 });
+  assert.equal(repairRejection([], orders).overall.ratio, null);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

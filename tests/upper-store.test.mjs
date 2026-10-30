@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { validateUpperMoves, upperStock, upperPositions, upperLedger, onHandBySize, effectOf,
          checkApproval, checkDelete, movingStatus, validateTag, outsideFabrication, upperShortage,
-         rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, ageBucket, daysBetween,
+         rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, ageBucket, daysBetween, qcQueue,
          DEFAULT_MOVING_DAYS } from "../shared/upper-store.js";
 
 let passed = 0, failed = 0;
@@ -18,16 +18,30 @@ const OUT = (size, qty, extra = {}) => ({ id:++id, kind:"out", article:"SPIKE", 
 
 console.log("\nA — every receipt says where it came from");
 
-test("a receipt needs its source type, its source and an order or job card reference", () => {
+test("a receipt needs its source type, its source and an order reference", () => {
   const { problems } = validateUpperMoves([{ kind:"in", article:"SPIKE", size:"8", qty:10 }]);
   assert.ok(problems.some(p => /stitching line or outside fabrication/.test(p)));
   assert.ok(problems.some(p => /name the line or the vendor/.test(p)));
-  assert.ok(problems.some(p => /order or job card reference/.test(p)));
+  assert.ok(problems.some(p => /order number, or mark it MTS/.test(p)));
   const ok = validateUpperMoves([{ kind:"in", article:"SPIKE", size:"8", qty:10,
-    source_type:"vendor", source:"Shree Fab", job_card_no:"JC12", rack:"R-4" }]);
+    source_type:"vendor", source:"Shree Fab", order_no:"JO4", job_card_no:"JC12", rack:"R-4" }]);
   assert.deepEqual(ok.problems, []);
   assert.equal(ok.rows[0].status, "approved");
   assert.equal(ok.rows[0].rack, "R-4");
+});
+
+/* The client's notes require an order reference AND name MTS uppers, which
+   have no order. So MTS is said explicitly — a job card number alone, which
+   was accepted before, is not an order reference. */
+test("an order number OR an explicit MTS — never a job card alone, never both", () => {
+  const base = { kind:"in", article:"SPIKE", size:"8", qty:10, source_type:"line", source:"New Durga Line" };
+  assert.match(validateUpperMoves([{ ...base, job_card_no:"JC12" }]).problems[0], /order number, or mark it MTS/);
+  const mts = validateUpperMoves([{ ...base, mts:true }]);
+  assert.deepEqual(mts.problems, []);
+  assert.equal(mts.rows[0].mts, true);
+  assert.equal(mts.rows[0].order_no, null);
+  assert.match(validateUpperMoves([{ ...base, mts:true, order_no:"JO1" }]).problems[0], /order or MTS, not both/);
+  assert.equal(validateUpperMoves([{ ...base, mts:"yes" }]).problems.length, 1, "only a real true marks MTS");
 });
 
 test("half an upper is refused, not rounded", () => {
@@ -242,35 +256,108 @@ test("finished orders need no uppers", () => {
   assert.equal(upperShortage(orders, [], new Set(["JO1"])).rows.length, 0);
 });
 
+console.log("\nQ — QC at receipt, and rework back to the maker");
+
+const FAIL = (size, qty, extra = {}) => ({ id:++id, kind:"qc_failed", article:"SPIKE", colour:"BLUE", size, qty,
+  source_type:"vendor", source:"Shree Fab", order_no:"JO1", reason:"open stitch", moved_on:"2026-10-02", status:"approved", ...extra });
+const VIN = (size, qty) => IN(size, qty, { source_type:"vendor", source:"Shree Fab" });
+
+test("a failed upper is held in QC — in the building, never available", () => {
+  const log = [VIN("8", 90), FAIL("8", 10)];
+  const p = upperPositions(log).get("SPIKE||BLUE||8");
+  assert.equal(p.on_hand, 90, "only the passed uppers are stock");
+  assert.equal(p.qc_hold, 10);
+  assert.match(validateUpperMoves([OUT("8", 91)], log).problems[0], /only 90/, "a held upper cannot be issued");
+});
+
+test("a QC failure records its defect and its maker, and needs an order or MTS", () => {
+  const { problems } = validateUpperMoves([{ kind:"qc_failed", article:"SPIKE", size:"8", qty:3 }]);
+  assert.ok(problems.some(p => /defect/.test(p)));
+  assert.ok(problems.some(p => /name the line or the vendor/.test(p)));
+  assert.ok(problems.some(p => /order number, or mark it MTS/.test(p)));
+  assert.deepEqual(qcQueue([VIN("8", 90), FAIL("8", 10)])[0].defects, ["open stitch"]);
+});
+
+test("failed uppers go back to THEIR maker for rework, and no more than are held", () => {
+  const log = [VIN("8", 90), FAIL("8", 10)];
+  const send = { kind:"rework_out", article:"SPIKE", colour:"blue", size:"8", source:"Shree Fab" };
+  assert.match(validateUpperMoves([{ ...send, qty:11 }], log).problems[0], /only 10 .*Shree Fab are in QC hold/);
+  assert.match(validateUpperMoves([{ ...send, qty:1, source:"New Durga Line" }], log).problems[0], /only 0/,
+    "another maker's hold is not this one's");
+  const ok = validateUpperMoves([{ ...send, qty:10 }], log);
+  assert.deepEqual(ok.problems, []);
+  const q = qcQueue([...log, ...ok.rows])[0];
+  assert.deepEqual([q.hold, q.rework], [0, 10]);
+});
+
+test("rework comes back passed into stock, or fails again into QC hold", () => {
+  const log = [VIN("8", 90), FAIL("8", 10),
+               { id:++id, kind:"rework_out", article:"SPIKE", colour:"BLUE", size:"8", qty:10, source:"Shree Fab", status:"approved" }];
+  const back = { kind:"rework_in", article:"SPIKE", colour:"BLUE", size:"8", source:"Shree Fab" };
+  assert.match(validateUpperMoves([{ ...back, qty:11 }], log).problems[0], /only 10 .*with Shree Fab for rework/);
+  const { rows, problems } = validateUpperMoves([{ ...back, qty:8 },
+    { kind:"qc_failed", rework:true, article:"SPIKE", colour:"BLUE", size:"8", qty:2, source:"Shree Fab", reason:"still open" }], log);
+  assert.deepEqual(problems, [], "rework returning needs no new order reference");
+  const p = upperPositions([...log, ...rows]).get("SPIKE||BLUE||8");
+  assert.deepEqual([p.on_hand, p.qc_hold, p.rework], [98, 2, 0]);
+});
+
+test("a held upper can be scrapped, with a reason, from its maker's hold", () => {
+  const log = [VIN("8", 90), FAIL("8", 10)];
+  const scrap = { kind:"damaged", damaged_at:"QC", article:"SPIKE", colour:"BLUE", size:"8", qty:4, reason:"beyond repair" };
+  assert.ok(validateUpperMoves([scrap], log).problems.some(p => /whose QC hold/.test(p)));
+  const ok = validateUpperMoves([{ ...scrap, source:"Shree Fab" }], log);
+  assert.deepEqual(ok.problems, []);
+  const p = upperPositions([...log, ...ok.rows]).get("SPIKE||BLUE||8");
+  assert.deepEqual([p.on_hand, p.qc_hold], [90, 6], "scrapping from QC never touches the shelf");
+});
+
+test("rework cannot be un-recorded out from under its return", () => {
+  const out = { id:++id, kind:"rework_out", article:"SPIKE", colour:"BLUE", size:"8", qty:10, source:"Shree Fab", status:"approved" };
+  const back = { id:++id, kind:"rework_in", article:"SPIKE", colour:"BLUE", size:"8", qty:10, source:"Shree Fab", status:"approved" };
+  assert.match(checkDelete(out.id, [VIN("8", 90), FAIL("8", 10), out, back]).problem, /below zero/);
+});
+
 console.log("\nI — rejection ratio, alerts and rules");
 
-test("rejection ratio per maker, null when nothing was received", () => {
-  const log = [IN("8", 100), { kind:"damaged", article:"SPIKE", colour:"blue", size:"8", qty:8, damaged_at:"STORE", source:"New Durga Line", reason:"QC" },
-               { kind:"damaged", article:"SPIKE", size:"8", qty:1, damaged_at:"STORE", source:"Nobody", reason:"x" }];
-  const r = rejectionRatios(log);
-  assert.equal(r.find(x => x.source === "New Durga Line").ratio, 8);
-  assert.equal(r.find(x => x.source === "Nobody").ratio, null);
+/* First-inspection failures over everything inspected. A reworked upper that
+   fails again is reported, not added in, or it would count twice. */
+test("QC rejection ratio per maker is first-inspection failures over inspected", () => {
+  const log = [VIN("8", 90), FAIL("8", 10),
+    { kind:"rework_out", article:"SPIKE", colour:"BLUE", size:"8", qty:10, source:"Shree Fab" },
+    { kind:"qc_failed", rework:true, article:"SPIKE", colour:"BLUE", size:"8", qty:2, source:"Shree Fab", reason:"x" }];
+  const r = rejectionRatios(log).find(x => x.source === "Shree Fab");
+  assert.equal(r.inspected, 100);
+  assert.equal(r.failed, 10);
+  assert.equal(r.ratio, 10);
+  assert.equal(r.failed_again, 2);
+  assert.equal(r.sent_for_rework, 10);
 });
 
 test("rules default to the client's 7 days and invent no other threshold", () => {
-  assert.deepEqual(normalizeUpperRules({}).rules, { moving_days:7, fabrication_due_days:null, rejection_alert_pct:null });
-  assert.deepEqual(normalizeUpperRules({ moving_days:15, fabrication_due_days:"20", rejection_alert_pct:5 }).rules,
-    { moving_days:15, fabrication_due_days:20, rejection_alert_pct:5 });
+  assert.deepEqual(normalizeUpperRules({}).rules,
+    { moving_days:7, fabrication_due_days:null, rejection_alert_pct:null, repair_rejection_alert_pct:null });
+  assert.deepEqual(normalizeUpperRules({ moving_days:15, fabrication_due_days:"20", rejection_alert_pct:5, repair_rejection_alert_pct:"8" }).rules,
+    { moving_days:15, fabrication_due_days:20, rejection_alert_pct:5, repair_rejection_alert_pct:8 });
   assert.ok(normalizeUpperRules({ moving_days:0 }).problems.length);
   assert.ok(normalizeUpperRules({ rejection_alert_pct:150 }).problems.length);
+  assert.ok(normalizeUpperRules({ repair_rejection_alert_pct:-1 }).problems.length);
 });
 
-test("the four alerts fire only on what was recorded", () => {
-  const log = [IN("8", 100, { moved_on:"2026-09-01" }),
-               { kind:"damaged", article:"SPIKE", size:"8", colour:"blue", qty:8, damaged_at:"STORE", source:"New Durga Line", reason:"QC" }];
+test("every alert fires only on what was recorded", () => {
+  const log = [VIN("8", 100), { ...FAIL("8", 10) }];
+  log[0].moved_on = "2026-09-01";
   const orders = [{ order_no:"JO9", article_code:"SPIKE", lines:[{ qty:200, sizes:{ "8":200 } }] }];
+  const repair = { articles:[{ article:"SPIKE", sent:50, rejected:5, ratio:10 }] };
   const base = { moving: movingStatus(log, [], "2026-10-29"), shortage: upperShortage(orders, log),
-                 fabrication: outsideFabrication(jobs, "2026-10-29"), ratios: rejectionRatios(log) };
+                 fabrication: outsideFabrication(jobs, "2026-10-29"), ratios: rejectionRatios(log), repair };
   const quiet = upperAlerts(base).map(a => a.kind).sort();
-  assert.deepEqual(quiet, ["low_stock","non_moving"], "no turnaround or rejection level set, so neither fires");
+  assert.deepEqual(quiet, ["low_stock","non_moving"], "no turnaround or rejection limits set, so none of those fire");
   const loud = upperAlerts({ ...base, fabrication: outsideFabrication(jobs, "2026-10-29", 21),
-                             rules:{ rejection_alert_pct:5 } }).map(a => a.kind).sort();
-  assert.deepEqual(loud, ["fabrication_overdue","low_stock","non_moving","rejection"]);
+                             rules:{ rejection_alert_pct:5, repair_rejection_alert_pct:10 } }).map(a => a.kind).sort();
+  assert.deepEqual(loud, ["fabrication_overdue","low_stock","non_moving","rejection","repair_rejection"]);
+  assert.ok(!upperAlerts({ ...base, rules:{ repair_rejection_alert_pct:11 } }).some(a => a.kind === "repair_rejection"),
+    "10% is below an 11% limit");
 });
 
 console.log("\nJ — the ledger and the live stock");

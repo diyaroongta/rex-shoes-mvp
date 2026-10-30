@@ -7,14 +7,21 @@
  * sum of them. A wrong entry is deleted and re-entered; a stored counter would
  * drift the first time one was corrected.
  *
- *   in        received from a stitching LINE or an outside VENDOR, against an
- *             order or a job card — a receipt always says where it came from
+ *   in        received from a stitching LINE or an outside VENDOR and PASSED at
+ *             QC, against an order number or marked MTS — a receipt always
+ *             says where it came from and what it is for
+ *   qc_failed failed QC at receipt, with its defect. Held in QC — in the
+ *             building but NOT available, so it can never be issued
+ *   rework_out  failed uppers sent back to the line / vendor that made them
+ *   rework_in   reworked uppers back from that maker and passed: into stock.
+ *             Failing again is another qc_failed, marked `rework`
  *   out       issued to PASTING or MOULDING against a production order — never
  *             more than the store holds
  *   returned  unused uppers back from pasting / moulding
  *   damaged   rejected or damaged, WITH a reason. Damaged in the store comes
  *             off the shelf; damaged at pasting / moulding was already issued,
- *             so it comes off what that floor is holding, not off the shelf
+ *             so it comes off what that floor is holding, not off the shelf;
+ *             scrapped from QC hold comes off that maker's hold
  *   adjust    a physical count correcting the book, signed — PENDING until the
  *             store in-charge approves it, and counting for nothing until then
  *
@@ -27,7 +34,10 @@
  */
 
 export const UPPER_KINDS = {
-  in:       { label:"Stock in" },
+  in:       { label:"Stock in (QC passed)" },
+  qc_failed:  { label:"QC failed" },
+  rework_out: { label:"Sent for rework" },
+  rework_in:  { label:"Back from rework" },
   out:      { label:"Issued" },
   returned: { label:"Returned unused" },
   damaged:  { label:"Damaged / rejected" },
@@ -35,7 +45,7 @@ export const UPPER_KINDS = {
 };
 export const SOURCE_TYPES = { line:"Stitching line", vendor:"Outside fabrication" };
 export const DESTINATIONS = { PASTING:"Pasting", MOULDING:"Moulding" };
-export const DAMAGE_AT = { STORE:"In the store", PASTING:"At pasting", MOULDING:"At moulding" };
+export const DAMAGE_AT = { STORE:"In the store", PASTING:"At pasting", MOULDING:"At moulding", QC:"Scrapped from QC hold" };
 /* The client's own three reasons for taking an upper off the moving list. */
 export const HOLD_REASONS = { hold:"Order hold", cancelled:"Order cancelled", mts:"MTS upper" };
 export const AGE_BUCKETS = ["0-7", "8-15", "16-30", "30+"];
@@ -79,7 +89,15 @@ const where = m => clean(m.destination || m.damaged_at).toUpperCase();
 const emptyPosition = (article, colour, size) => ({ key:upperKey(article, colour, size),
   article:clean(article), colour:colourOf(colour), size:clean(size),
   on_hand:0, received:0, issued:0, returned:0, damaged:0, adjusted:0, pending_adjust:0,
-  at:{ PASTING:0, MOULDING:0 }, racks:[], first_in:null, last_in:null, last_out:null });
+  at:{ PASTING:0, MOULDING:0 }, racks:[], first_in:null, last_in:null, last_out:null,
+  qc_hold:0, rework:0, qc:{} });
+
+/* QC hold and rework are kept PER MAKER: an upper that failed from one vendor
+   goes back to that vendor, never to whoever happens to be next in the list. */
+const qcOf = (p, m) => {
+  const source = clean(m.source);
+  return p.qc[source] || (p.qc[source] = { source, source_type:clean(m.source_type) || null, hold:0, rework:0, defects:[] });
+};
 
 /* One movement applied to one position. The ledger, the validator and the
    delete check all go through here, so they cannot disagree about what a
@@ -93,8 +111,9 @@ function fold(p, m){
   }
   if(!counts(m)) return;
   const floor = where(m);
-  if(kind === "in"){
+  if(kind === "in" || kind === "rework_in"){
     p.received += qty; p.on_hand += qty;
+    if(kind === "rework_in"){ qcOf(p, m).rework -= qty; p.rework -= qty; }
     if(on && (!p.first_in || on < p.first_in)) p.first_in = on;
     if(on && (!p.last_in || on > p.last_in)) p.last_in = on;
     const rack = clean(m.rack);
@@ -106,9 +125,19 @@ function fold(p, m){
   }else if(kind === "returned"){
     p.returned += qty; p.on_hand += qty;
     if(p.at[floor] != null) p.at[floor] -= qty;
+  }else if(kind === "qc_failed"){
+    const q = qcOf(p, m);
+    q.hold += qty; p.qc_hold += qty;
+    if(m.rework){ q.rework -= qty; p.rework -= qty; }
+    const defect = clean(m.reason);
+    if(defect && !q.defects.includes(defect)) q.defects.push(defect);
+  }else if(kind === "rework_out"){
+    const q = qcOf(p, m);
+    q.hold -= qty; p.qc_hold -= qty; q.rework += qty; p.rework += qty;
   }else if(kind === "damaged"){
     p.damaged += qty;
-    if(floor === "STORE" || !floor) p.on_hand -= qty;
+    if(floor === "QC"){ qcOf(p, m).hold -= qty; p.qc_hold -= qty; }
+    else if(floor === "STORE" || !floor) p.on_hand -= qty;
     else if(p.at[floor] != null) p.at[floor] -= qty;
   }
 }
@@ -154,18 +183,34 @@ export function validateUpperMoves(input = [], existing = []){
     const row = { kind, article, colour, size, qty: Number.isFinite(qty) ? qty : 0,
       moved_on: moved_on || null,
       order_no: clean(m.order_no) || null, job_card_no: clean(m.job_card_no) || null,
+      mts: m.mts === true, rework: false,
       source_type: null, source: null, destination: null, damaged_at: null,
       rack: null, reason: clean(m.reason).slice(0, 300) || null,
       status: kind === "adjust" ? "pending" : "approved" };
 
-    if(kind === "in"){
+    /* Anything a maker hands over — a receipt, a QC failure, rework going out
+       or coming back — names that maker. */
+    const fromMaker = ["in", "qc_failed", "rework_out", "rework_in"].includes(kind);
+    if(fromMaker){
       row.source_type = clean(m.source_type).toLowerCase() || null;
       row.source = clean(m.source) || null;
-      row.rack = clean(m.rack).slice(0, 40) || null;
-      if(!SOURCE_TYPES[row.source_type]) problems.push(`${at}say whether it came from a stitching line or outside fabrication`);
       if(!row.source) problems.push(`${at}name the line or the vendor it came from`);
-      if(!row.order_no && !row.job_card_no) problems.push(`${at}a receipt needs an order or job card reference`);
     }
+    if(kind === "qc_failed"){
+      row.rework = m.rework === true;
+      if(!row.reason) problems.push(`${at}record the defect a failed upper was rejected for`);
+    }
+    /* A FIRST receipt — passed or failed — is new work arriving, so it says
+       what it is for: an order number, or MTS said in so many words. A job
+       card number alone is not an order reference. Rework coming back is the
+       same uppers returning and carries no new reference. */
+    if(kind === "in" || (kind === "qc_failed" && !row.rework)){
+      if(!SOURCE_TYPES[row.source_type]) problems.push(`${at}say whether it came from a stitching line or outside fabrication`);
+      if(row.order_no && row.mts) problems.push(`${at}an upper is either for an order or MTS, not both`);
+      else if(!row.order_no && !row.mts) problems.push(`${at}a receipt needs an order number, or mark it MTS`);
+    }
+    if(kind === "in") row.rack = clean(m.rack).slice(0, 40) || null;
+    if(kind === "rework_in") row.rack = clean(m.rack).slice(0, 40) || null;
     if(kind === "out" || kind === "returned"){
       row.destination = clean(m.destination).toUpperCase() || null;
       if(!DESTINATIONS[row.destination]) problems.push(`${at}${kind === "out" ? "issue to" : "returned from"} pasting or moulding?`);
@@ -173,8 +218,9 @@ export function validateUpperMoves(input = [], existing = []){
     }
     if(kind === "damaged"){
       row.damaged_at = clean(m.damaged_at).toUpperCase() || "STORE";
-      row.source = clean(m.source) || null;   // who made it, for the rejection ratio
-      if(!DAMAGE_AT[row.damaged_at]) problems.push(`${at}damaged where — in the store, at pasting or at moulding?`);
+      row.source = clean(m.source) || null;
+      if(!DAMAGE_AT[row.damaged_at]) problems.push(`${at}damaged where — in the store, at pasting, at moulding or in QC hold?`);
+      if(row.damaged_at === "QC" && !row.source) problems.push(`${at}name whose QC hold it is scrapped from`);
       if(!row.reason) problems.push(`${at}a damaged or rejected upper needs a reason`);
     }
     if(kind === "adjust" && !row.reason) problems.push(`${at}an adjustment needs a reason`);
@@ -191,8 +237,18 @@ export function validateUpperMoves(input = [], existing = []){
         continue;
       }
     }
+    /* Rework moves uppers between ONE maker's QC hold and that maker. */
+    const q = row.source ? (p.qc[row.source] || { hold:0, rework:0 }) : { hold:0, rework:0 };
+    if((kind === "rework_out" || (kind === "damaged" && row.damaged_at === "QC")) && qty > q.hold){
+      problems.push(`${at}only ${Math.max(0, q.hold)} upper(s) of ${label} from ${row.source} are in QC hold`);
+      continue;
+    }
+    if((kind === "rework_in" || (kind === "qc_failed" && row.rework)) && qty > q.rework){
+      problems.push(`${at}only ${Math.max(0, q.rework)} upper(s) of ${label} are with ${row.source} for rework`);
+      continue;
+    }
     const floor = kind === "returned" ? row.destination : kind === "damaged" ? row.damaged_at : null;
-    if(floor && floor !== "STORE" && qty > p.at[floor]){
+    if(floor && floor !== "STORE" && floor !== "QC" && qty > p.at[floor]){
       problems.push(`${at}only ${Math.max(0, p.at[floor])} upper(s) of ${label} are out at ${DESTINATIONS[floor].toLowerCase()}`);
       continue;
     }
@@ -223,8 +279,9 @@ export function checkDelete(id, existing = []){
   if(!target) return { ok:false, missing:true, problem:"That movement is no longer there — reload the screen" };
   const p = upperPositions((existing || []).filter(m => m !== target))
     .get(upperKey(target.article, target.colour, target.size));
-  if(p && (p.on_hand < 0 || p.at.PASTING < 0 || p.at.MOULDING < 0))
-    return { ok:false, problem:"Deleting this would leave the book below zero for that size — delete the issue or return recorded after it first" };
+  if(p && (p.on_hand < 0 || p.at.PASTING < 0 || p.at.MOULDING < 0
+           || Object.values(p.qc).some(q => q.hold < 0 || q.rework < 0)))
+    return { ok:false, problem:"Deleting this would leave the book below zero for that size — delete the movement recorded after it first" };
   return { ok:true };
 }
 
@@ -235,9 +292,12 @@ export function upperStock(moves = []){
   for(const p of upperPositions(moves).values()){
     const gk = `${p.article}||${p.colour}`;
     if(!groups.has(gk)) groups.set(gk, { article:p.article, colour:p.colour, on_hand:0, sizes:[],
-      at:{ PASTING:0, MOULDING:0 }, racks:[], first_in:null, last_in:null, last_out:null, pending_adjust:0, negative:[] });
+      at:{ PASTING:0, MOULDING:0 }, racks:[], first_in:null, last_in:null, last_out:null, pending_adjust:0, negative:[],
+      qc_hold:0, rework:0 });
     const g = groups.get(gk);
     g.on_hand += p.on_hand;
+    g.qc_hold += p.qc_hold;
+    g.rework += p.rework;
     g.pending_adjust += p.pending_adjust;
     for(const f of Object.keys(g.at)) g.at[f] += p.at[f];
     for(const r of p.racks) if(!g.racks.includes(r)) g.racks.push(r);
@@ -245,10 +305,12 @@ export function upperStock(moves = []){
     if(p.last_in && (!g.last_in || p.last_in > g.last_in)) g.last_in = p.last_in;
     if(p.last_out && (!g.last_out || p.last_out > g.last_out)) g.last_out = p.last_out;
     if(p.on_hand < 0) g.negative.push(p.size);
-    g.sizes.push({ size:p.size, on_hand:p.on_hand, at:p.at, racks:p.racks, pending_adjust:p.pending_adjust });
+    g.sizes.push({ size:p.size, on_hand:p.on_hand, at:p.at, racks:p.racks, pending_adjust:p.pending_adjust,
+                   qc_hold:p.qc_hold, rework:p.rework });
   }
   const list = [...groups.values()].map(g => ({ ...g, sizes: g.sizes.sort((a, z) => bySize(a.size, z.size)) }))
-    .filter(g => g.on_hand !== 0 || g.negative.length || g.at.PASTING || g.at.MOULDING || g.pending_adjust)
+    .filter(g => g.on_hand !== 0 || g.negative.length || g.at.PASTING || g.at.MOULDING || g.pending_adjust
+                 || g.qc_hold || g.rework)
     .sort((a, z) => a.article.localeCompare(z.article) || a.colour.localeCompare(z.colour));
   return { groups:list, total: list.reduce((n, g) => n + g.on_hand, 0) };
 }
@@ -281,7 +343,7 @@ export function upperLedger(moves = []){
 export function effectOf(m){
   const qty = tally(m.qty), kind = clean(m.kind);
   if(!counts(m)) return 0;
-  if(kind === "in" || kind === "returned" || kind === "adjust") return qty;
+  if(kind === "in" || kind === "rework_in" || kind === "returned" || kind === "adjust") return qty;
   if(kind === "out") return -qty;
   if(kind === "damaged") return (where(m) === "STORE" || !where(m)) ? -qty : 0;
   return 0;
@@ -419,19 +481,41 @@ export function upperShortage(orders = [], moves = [], done = new Set()){
            sizes_unknown: [...unsized.values()] };
 }
 
-/* REJECTION RATIO, per maker: uppers rejected that were attributed to a line
-   or vendor, against everything received from them. Null, not 0, when nothing
-   has been received — "no receipts" and "0% rejected" are different claims. */
+/* THE QC QUEUE — every failed upper not yet resolved, per article, colour,
+   size and MAKER: still in QC hold here, or out with the maker for rework.
+   It empties as rework comes back passed, or as held uppers are scrapped. */
+export function qcQueue(moves = []){
+  const rows = [];
+  for(const p of upperPositions(moves).values())
+    for(const q of Object.values(p.qc))
+      if(q.hold > 0 || q.rework > 0)
+        rows.push({ article:p.article, colour:p.colour, size:p.size, source:q.source, source_type:q.source_type,
+                    hold:q.hold, rework:q.rework, defects:q.defects });
+  return rows.sort((a, z) => a.source.localeCompare(z.source) || a.article.localeCompare(z.article)
+    || a.colour.localeCompare(z.colour) || bySize(a.size, z.size));
+}
+
+/* QC BY MAKER. The rejection ratio is uppers that failed their FIRST
+   inspection against everything that maker sent for inspection — passed plus
+   failed. Rework failing again is reported beside it, not added in, or the
+   same upper would count against the maker twice. Null, not 0, when nothing
+   has been inspected: "no receipts" and "0% rejected" are different claims. */
 export function rejectionRatios(moves = []){
   const by = new Map();
-  const row = s => { if(!by.has(s)) by.set(s, { source:s, received:0, rejected:0, ratio:null }); return by.get(s); };
+  const row = s => { if(!by.has(s)) by.set(s, { source:s, inspected:0, passed:0, failed:0, sent_for_rework:0,
+    reworked_back:0, failed_again:0, scrapped:0, ratio:null }); return by.get(s); };
   for(const m of moves || []){
     if(!counts(m) || !clean(m.source)) continue;
-    if(m.kind === "in") row(clean(m.source)).received += tally(m.qty);
-    if(m.kind === "damaged") row(clean(m.source)).rejected += tally(m.qty);
+    const r = row(clean(m.source)), qty = tally(m.qty);
+    if(m.kind === "in"){ r.inspected += qty; r.passed += qty; }
+    else if(m.kind === "qc_failed" && !m.rework){ r.inspected += qty; r.failed += qty; }
+    else if(m.kind === "qc_failed") r.failed_again += qty;
+    else if(m.kind === "rework_out") r.sent_for_rework += qty;
+    else if(m.kind === "rework_in") r.reworked_back += qty;
+    else if(m.kind === "damaged" && where(m) === "QC") r.scrapped += qty;
   }
-  return [...by.values()].map(r => ({ ...r,
-    ratio: r.received > 0 ? Math.round(r.rejected / r.received * 1000) / 10 : null }))
+  return [...by.values()].filter(r => r.inspected || r.sent_for_rework || r.failed_again).map(r => ({ ...r,
+    ratio: r.inspected > 0 ? Math.round(r.failed / r.inspected * 1000) / 10 : null }))
     .sort((a, z) => (z.ratio ?? -1) - (a.ratio ?? -1) || a.source.localeCompare(z.source));
 }
 
@@ -458,7 +542,8 @@ export function countAdjustments(moves, article, colour, counted = {}, note = ""
    default because nobody has said what they are. */
 export function normalizeUpperRules(input = {}){
   const problems = [];
-  const out = { moving_days: DEFAULT_MOVING_DAYS, fabrication_due_days: null, rejection_alert_pct: null };
+  const out = { moving_days: DEFAULT_MOVING_DAYS, fabrication_due_days: null, rejection_alert_pct: null,
+                repair_rejection_alert_pct: null };
   const days = (v, name, max) => {
     if(v === "" || v == null) return null;
     const n = Number(v);
@@ -468,19 +553,20 @@ export function normalizeUpperRules(input = {}){
   const md = days(input.moving_days, "moving days", 365);
   if(md != null) out.moving_days = md;
   out.fabrication_due_days = days(input.fabrication_due_days, "fabrication turnaround days", 365);
-  if(input.rejection_alert_pct !== "" && input.rejection_alert_pct != null){
-    const n = Number(input.rejection_alert_pct);
-    if(!Number.isFinite(n) || n <= 0 || n > 100) problems.push("rejection alert % must be above 0 and at most 100");
-    else out.rejection_alert_pct = n;
+  for(const [k, name] of [["rejection_alert_pct", "QC rejection alert %"], ["repair_rejection_alert_pct", "repair rejection alert %"]]){
+    if(input[k] === "" || input[k] == null) continue;
+    const n = Number(input[k]);
+    if(!Number.isFinite(n) || n <= 0 || n > 100) problems.push(`${name} must be above 0 and at most 100`);
+    else out[k] = n;
   }
   return { rules:out, problems };
 }
 
-/* THE FOUR ALERTS the client listed. Each fires only on something recorded:
+/* THE ALERTS the client listed. Each fires only on something recorded:
    a low-stock alert is a RUNNING article (one a live order still needs) whose
    uppers do not cover that need; overdue and rejection fire only once the
    factory has set the turnaround and the level. */
-export function upperAlerts({ moving, shortage, fabrication, ratios, rules = {} } = {}){
+export function upperAlerts({ moving, shortage, fabrication, ratios, repair, rules = {} } = {}){
   const out = [];
   for(const r of (moving && moving.rows) || [])
     if(r.status === "non_moving")
@@ -497,6 +583,11 @@ export function upperAlerts({ moving, shortage, fabrication, ratios, rules = {} 
       text:`${r.fabricator}${r.card_no ? " — " + r.card_no : ""}: ${r.pending} of ${r.sent} still out after ${r.days_out} days` });
   const pct = Number(rules.rejection_alert_pct);
   if(pct > 0) for(const r of ratios || []) if(r.ratio != null && r.ratio >= pct)
-    out.push({ kind:"rejection", text:`${r.source}: ${r.ratio}% rejected (${r.rejected} of ${r.received})` });
+    out.push({ kind:"rejection", text:`${r.source}: ${r.ratio}% failed QC (${r.failed} of ${r.inspected})` });
+  /* The Repair screen is the record of shoes sent for repair, so its figures
+     drive this one: rejected after repair against sent for repair, per article. */
+  const repairPct = Number(rules.repair_rejection_alert_pct);
+  if(repairPct > 0) for(const r of (repair && repair.articles) || []) if(r.ratio != null && r.ratio >= repairPct)
+    out.push({ kind:"repair_rejection", text:`${r.article}: ${r.ratio}% of shoes sent for repair were rejected (${r.rejected} of ${r.sent})` });
   return out;
 }

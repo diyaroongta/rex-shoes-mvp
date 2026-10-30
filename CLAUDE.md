@@ -169,7 +169,17 @@ COLOUR and size and derives everything else, like repair and finished stock.
 The client's rules are enforced in the one validator the browser and the server
 both call: no issue above available stock (checked row by row through a batch,
 and inside a LOCKED transaction on the server), every receipt names its line or
-vendor and an order or job card, damage needs a reason. Damaged AT pasting or
+vendor and an order number OR an explicit `mts` (a job card alone is not an
+order reference), damage needs a reason. **QC happens at receipt**: passed
+uppers are `in`, failed ones `qc_failed` with their defect — held, never
+available — then `rework_out` to THEIR maker and `rework_in` when they come back
+passed (failing again is `qc_failed` with `rework`). Hold and rework are kept
+per maker. The maker's QC rejection is first-inspection failures over
+inspected; rework failing again is reported beside it, never added in. The
+**repair rejection alert** reads the Repair screen (rejected over SENT for
+repair, per article, `repairRejection` in `shared/repair.js`) — the client did
+not give the denominator, so it is the phrase's literal meaning, and the limit
+is blank until set. Damaged AT pasting or
 moulding was already issued, so it comes off that floor's balance, never the
 shelf a second time. A physical count becomes `adjust` rows that are PENDING
 and move nothing until the Store In-charge (`upper_store:"approve"`) approves;
