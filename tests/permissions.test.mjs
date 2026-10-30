@@ -9,7 +9,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { can, canSeeTab, defaultTab, isReadOnly, endpointOf,
          KNOWN_ENDPOINTS, ROLES, ROLE_LABEL, ROLE_SUMMARY,
-         RECOMMENDED_USER_COUNTS } from "../shared/permissions.js";
+         RECOMMENDED_USER_COUNTS, upperStoreAccess } from "../shared/permissions.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -327,6 +327,48 @@ test("adding a material does not open the BOM to the same roles", () => {
 test("roles with no stock rights still cannot add a material", () => {
   for(const role of ["planner","dispatch","sales","viewer","owner","auditor"])
     assert.equal(allow(role,"PATCH","/api/reference",{new_material:{name:"GLUE",uom:"LTR"}}), false, role);
+});
+
+console.log("\nU — the upper store: the keeper records, the in-charge approves");
+
+const UPPER = "/api/dispatches?resource=upper_store";
+test("a store keeper records uppers in and out but cannot approve an adjustment", () => {
+  assert.equal(allow("store","POST",UPPER,{moves:[{kind:"in"}]}), true);
+  assert.equal(allow("store","PUT",UPPER,{tag:{}}), true);
+  assert.equal(allow("store","DELETE",UPPER+"&id=4"), true);
+  assert.equal(allow("store","PATCH",UPPER,{id:4,action:"approve"}), false);
+  assert.match(can("store","PATCH",UPPER,{id:4,action:"approve"}).reason, /in-charge/);
+});
+
+test("the store in-charge approves; an admin can too", () => {
+  assert.equal(allow("store_incharge","PATCH",UPPER,{id:4,action:"approve"}), true);
+  assert.equal(allow("admin","PATCH",UPPER,{id:4,action:"approve"}), true);
+  assert.equal(upperStoreAccess("store_incharge"), "approve");
+  assert.equal(upperStoreAccess("admin"), "approve");
+  assert.equal(upperStoreAccess("store"), "record");
+  assert.equal(upperStoreAccess("planner"), null);
+});
+
+/* The dispatch clerk holds a `dispatches` write. The upper store rides on the
+   same endpoint, and that grant must not reach it — by URL or by body. */
+test("a dispatch clerk's dispatch rights do not reach the upper store", () => {
+  assert.equal(allow("dispatch","POST",UPPER,{moves:[]}), false);
+  assert.equal(allow("dispatch","POST","/api/dispatches",{resource:"upper_store",moves:[]}), false);
+  assert.equal(allow("dispatch","POST","/api/dispatches",{order_no:"JO1"}), true, "dispatch itself is untouched");
+});
+
+test("the planner and auditor read the upper store; neither changes it", () => {
+  for(const role of ["planner","auditor","owner","viewer"]){
+    assert.equal(canSeeTab(role,"upper_store"), true, role);
+    assert.equal(allow(role,"POST",UPPER,{moves:[]}), false, role);
+  }
+  assert.equal(canSeeTab("sales","upper_store"), false);
+});
+
+test("the in-charge is not read-only and lands on the upper store", () => {
+  assert.equal(isReadOnly("store_incharge"), false);
+  assert.equal(defaultTab("store_incharge"), "upper_store");
+  assert.equal(allow("store_incharge","PATCH","/api/reference",{bom_removal:{articles:["X"]}}), false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

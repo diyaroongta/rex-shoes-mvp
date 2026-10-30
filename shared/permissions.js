@@ -39,7 +39,7 @@ const MATERIAL_KEYS = ["new_material"];
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
 
-const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","repair","dispatch","gatepass","finished","formats","schedule",
+const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","upper_store","repair","dispatch","gatepass","finished","formats","schedule",
                    "production_input","plan","machines","stock_add","stock","procurement","material_new","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
@@ -88,7 +88,9 @@ export const ROLE_DEFS = {
     summary:"Builds the production schedule and balances machine load. "
       +"Re-sequences work; cannot raise a PI, record a dispatch, "
       +"or change what was ordered.",
-    tabs:["mis","orders","status","schedule","production_input","plan","machines","formats"],
+    /* The upper store is READ here: an upper short for an order is a planning
+       problem before it is a store problem. */
+    tabs:["mis","orders","status","upper_store","schedule","production_input","plan","machines","formats"],
     writes:[], orders:"plan", production_actuals:true, reference:null,
   },
   procurement: {
@@ -97,11 +99,23 @@ export const ROLE_DEFS = {
     tabs:["mis","stock_add","stock","procurement","material_new","orders","schedule","formats"],
     writes:[], reference:"stock", purchase_orders:"all",
   },
+  /* The upper store too: uppers in from stitching, out to pasting and
+     moulding, and counted. A count that disagrees with the book goes in as a
+     PENDING adjustment — the keeper who counted cannot approve it. */
   store: {
     label:"Store / Inventory Keeper",
     summary:"Stock in, stock out and physical counts. Nothing else.",
-    tabs:["stock_add","stock","procurement","material_new","formats"],
-    writes:[], reference:"stock", purchase_orders:"receive",
+    tabs:["stock_add","stock","procurement","material_new","upper_store","formats"],
+    writes:[], reference:"stock", purchase_orders:"receive", upper_store:"record",
+  },
+  /* "Stock adjustment needs store in-charge approval" — the client's own rule
+     for the upper store, which needs somebody to BE the in-charge. Everything
+     the store keeper does, plus approving a count adjustment. */
+  store_incharge: {
+    label:"Store In-charge",
+    summary:"Runs the stores: everything the store keeper does, and approves stock adjustments.",
+    tabs:["upper_store","stock_add","stock","procurement","material_new","formats"],
+    writes:[], reference:"stock", purchase_orders:"receive", upper_store:"approve",
   },
   data: {
     label:"Catalogue & BOM Data Manager",
@@ -112,7 +126,7 @@ export const ROLE_DEFS = {
   auditor: {
     label:"Auditor / Consultant",
     summary:"Reads the dashboard and the change history. No edit rights at all.",
-    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","finished","schedule","procurement","stock","data"],
+    tabs:["mis","orders","pis","status","upper_store","repair","dispatch","gatepass","finished","schedule","procurement","stock","data"],
     writes:[], reference:null,
   },
   /* Kept because accounts already carry it, and because "sees everything,
@@ -213,6 +227,21 @@ export function can(role, method, url, body){
     if(def.production_actuals || def.writes.includes("dispatches")) return {allowed:true};
     return {allowed:false,reason:`${def.label} cannot file job-card photos.`};
   }
+  /* The upper store rides on /api/dispatches for the twelve-function reason,
+     but it is NOT dispatch work: a dispatch clerk's `dispatches` write must not
+     reach it. Checked on the body as well as the URL so a resource smuggled in
+     the body cannot fall through to that broader grant. Recording is the store
+     keeper's; approving an adjustment (the only PATCH) is the in-charge's. */
+  if(endpoint === "dispatches" && (/(?:\?|&)resource=upper_store(?:&|$)/.test(String(url||""))
+     || (body && body.resource === "upper_store"))){
+    if(def.upper_store === "approve") return {allowed:true};
+    if(def.upper_store === "record"){
+      if(verb === "PATCH")
+        return {allowed:false,reason:"A stock adjustment needs the store in-charge's approval."};
+      return {allowed:true};
+    }
+    return {allowed:false,reason:`${def.label} cannot change the upper store.`};
+  }
   if(endpoint === "dispatches" && /(?:\?|&)resource=production_actuals(?:&|$)/.test(String(url||""))){
     if(def.production_actuals) return {allowed:true};
     return {allowed:false,reason:`${def.label} cannot record production achievement.`};
@@ -261,5 +290,14 @@ export function isReadOnly(role){
      change the PLAN, so calling them read-only would be wrong on screen and
      would hide the controls they are meant to use. */
   return def.writes !== "all" && def.writes.length === 0
-    && !def.reference && !def.orders && !def.production_actuals;
+    && !def.reference && !def.orders && !def.production_actuals && !def.upper_store;
+}
+
+/* What this role may do in the upper store: "approve" (everything, including
+   approving a count adjustment), "record", or null for read-only. */
+export function upperStoreAccess(role){
+  const def = defOf(role);
+  if(!def) return null;
+  if(def.writes === "all") return "approve";
+  return def.upper_store || null;
 }

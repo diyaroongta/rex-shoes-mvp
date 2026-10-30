@@ -448,3 +448,46 @@ create index if not exists job_card_documents_job_idx on job_card_documents (job
 -- must stay resolvable) but archived and marked, so it leaves every working
 -- list and every fabricator's open balance.
 alter table job_work add column if not exists cancelled boolean not null default false;
+
+-- ---------------------------------------------------------------------------
+-- UPPER STORE. Stitched uppers between the stitching line / outside
+-- fabrication and pasting / moulding. An EVENT LOG, like repairs and
+-- finished_stock: the live stock is the sum, per article, colour and size (see
+-- shared/upper-store.js). qty is entered positive; an `adjust` is signed and
+-- sits PENDING until the store in-charge approves it.
+create table if not exists upper_store (
+  id           bigserial primary key,
+  kind         text        not null check (kind in ('in','out','returned','damaged','adjust')),
+  article      text        not null,
+  colour       text        not null default '',
+  size         text        not null,
+  qty          integer     not null check (qty <> 0),
+  order_no     text,
+  job_card_no  text,
+  source_type  text        check (source_type in ('line','vendor')),
+  source       text,                     -- the line or vendor it came from / who made it
+  destination  text,                     -- PASTING / MOULDING, for an issue or a return
+  damaged_at   text,                     -- STORE / PASTING / MOULDING
+  rack         text,
+  reason       text,
+  status       text        not null default 'approved' check (status in ('approved','pending','rejected')),
+  moved_on     date        not null default current_date,
+  created_by   text,
+  approved_by  text,
+  approved_at  timestamptz,
+  created_at   timestamptz not null default now()
+);
+create index if not exists upper_store_key_idx on upper_store (article, colour, size);
+
+-- A manual moving / non-moving tag per article and colour, always with a
+-- reason. No row means the automatic rule (days since the last issue) decides.
+create table if not exists upper_store_tags (
+  article      text        not null,
+  colour       text        not null default '',
+  tag          text        not null check (tag in ('moving','non_moving')),
+  reason_code  text,
+  reason       text,
+  set_by       text,
+  set_at       timestamptz not null default now(),
+  primary key (article, colour)
+);

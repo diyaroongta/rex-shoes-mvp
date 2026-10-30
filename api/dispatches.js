@@ -9,6 +9,7 @@ import { validateMovement, repairLedger, heldByCombo } from "../shared/repair.js
 import { cleanGatePassFields } from "../shared/gate-pass.js";
 import { validateMoves } from "../shared/finished-stock.js";
 import { validateJobCardFields } from "../shared/production-actuals.js";
+import { validateUpperMoves, checkApproval, checkDelete, validateTag } from "../shared/upper-store.js";
 
 function validDate(value){
   if(value==null||value==="") return true;
@@ -440,8 +441,124 @@ async function jobCardDocs(req, res){
   return fail(res, 405, `${req.method} not allowed`);
 }
 
+/* UPPER STORE — see shared/upper-store.js. Here for the twelve-function
+   reason, like job work and repairs. Every write runs in a transaction that
+   LOCKS the log first: "no issue above available stock" is checked against the
+   log, and two keepers issuing the last 40 uppers at once would otherwise both
+   be told there were 40. */
+const UPPER_COLS = `id, kind, article, colour, size, qty, order_no, job_card_no, source_type, source,
+  destination, damaged_at, rack, reason, status, moved_on, created_by, approved_by, approved_at, created_at`;
+const upperRow = r => ({ ...r, qty:Number(r.qty), moved_on: r.moved_on instanceof Date
+  ? `${r.moved_on.getFullYear()}-${String(r.moved_on.getMonth()+1).padStart(2,"0")}-${String(r.moved_on.getDate()).padStart(2,"0")}`
+  : String(r.moved_on||"").slice(0,10) });
+
+async function upperStoreLocked(work){
+  const client = await db().connect();
+  try{
+    await client.query("begin");
+    await client.query("lock table upper_store in share row exclusive mode");
+    const { rows } = await client.query(`select ${UPPER_COLS} from upper_store`);
+    const out = await work(client, rows.map(upperRow));
+    await client.query(out && out.rollback ? "rollback" : "commit");
+    return out;
+  }catch(e){ await client.query("rollback"); throw e; }
+  finally{ client.release(); }
+}
+
+async function upperStore(req, res){
+  const who = (req.user||{}).username || null;
+  if(req.method === "GET"){
+    const [{ rows:moves }, { rows:tags }] = await Promise.all([
+      q(`select ${UPPER_COLS} from upper_store order by moved_on desc, id desc`),
+      q("select article, colour, tag, reason_code, reason, set_by, set_at from upper_store_tags")]);
+    return res.status(200).json({ moves:moves.map(upperRow), tags });
+  }
+
+  if(req.method === "POST"){
+    const input = (req.body||{}).moves;
+    if(Array.isArray(input) && input.length > 500) return fail(res, 400, "Record at most 500 movements at a time");
+    const out = await upperStoreLocked(async (client, existing) => {
+      const { rows, problems } = validateUpperMoves(input, existing);
+      if(problems.length) return { rollback:true, error:problems.slice(0,6).join("; ") };
+      const saved = [];
+      for(const m of rows){
+        const { rows:ins } = await client.query(
+          `insert into upper_store (kind, article, colour, size, qty, order_no, job_card_no, source_type, source,
+                                    destination, damaged_at, rack, reason, status, moved_on, created_by)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, coalesce($15::date, current_date), $16)
+           returning ${UPPER_COLS}`,
+          [m.kind, m.article, m.colour, m.size, m.qty, m.order_no, m.job_card_no, m.source_type, m.source,
+           m.destination, m.damaged_at, m.rack, m.reason, m.status, m.moved_on, who]);
+        saved.push(upperRow(ins[0]));
+      }
+      return { saved };
+    });
+    if(out.error) return fail(res, 400, out.error);
+    const pending = out.saved.filter(m => m.status === "pending").length;
+    return res.status(201).json({ saved:out.saved.length, pending, rows:out.saved });
+  }
+
+  /* Approving or rejecting a count adjustment — the only edit there is.
+     Permissions already confine it to the store in-charge. */
+  if(req.method === "PATCH"){
+    const { id, action } = req.body || {};
+    if(!["approve","reject"].includes(action)) return fail(res, 400, "action must be approve or reject");
+    const out = await upperStoreLocked(async (client, existing) => {
+      const move = existing.find(m => String(m.id) === String(id));
+      if(!move) return { rollback:true, status:404, error:"That adjustment is no longer there — reload the screen" };
+      if(action === "approve"){
+        const check = checkApproval(move, existing);
+        if(!check.ok) return { rollback:true, status:409, error:check.problem };
+      }else if(move.kind !== "adjust" || move.status !== "pending")
+        return { rollback:true, status:409, error:"Only a pending adjustment can be rejected" };
+      const { rows } = await client.query(
+        `update upper_store set status = $2, approved_by = $3, approved_at = now()
+          where id = $1 returning ${UPPER_COLS}`,
+        [move.id, action === "approve" ? "approved" : "rejected", who]);
+      return { row:upperRow(rows[0]) };
+    });
+    if(out.error) return fail(res, out.status, out.error);
+    return res.status(200).json(out.row);
+  }
+
+  /* A manual moving / non-moving tag. `auto` removes it. */
+  if(req.method === "PUT"){
+    const { tag, problems } = validateTag((req.body||{}).tag);
+    if(problems.length) return fail(res, 400, problems.join("; "));
+    if(tag.tag === "auto"){
+      await q("delete from upper_store_tags where article = $1 and colour = $2", [tag.article, tag.colour]);
+      return res.status(200).json({ ...tag, cleared:true });
+    }
+    const { rows } = await q(
+      `insert into upper_store_tags (article, colour, tag, reason_code, reason, set_by)
+       values ($1,$2,$3,$4,$5,$6)
+       on conflict (article, colour) do update set tag = excluded.tag, reason_code = excluded.reason_code,
+         reason = excluded.reason, set_by = excluded.set_by, set_at = now()
+       returning article, colour, tag, reason_code, reason, set_by, set_at`,
+      [tag.article, tag.colour, tag.tag, tag.reason_code, tag.reason, who]);
+    return res.status(200).json(rows[0]);
+  }
+
+  /* A movement is a record of what happened: a wrong one is deleted and
+     re-entered — but not if that would leave the book below zero. */
+  if(req.method === "DELETE"){
+    const id = Number((req.query||{}).id);
+    if(!Number.isInteger(id)) return fail(res, 400, "id is required");
+    const out = await upperStoreLocked(async (client, existing) => {
+      const check = checkDelete(id, existing);
+      if(!check.ok) return { rollback:true, status:check.missing ? 404 : 409, error:check.problem };
+      await client.query("delete from upper_store where id = $1", [id]);
+      return { ok:true };
+    });
+    if(out.error) return fail(res, out.status, out.error);
+    return res.status(200).json({ id, deleted:true });
+  }
+  return fail(res, 405, `${req.method} not allowed`);
+}
+
 export default wrap(async (req, res) => {
   const resource = String((req.query||{}).resource || (req.body && req.body.resource) || "");
+  if(resource === "upper_store") return upperStore(req, res);
   if(resource === "finished_stock") return finishedStockMoves(req, res);
   if(resource === "job_card_docs") return jobCardDocs(req, res);
   if(String((req.query||{}).resource||"") === "job_work"

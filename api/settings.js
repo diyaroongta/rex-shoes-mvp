@@ -2,6 +2,7 @@ import { q } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { INPUTS } from "../shared/inputs.js";
 import { DEFAULT_CALENDAR, normalizeCalendar } from "../shared/holidays.js";
+import { normalizeUpperRules } from "../shared/upper-store.js";
 
 /* Day offsets from the order date by which each stage should be finished.
    These decide On track / At risk / Delayed — they are the factory's promise
@@ -131,6 +132,15 @@ export default wrap(async (req, res) => {
       if(problems.length) return fail(res, 400, problems.slice(0,5).join("; "));
       value.calendar = calendar;
     } else value.calendar = prev.calendar || base.calendar;
+
+    /* Upper store rules: the moving / non-moving window (the client's 7 days
+       until they confirm 15 or 30), and the fabrication turnaround and
+       rejection level, which stay unset — and silent — until somebody sets them. */
+    if(patch.upper_store_rules != null){
+      const { rules, problems } = normalizeUpperRules(patch.upper_store_rules);
+      if(problems.length) return fail(res, 400, problems.join("; "));
+      value.upper_store_rules = rules;
+    } else if(prev.upper_store_rules) value.upper_store_rules = prev.upper_store_rules;
 
     if(req.body.pi_config && typeof req.body.pi_config === "object")
       value.pi_config = req.body.pi_config;

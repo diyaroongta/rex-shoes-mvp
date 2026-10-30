@@ -32,6 +32,7 @@ import MISDashboard from "./MISDashboard.jsx";
 import FabricatorsTab from "./FabricatorsTab.jsx";
 import JobCardTab from "./JobCardTab.jsx";
 import RepairTab from "./RepairTab.jsx";
+import UpperStoreTab from "./UpperStoreTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import ProductionInputTab from "./ProductionInputTab.jsx";
 import PurchaseOrders from "./PurchaseOrders.jsx";
@@ -124,6 +125,8 @@ export default function App({ user=null, onSignOut=null }={}){
      (a save jumps to the order sheet, "Upload BOM" jumps to Data & BOM), and
      every one of them would otherwise need to know about roles. */
   const tab = canSeeTab(role, rawTab) ? rawTab : defaultTab(role);
+  const [upperSeen, setUpperSeen] = useState(false);
+  useEffect(()=>{ if(tab==="upper_store") setUpperSeen(true); },[tab]);
   const [intakeMode, setIntakeMode] = useState("slip");   // "slip" | "sheet", inside PI generation
   const [selected, setSelected] = useState(null);
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
@@ -691,6 +694,13 @@ export default function App({ user=null, onSignOut=null }={}){
         </div>
         {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
         {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
+        {/* Mounted once opened, like the job order: a half-entered receipt is
+            unsaved work and a tab click must not throw it away. */}
+        {(tab==="upper_store"||upperSeen) && canSeeTab(role,"upper_store") &&
+          <div style={{display:tab==="upper_store"?"block":"none"}}>
+            <UpperStoreTab orders={orders||[]} jobs={jobs} dispatches={dispatches} role={role}
+              active={tab==="upper_store"} canEditRules={role==="admin"} />
+          </div>}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} jobs={jobs} calendar={calendar}
@@ -2262,7 +2272,8 @@ const FLOW = [
   { step:1, group:"Orders",     tabs:[["intake","PI generation"],["pis","PI database"],["orders","Order Book"]] },
   { step:2, group:"Job orders", tabs:[["jobs","Create Job Order"],["jobwork","Job Orders Database"]] },
   { step:3, group:"Production", tabs:[["schedule","Schedule"],["production_input","Daily plan vs achievement"],
-                                      ["status","Production status"],["plan","Production plan"],["machines","Machine load"]] },
+                                      ["status","Production status"],["upper_store","Upper store"],
+                                      ["plan","Production plan"],["machines","Machine load"]] },
   { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["finished","Finished goods"],["repair","Repair"]] },
 ];
 const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
@@ -2325,6 +2336,7 @@ const VIEWS = {
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
+  upper_store: {title:"Upper store",       sub:"Stitched uppers in from the line or a fabricator, out to pasting and moulding"},
   repair:      {title:"Repair",            sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };

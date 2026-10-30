@@ -104,6 +104,17 @@ export const seedInternalLines = ()   => j("/api/parties?resource=fabricators", 
 export const retireFabricator  = name => j(
   `/api/parties?resource=fabricators&name=${encodeURIComponent(name)}`, { method:"DELETE" });
 
+/* The upper store: stitched uppers in from the line or a fabricator, out to
+   pasting and moulding. Rides on the dispatches endpoint (twelve functions). */
+const UPPER = "/api/dispatches?resource=upper_store";
+export const listUpperStore   = ()        => j(UPPER);
+export const addUpperMoves    = moves     => post(UPPER, { moves });
+export const decideUpperAdjust= (id, action) => j(UPPER, { method:"PATCH",
+  headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ id, action }) });
+export const setUpperTag      = tag       => j(UPPER, { method:"PUT",
+  headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ tag }) });
+export const deleteUpperMove  = id        => j(`${UPPER}&id=${encodeURIComponent(id)}`, { method:"DELETE" });
+
 /* Repair, between production and dispatch. Rides on the dispatches endpoint —
    see the note in api/dispatches.js about Vercel's twelve-function limit. */
 export const listRepairs   = ()   => j("/api/dispatches?resource=repairs");

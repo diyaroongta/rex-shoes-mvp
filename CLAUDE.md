@@ -162,6 +162,27 @@ opposite of what was asked. Two spellings of one customer are one customer
 holds both `K.P. Burgav` and `K.P. Nurgav`, which is probably a typo and is the
 factory's to fix, not the app's to guess at.
 
+**The upper store is an event log of stitched uppers.** Stitching line /
+outside fabrication -> UPPER STORE -> pasting / moulding. `shared/upper-store.js`
+keeps movements (`in`, `out`, `returned`, `damaged`, `adjust`) per article,
+COLOUR and size and derives everything else, like repair and finished stock.
+The client's rules are enforced in the one validator the browser and the server
+both call: no issue above available stock (checked row by row through a batch,
+and inside a LOCKED transaction on the server), every receipt names its line or
+vendor and an order or job card, damage needs a reason. Damaged AT pasting or
+moulding was already issued, so it comes off that floor's balance, never the
+shelf a second time. A physical count becomes `adjust` rows that are PENDING
+and move nothing until the Store In-charge (`upper_store:"approve"`) approves;
+the keeper (`"record"`) cannot. It is ONE POOL per article/colour/size — the
+order number is a reference, not a reservation — because the client has not
+answered "reserve or pool?". Moving vs non-moving is automatic from the last
+issue (the client's 7 days, a setting); a manual tag overrides it and always
+carries a reason. Fabrication overdue and the rejection alert have NO default
+and stay silent until the factory sets them. Outside fabrication is read off
+job work, never entered twice. Lives in `api/dispatches.js` behind
+`?resource=upper_store`, checked in `can()` before the generic `dispatches`
+grant so a dispatch clerk cannot reach it.
+
 **Procurement answers WHEN, not just what.** A list sorted by shortfall answers
 "what is short"; the buyer asks "what is short and needed on Thursday", and a
 small shortfall due tomorrow beats a huge one due in three weeks. Every piece was
@@ -359,6 +380,7 @@ shared/            imported by BOTH browser and server — pure, testable
   product-codes.js the article families and their codes — assigned once, then kept
   customer-history.js what a customer has been given before: shoes, then variants
   repair.js        shoes sent back before dispatch: movements in, out and rejected
+  upper-store.js   stitched uppers: in from the line, out to pasting/moulding, counted
   procurement-timing.js  WHEN a shortfall bites, from the stage that consumes it
   fabricators.js   internal lines and job workers in one list; what each type requires
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs

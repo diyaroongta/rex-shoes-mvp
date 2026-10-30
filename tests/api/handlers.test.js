@@ -1551,3 +1551,87 @@ describe("saving a gate pass",()=>{
     expect(sql).not.toMatch(/,\s*gate_pass\s*\n/);
   });
 });
+
+/* THE UPPER STORE. "No issue above available stock" is checked against the
+   log INSIDE a locked transaction, so two keepers issuing the last uppers at
+   once cannot both be told they are there. */
+describe("upper store",()=>{
+  const lockedClient=(existing)=>{
+    const client={query:vi.fn(async(sql,params)=>{
+      const t=String(sql);
+      if(t.includes("from upper_store")&&t.includes("select")) return {rows:existing};
+      if(t.includes("insert into upper_store")) return {rows:[{id:50,kind:params[0],article:params[1],colour:params[2],size:params[3],
+        qty:params[4],status:params[13],moved_on:"2026-10-29"}]};
+      if(t.includes("update upper_store")) return {rows:[{id:params[0],status:params[1],qty:-3,moved_on:"2026-10-29"}]};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    return client;
+  };
+  const IN={id:1,kind:"in",article:"SPIKE",colour:"BLUE",size:"8",qty:10,status:"approved",moved_on:"2026-10-01"};
+  const req=(method,body,query={})=>({headers:AUTH,method,url:"/api/dispatches?resource=upper_store",
+    query:{resource:"upper_store",...query},body});
+
+  it("refuses an issue above what the store holds, and writes nothing",async()=>{
+    const client=lockedClient([IN]);
+    const res=response();
+    await dispatchHandler(req("POST",{moves:[{kind:"out",article:"SPIKE",colour:"blue",size:"8",qty:11,destination:"MOULDING",order_no:"JO1"}]}),res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/only 10 upper/);
+    expect(client.query).toHaveBeenCalledWith("lock table upper_store in share row exclusive mode");
+    expect(client.query.mock.calls.some(([s])=>String(s).includes("insert into upper_store"))).toBe(false);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+  });
+
+  it("files a count adjustment as PENDING",async()=>{
+    lockedClient([IN]);
+    const res=response();
+    await dispatchHandler(req("POST",{moves:[{kind:"adjust",article:"SPIKE",colour:"BLUE",size:"8",qty:-3,reason:"count"}]}),res);
+    expect(res.statusCode).toBe(201);
+    expect(res.body.pending).toBe(1);
+  });
+
+  it("will not approve an adjustment that would leave the shelf below zero",async()=>{
+    const client=lockedClient([IN,{id:2,kind:"out",article:"SPIKE",colour:"BLUE",size:"8",qty:9,destination:"MOULDING",status:"approved"},
+      {id:3,kind:"adjust",article:"SPIKE",colour:"BLUE",size:"8",qty:-3,status:"pending"}]);
+    const res=response();
+    await dispatchHandler(req("PATCH",{id:3,action:"approve"}),res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/below zero/);
+    expect(client.query.mock.calls.some(([s])=>String(s).includes("update upper_store"))).toBe(false);
+  });
+
+  it("approves a pending adjustment and records who approved it",async()=>{
+    const client=lockedClient([IN,{id:3,kind:"adjust",article:"SPIKE",colour:"BLUE",size:"8",qty:-3,status:"pending"}]);
+    const res=response();
+    await dispatchHandler(req("PATCH",{id:3,action:"approve"}),res);
+    expect(res.statusCode).toBe(200);
+    const upd=client.query.mock.calls.find(([s])=>String(s).includes("update upper_store"));
+    expect(upd[1]).toEqual([3,"approved","tester"]);
+  });
+
+  it("refuses to delete a receipt whose uppers have since been issued",async()=>{
+    lockedClient([IN,{id:2,kind:"out",article:"SPIKE",colour:"BLUE",size:"8",qty:6,destination:"MOULDING",status:"approved"}]);
+    const res=response();
+    await dispatchHandler(req("DELETE",undefined,{id:"1"}),res);
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("will not tag an upper non-moving without a reason",async()=>{
+    const res=response();
+    await dispatchHandler(req("PUT",{tag:{article:"SPIKE",tag:"non_moving"}}),res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/needs a reason/);
+  });
+
+  it("keeps the upper store rules in settings, with no invented thresholds",async()=>{
+    dbMocks.q.mockImplementation(async sql=>String(sql).includes("select value from settings")?{rows:[{value:{}}]}:{rows:[]});
+    const res=response();
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body:{upper_store_rules:{moving_days:15}}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.upper_store_rules).toEqual({moving_days:15,fabrication_due_days:null,rejection_alert_pct:null});
+    const bad=response();
+    await settingsHandler({headers:AUTH,method:"PUT",url:"/api/settings",body:{upper_store_rules:{moving_days:0}}},bad);
+    expect(bad.statusCode).toBe(400);
+  });
+});
