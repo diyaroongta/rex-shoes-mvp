@@ -3657,6 +3657,22 @@ function ScheduleTab({state,setPlanOverride}){
   /* Open — and re-open after a zoom — with today at the left edge, one day
      of context before it. */
   React.useEffect(()=>{ scrollToDay(todayDay); },[zoom,minDay]);
+  /* THE ADJUST PANEL OPENS INSIDE THE SCROLLING BOARD, which is now far wider
+     than the screen. Laid out across the full board, its controls sat at the
+     board's left edge — scrolled off-screen, because the board opens at today —
+     and the planner saw an empty box. It is pinned to the VISIBLE width, the
+     way the order column is pinned to the left. */
+  const [viewWidth,setViewWidth]=React.useState(null);
+  React.useEffect(()=>{
+    const el=scroller.current;
+    if(!el) return;
+    const measure=()=>setViewWidth(el.clientWidth||null);
+    measure();
+    if(typeof ResizeObserver==="undefined") return;
+    const ro=new ResizeObserver(measure); ro.observe(el);
+    return ()=>ro.disconnect();
+  },[]);
+  const pinnedStyle={position:"sticky",left:0,width:viewWidth?viewWidth:"100%",maxWidth:"100%"};
   const ticks=days.filter(d=>((d-minDay)%tickEvery)===0);
   /* THE PLANNER SCHEDULES JOB CARDS. An order with more than one card is
      drawn as its own summary row with the cards beneath it, because "when is
@@ -3841,10 +3857,10 @@ function ScheduleTab({state,setPlanOverride}){
               {editing===o.order_no?"Done":"Adjust"}</button>}
           </div>
         </div>
-        {editing===o.order_no && setPlanOverride && (
+        {editing===o.order_no && setPlanOverride && <div data-testid="plan-editor-pin" style={pinnedStyle}>
           <PlanOverrideEditor order={o} queue={rows.map(r=>r.order_no)}
             onChange={ov=>setPlanOverride(o.order_no,ov)}
-            onClose={()=>setEditing(null)} />)}
+            onClose={()=>setEditing(null)} /></div>}
         {showBatches && batches.map(u=>(
           <React.Fragment key={u.unit_key}>
           <div className="flex items-center gap-2 mb-2">
@@ -3866,12 +3882,12 @@ function ScheduleTab({state,setPlanOverride}){
                 {editing===u.unit_key?"Done":"Adjust"}</button>}
             </div>
           </div>
-          {editing===u.unit_key && setPlanOverride && (
+          {editing===u.unit_key && setPlanOverride && <div data-testid="plan-editor-pin" style={pinnedStyle}>
             <PlanOverrideEditor
               order={{...u, plan_title:`${o.order_no} · ${u.unit_kind==="balance"?"pairs not yet on a card":`card ${u.card_no||u.job_id}`}`}}
               queue={unitQueue}
               onChange={ov=>setPlanOverride(o.order_no,ov,u.unit_key)}
-              onClose={()=>setEditing(null)} />)}
+              onClose={()=>setEditing(null)} /></div>}
           </React.Fragment>))}
         </React.Fragment>);
       })}

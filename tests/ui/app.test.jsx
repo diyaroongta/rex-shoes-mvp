@@ -1543,4 +1543,21 @@ describe("the schedule opens on the floor",()=>{
     expect(screen.getByRole("button",{name:/Earlier/})).toBeInTheDocument();
     expect(screen.getByRole("button",{name:"Today"})).toBeInTheDocument();
   });
+
+  /* The Adjust panel opens INSIDE the scrolling board. Once the board became
+     wider than the screen and opened scrolled to today, the panel's controls
+     sat at the board's left edge, off-screen, and the planner saw an empty
+     box. It is pinned to the visible width, like the order column. */
+  it("pins the Adjust panel to the visible part of a wide, scrolled board",async()=>{
+    mocks.listOrders.mockResolvedValue([{...order,order_date:"2026-09-01"}]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Schedule");
+    await user.click(await screen.findByRole("button",{name:/Adjust the plan for JO-S1/}));
+    const title=screen.getByText(/^Adjust JO-S1/);
+    const pin=title.closest("[data-testid='plan-editor-pin']");
+    expect(pin).not.toBeNull();
+    expect(pin.style.position).toBe("sticky");
+    expect(pin.style.left).toBe("0px");
+  });
 });
