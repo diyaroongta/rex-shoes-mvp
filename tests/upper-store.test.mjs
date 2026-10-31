@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { validateUpperMoves, upperStock, upperPositions, upperLedger, onHandBySize, effectOf,
          checkApproval, checkDelete, movingStatus, validateTag, outsideFabrication, upperShortage,
-         rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, ageBucket, daysBetween, qcQueue,
+         rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, ageBucket, daysBetween, qcQueue, sizeRank,
          DEFAULT_MOVING_DAYS } from "../shared/upper-store.js";
 
 let passed = 0, failed = 0;
@@ -373,6 +373,23 @@ test("the ledger carries the running balance of each upper, newest first", () =>
 test("a negative balance is reported, never floored", () => {
   const s = upperStock([{ kind:"adjust", article:"X", size:"8", qty:-3, status:"approved", reason:"r" }]);
   assert.deepEqual(s.groups[0].negative, ["8"]);
+});
+
+console.log("\nS — live stock in the company's series");
+
+/* Sorted by number, adult 1 and 2 came out ahead of kids 6s and 7s. The roll
+   is 6s..13s, then 1..5.5, then the bare 6..13 of a B range. */
+test("sizes follow the factory roll, not number order", () => {
+  const s = upperStock(["1","8","7s","13s","5.5","10s","2","6s"].map(z => IN(z, 1)));
+  assert.deepEqual(s.groups[0].sizes.map(x => x.size), ["6s","7s","10s","13s","1","2","5.5","8"]);
+  assert.equal(sizeRank("UK9"), null, "a size the roll does not know has no rank and sorts last");
+});
+
+test("articles follow the series the screen gives, A-Z for the rest", () => {
+  const log = ["JACK LACE", "ARMOUR", "JACK VELCRO", "ZED"].map(a => IN("8", 1, { article:a }));
+  const s = upperStock(log, { articleRank:{ "JACK VELCRO":0, "JACK LACE":1, "ARMOUR":2 } });
+  assert.deepEqual(s.groups.map(g => g.article), ["JACK VELCRO","JACK LACE","ARMOUR","ZED"]);
+  assert.deepEqual(upperStock(log).groups.map(g => g.article), ["ARMOUR","JACK LACE","JACK VELCRO","ZED"]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

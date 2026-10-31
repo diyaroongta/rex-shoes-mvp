@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import {plannedProductionRows,validateProductionActuals,withProductionActuals,productionActualSummary}
+import {plannedProductionRows,validateProductionActuals,withProductionActuals,productionActualSummary,
+        entryTargets,unplannedRow}
   from "../shared/production-actuals.js";
 
 let passed=0;
@@ -82,5 +83,40 @@ test("today's dashboard summary uses plan and recorded achievement",()=>{
     assert.equal(both[0].actual_pairs,765);
   });
 }
+
+console.log("\nany date — work the plan did not schedule can still be reported");
+
+/* The screen offered only the plan's rows, and the plan is work still TO DO:
+   a day before go-live or one the plan had moved past could not be filled.
+   An entry can be added for ANY date against a real card and stage. */
+test("lists every job card with the stages it can be reported against",()=>{
+  const targets=entryTargets(state);
+  assert.equal(targets.length,1);
+  assert.deepEqual(targets[0].stages,[{stage:"CUTTING",work_center:"CUTTING"}]);
+  assert.equal(targets[0].job_card_no,"JC7");
+});
+
+test("a back-dated line carries zero plan and saves",()=>{
+  const planned=plannedProductionRows(state,"2026-09-01",fromDay);
+  const targets=entryTargets(state);
+  const row=unplannedRow(targets[0],"CUTTING","2026-08-20");
+  assert.equal(row.planned_pairs,0);
+  assert.equal(row.unplanned,true);
+  const out=validateProductionActuals([{...row,actual_pairs:35}],planned,[],{targets});
+  assert.equal(out.ok,true,out.problems.join("; "));
+  assert.equal(out.rows[0].production_on,"2026-08-20");
+  assert.equal(out.rows[0].actual_pairs,35);
+  assert.equal(out.rows[0].planned_pairs,0);
+});
+
+test("an unplanned line is refused for a card or stage that does not exist",()=>{
+  const planned=plannedProductionRows(state,"2026-09-01",fromDay);
+  const targets=entryTargets(state);
+  const row=unplannedRow(targets[0],"CUTTING","2026-08-20");
+  assert.equal(validateProductionActuals([{...row,stage:"MOLDING",actual_pairs:5}],planned,[],{targets}).ok,false);
+  assert.equal(validateProductionActuals([{...row,unit_key:"JO9#X",actual_pairs:5}],planned,[],{targets}).ok,false);
+  assert.equal(validateProductionActuals([{...row,actual_pairs:5}],planned).ok,false,"without the card list nothing unplanned is accepted");
+  assert.equal(unplannedRow(targets[0],"CUTTING","not a date"),null);
+});
 
 console.log(`\n${passed} passed, 0 failed\n`);

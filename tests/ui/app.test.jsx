@@ -1516,16 +1516,31 @@ describe("the schedule opens on the floor",()=>{
     } finally { vi.useRealTimers(); }
   });
 
-  it("opens on a two-week window and can be zoomed out",async()=>{
+  it("opens at two weeks a screen and can be zoomed out",async()=>{
     mocks.listOrders.mockResolvedValue([order]);
     const user=userEvent.setup();
     render(<App/>);
     await goTo(user, "Schedule");
 
-    const twoWeeks=await screen.findByRole("button",{name:"Next 2 weeks"});
+    const twoWeeks=await screen.findByRole("button",{name:"2 weeks"});
     expect(twoWeeks).toHaveAttribute("aria-pressed","true");
     await user.click(screen.getByRole("button",{name:"Everything"}));
     expect(screen.getByRole("button",{name:"Everything"})).toHaveAttribute("aria-pressed","true");
     expect(twoWeeks).toHaveAttribute("aria-pressed","false");
+  });
+
+  /* "2 weeks" used to be a crop: days before today and after day 14 were
+     simply not drawn, so nothing could be scrolled to. It is a zoom now —
+     the whole plan is on the board and the box scrolls. */
+  it("draws the whole plan at two weeks a screen, so earlier days can be scrolled to",async()=>{
+    mocks.listOrders.mockResolvedValue([{...order,order_date:"2026-09-01"}]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Schedule");
+    await screen.findByRole("button",{name:"2 weeks"});
+    const board=screen.getByTestId("schedule-scroller").firstElementChild;
+    expect(parseInt(board.style.minWidth,10)).toBeGreaterThan(860);
+    expect(screen.getByRole("button",{name:/Earlier/})).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Today"})).toBeInTheDocument();
   });
 });

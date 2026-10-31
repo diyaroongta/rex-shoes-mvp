@@ -1,8 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 
 afterEach(()=>cleanup());
+/* findBy… waited 1s for the app to appear. Under load the first render alone
+   took longer, and "Unable to find Enter by hand" read as a missing button
+   when it was a slow one. 3s; a button that is genuinely missing still fails. */
+configure({ asyncUtilTimeout: 3000 });
 globalThis.confirm = vi.fn(()=>true);
 globalThis.URL.createObjectURL = globalThis.URL.createObjectURL || vi.fn(()=>"blob:test");
 globalThis.URL.revokeObjectURL = globalThis.URL.revokeObjectURL || vi.fn();

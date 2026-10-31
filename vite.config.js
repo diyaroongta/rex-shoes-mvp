@@ -16,6 +16,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./tests/ui/setup.js"],
+    /* 5s per test was measured too tight, not too generous: the same tests
+       pass in ~0.6s, and the three that failed in a full `npm run check`
+       did so only in runs where the machine stalled and the whole suite ran
+       2-3x slower. A real hang still fails, at 15s instead of 5. */
+    testTimeout: 15000,
     include: ["tests/ui/**/*.test.jsx", "tests/api/**/*.test.js"],
     coverage: {
       provider: "v8",

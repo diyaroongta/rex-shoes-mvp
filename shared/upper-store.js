@@ -32,6 +32,7 @@
  *
  * Pure — no database, no clock. `today` is always passed in.
  */
+import { ROLL_KY } from "./bridge.js";
 
 export const UPPER_KINDS = {
   in:       { label:"Stock in (QC passed)" },
@@ -64,7 +65,27 @@ const isoDay = v => {
   return clean(v).slice(0, 10);
 };
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
-const bySize = (a, z) => String(a).localeCompare(String(z), undefined, { numeric:true });
+/* THE FACTORY'S SIZE SERIES, not number order. The roll runs 6..13 (the kids
+   run, printed 8s) and then 1..5.5 (adult); a bare 6..13 is the adult REPEAT
+   of a B range and comes after 5.5. Sorting by number put adult 1, 2, 3 ahead
+   of kids 6s, 7s — smaller-looking sizes jumping the queue on Live stock.
+   A size the roll does not know sorts after it, by number. */
+export function sizeRank(size){
+  const s = clean(size).toUpperCase();
+  const kids = /^(\d+(?:\.5)?)S$/.exec(s);
+  if(kids){ const i = ROLL_KY.indexOf(kids[1]); if(i >= 0 && i < 8) return i; }
+  const i = ROLL_KY.indexOf(s);
+  if(i >= 8) return i;               // 1 .. 5.5
+  if(i >= 0) return ROLL_KY.length + i;   // bare 6 .. 13 — the adult repeat
+  return null;
+}
+const bySize = (a, z) => {
+  const ra = sizeRank(a), rz = sizeRank(z);
+  if(ra != null && rz != null && ra !== rz) return ra - rz;
+  if(ra != null && rz == null) return -1;
+  if(ra == null && rz != null) return 1;
+  return String(a).localeCompare(String(z), undefined, { numeric:true });
+};
 
 export const upperKey = (article, colour, size) => `${clean(article)}||${colourOf(colour)}||${clean(size)}`;
 
@@ -286,8 +307,18 @@ export function checkDelete(id, existing = []){
 }
 
 /* LIVE STOCK, article / colour / size. Below zero is a bookkeeping fault and
-   is reported, never floored. */
-export function upperStock(moves = []){
+   is reported, never floored. Articles follow `opts.articleRank` — the
+   company's series (family, then product code) as the screen works it out
+   from the article master — and fall back to A-Z for an article with none. */
+export function upperStock(moves = [], opts = {}){
+  const rank = opts.articleRank || {};
+  const byArticle = (a, z) => {
+    const ra = rank[a], rz = rank[z];
+    if(ra != null && rz != null && ra !== rz) return ra - rz;
+    if(ra != null && rz == null) return -1;
+    if(ra == null && rz != null) return 1;
+    return a.localeCompare(z);
+  };
   const groups = new Map();
   for(const p of upperPositions(moves).values()){
     const gk = `${p.article}||${p.colour}`;
@@ -311,7 +342,7 @@ export function upperStock(moves = []){
   const list = [...groups.values()].map(g => ({ ...g, sizes: g.sizes.sort((a, z) => bySize(a.size, z.size)) }))
     .filter(g => g.on_hand !== 0 || g.negative.length || g.at.PASTING || g.at.MOULDING || g.pending_adjust
                  || g.qc_hold || g.rework)
-    .sort((a, z) => a.article.localeCompare(z.article) || a.colour.localeCompare(z.colour));
+    .sort((a, z) => byArticle(a.article, z.article) || a.colour.localeCompare(z.colour));
   return { groups:list, total: list.reduce((n, g) => n + g.on_hand, 0) };
 }
 

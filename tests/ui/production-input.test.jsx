@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const apiMocks=vi.hoisted(()=>({saveProductionActuals:vi.fn(),listProductionActuals:vi.fn(),
@@ -190,4 +190,25 @@ it("totals what has been entered before it is saved",async()=>{
   await user.click(screen.getByRole("button",{name:"Ran to plan"}));
   expect(line()).toMatch(/500 of 500 pairs/);
   expect(line()).toMatch(/100% · 1 of 1 rows/);
+});
+
+/* ANY DATE IS OPEN. A day the plan scheduled nothing on — here a fortnight
+   before the card's first planned day — used to have no rows and so could
+   not be reported on at all, which made back-filling impossible. A line is
+   added for that day against a real card and stage and saved with plan 0. */
+it("records production on a back date the plan never scheduled",async()=>{
+  const user=userEvent.setup();
+  render(<ProductionInputTab state={STATE} actuals={[]} jobs={[]} onChanged={async()=>{}} />);
+  const past=plusDays(MONDAY,-14);
+  fireEvent.change(screen.getByLabelText("Production date"),{target:{value:past}});
+  expect(await screen.findByText(/Nothing is scheduled/)).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("Job card to add"),"JO9500#JC41");
+  await user.selectOptions(screen.getByLabelText("Stage to add"),"CUTTING");
+  await user.click(screen.getByRole("button",{name:"Add line"}));
+  expect(screen.getByText("not planned")).toBeInTheDocument();
+  await user.type(screen.getByLabelText(`Pairs achieved for JC41 CUTTING on ${past}`),"35");
+  await user.click(screen.getByRole("button",{name:/^Save/}));
+  await waitFor(()=>expect(apiMocks.saveProductionActuals).toHaveBeenCalled());
+  expect(apiMocks.saveProductionActuals.mock.calls[0][0][0]).toMatchObject(
+    {production_on:past,stage:"CUTTING",unit_key:"JO9500#JC41",planned_pairs:0,actual_pairs:35});
 });

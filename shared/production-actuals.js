@@ -116,12 +116,50 @@ export function validateJobCardFields(row){
 
 /* `existing` lets a row that is ALREADY recorded be corrected even after the
    plan has moved on from it — refusing that left a wrong figure uncorrectable. */
-export function validateProductionActuals(rows, planned, existing=[]){
+/* ANY DATE, ANY LIVE JOB CARD.
+   The screen used to offer only the rows the plan had scheduled. But the
+   plan is work still TO DO, so a day before a card's start, or a day the
+   plan has already moved past, had no rows and could not be reported on —
+   which made back-filling the weeks before go-live impossible and testing
+   painful. An entry can now be added for any date against any job card's
+   stage. It carries planned_pairs 0, because nothing WAS planned for that
+   day, and is marked `unplanned` so it is never mistaken for plan. */
+export function entryTargets(state){
+  const work=(state&&state.units&&state.units.length?state.units:(state&&state.orders)||[]);
+  return work.map(unit=>({
+    unit_key:unit.unit_key||unit.order_no, order_no:unit.order_no, job_card_no:unit.card_no||"",
+    article:unit.article||"", party:unit.party||"",
+    size_ranges:(unit.lines||[]).map(line=>line.combo).filter(Boolean).join(", "),
+    stages:(unit.stages||[]).filter(st=>!st.instant&&st.work_center)
+      .map(st=>({stage:st.stage, work_center:st.work_center})),
+  })).filter(t=>t.unit_key&&t.order_no&&t.stages.length)
+    .sort((a,b)=>String(a.order_no).localeCompare(String(b.order_no))||String(a.job_card_no).localeCompare(String(b.job_card_no)));
+}
+
+export function unplannedRow(target, stage, day){
+  const on=iso(day);
+  const st=(target&&target.stages||[]).find(s=>s.stage===stage);
+  if(!on||!st) return null;
+  return { production_on:on, work_center:st.work_center, stage:st.stage, order_no:target.order_no,
+           unit_key:target.unit_key, job_card_no:target.job_card_no, article:target.article,
+           party:target.party, size_ranges:target.size_ranges, planned_pairs:0, unplanned:true };
+}
+
+export function validateProductionActuals(rows, planned, existing=[], opts={}){
   const plan=new Map((planned||[]).map(row=>[productionActualKey(row),row]));
   for(const row of existing||[]){ const k=productionActualKey(row); if(!plan.has(k)) plan.set(k,row); }
+  /* An unplanned entry is accepted only against a job card and stage that
+     really exist, so a typo cannot invent a line of production. */
+  const targets=new Map((opts.targets||[]).map(t=>[t.unit_key,t]));
   const clean=[], problems=[];
   for(const [index,input] of (rows||[]).entries()){
-    const key=productionActualKey(input), match=plan.get(key);
+    const key=productionActualKey(input);
+    let match=plan.get(key);
+    if(!match&&input&&input.unplanned){
+      const t=targets.get(String(input.unit_key||""));
+      const ok=t&&iso(input.production_on)&&t.stages.some(st=>st.stage===input.stage&&st.work_center===input.work_center);
+      if(ok) match=unplannedRow(t,input.stage,input.production_on);
+    }
     const actual=Number(input.actual_pairs);
     if(!match){ problems.push(`Row ${index+1} is not in the current production plan`); continue; }
     if(!Number.isFinite(actual)||actual<0||!Number.isInteger(actual)){

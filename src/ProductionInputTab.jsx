@@ -8,7 +8,7 @@ import * as XLSX from "xlsx";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { fromDay, workCentresInOrder } from "../shared/engine.js";
 import { plannedProductionRows, productionActualSummary, validateProductionActuals,
-         withProductionActuals } from "../shared/production-actuals.js";
+         withProductionActuals, entryTargets, unplannedRow } from "../shared/production-actuals.js";
 import * as api from "./lib/client.js";
 
 const HEADERS=["Production Date","Work Centre Code","Work Centre","Stage","Job Card No","Order No",
@@ -205,9 +205,24 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
     if(earliest){ setDay(earliest); setWeekStart(mondayOf(earliest)); }
     chosenDay.current=true;
   },[rows,today]);
-  const visible=rows.filter(row=>scope==="week"
-    ? row.production_on>=weekStart&&row.production_on<=weekEnd
-    : row.production_on===day);
+  /* Lines added by hand for a date the plan has nothing on — a day before a
+     card started, or one the plan has already moved past. Kept until saved. */
+  const targets=useMemo(()=>entryTargets(state),[state]);
+  const [extraRows,setExtraRows]=useState([]);
+  const [addUnit,setAddUnit]=useState(""), [addStage,setAddStage]=useState("");
+  const addTarget=targets.find(t=>t.unit_key===addUnit)||null;
+  function addLine(){
+    const row=unplannedRow(addTarget,addStage,day);
+    if(!row) return;
+    const key=productionActualKey(row);
+    if(rows.some(r=>productionActualKey(r)===key)||extraRows.some(r=>productionActualKey(r)===key)){
+      setError("That job card and stage is already listed for this date — enter the pairs on its row."); return; }
+    setError(""); setExtraRows(list=>[...list,row]);
+  }
+  const visible=[...rows,...extraRows.filter(x=>!rows.some(r=>productionActualKey(r)===productionActualKey(x)))]
+    .filter(row=>scope==="week"
+      ? row.production_on>=weekStart&&row.production_on<=weekEnd
+      : row.production_on===day);
 
   /* WHAT IS TYPED BUT NOT YET SAVED, as it is typed. Reporting used to be
      numbers going into boxes with no total until after the save. */
@@ -256,7 +271,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
          card details of an already-recorded row keep its recorded pairs. */
       const keys=new Set([...Object.keys(entry).filter(k=>String(entry[k]).trim()!==""),
                           ...Object.keys(cardEntry).filter(k=>Object.values(cardEntry[k]||{}).some(v=>String(v).trim()!==""))]);
-      const all=withProductionActuals(planned,actuals);
+      const all=[...withProductionActuals(planned,actuals),...extraRows];
       const rows=[...keys].map(key=>{
           const row=all.find(r=>productionActualKey(r)===key);
           if(!row) return null;
@@ -267,12 +282,12 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
           return {...row,...card,actual_pairs:actual};
         }).filter(Boolean);
       if(!rows.length) throw new Error("Type the pairs achieved against at least one row first.");
-      const checked=validateProductionActuals(rows,planned,actuals);
+      const checked=validateProductionActuals(rows,planned,actuals,{targets});
       if(!checked.ok) throw new Error(checked.problems.slice(0,8).join("; "));
       const after=typeof replan==="function"?replan(checked.rows):null;
       const result=await api.saveProductionActuals(checked.rows);
       await onChanged();
-      setEntry({}); setCardEntry({}); setOpenCard(null);
+      setEntry({}); setCardEntry({}); setOpenCard(null); setExtraRows([]);
       setImpact(after?planImpact(state,after,checked.rows):planImpact(state,state,checked.rows));
       setMessage(`${result.saved} row${result.saved===1?"":"s"} saved — job cards filled from these figures.`);
     }catch(e){setError(e.message||String(e));}
@@ -365,6 +380,24 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
         {day!==today && <button onClick={()=>setDay(today)}
           className="text-xs font-semibold text-indigo-700">Today</button>}
       </div>}
+      {/* ANY DATE IS OPEN. The rows above are what the plan scheduled; work
+          done on a day it did not schedule — before go-live, or after the plan
+          moved on — is added here and saved the same way. */}
+      {scope==="day" && targets.length>0 && <div className="flex items-end gap-2 flex-wrap mb-3 text-xs">
+        <span className="text-slate-500 self-center">Add a line for {day}:</span>
+        <select value={addUnit} onChange={e=>{setAddUnit(e.target.value);setAddStage("");}} aria-label="Job card to add"
+          className="border border-slate-300 rounded-lg px-2 py-1 bg-white max-w-xs">
+          <option value="">Job card / order…</option>
+          {targets.map(t=><option key={t.unit_key} value={t.unit_key}>
+            {t.job_card_no?`Card ${t.job_card_no}`:"Whole order"} · {t.order_no} · {t.article}</option>)}</select>
+        <select value={addStage} onChange={e=>setAddStage(e.target.value)} aria-label="Stage to add" disabled={!addTarget}
+          className="border border-slate-300 rounded-lg px-2 py-1 bg-white">
+          <option value="">Stage…</option>
+          {(addTarget?addTarget.stages:[]).map(st=><option key={st.stage} value={st.stage}>
+            {STAGE_WORD[st.stage]||st.stage} · {(INPUTS.workcenters[st.work_center]||{}).name||st.work_center}</option>)}</select>
+        <button onClick={addLine} disabled={!addTarget||!addStage}
+          className="font-semibold rounded-lg px-2.5 py-1 border border-indigo-300 text-indigo-700 bg-white disabled:opacity-40">Add line</button>
+      </div>}
 
       {/* HOW THE FLOOR ACTUALLY REPORTS IT: "everything ran" or "we were at
           about 85%". Both write into the boxes below — every figure stays
@@ -410,7 +443,8 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
           {/* A row the plan no longer carries, because recording it is what
               took it off the plan. It is history and stays visible, so the day
               it was entered against does not read as empty. */}
-          {row.recorded_only && <div className="text-[10px] text-slate-400 font-normal">recorded</div>}</td>
+          {row.recorded_only && <div className="text-[10px] text-slate-400 font-normal">recorded</div>}
+          {row.unplanned && <div className="text-[10px] text-indigo-600 font-normal">not planned</div>}</td>
         <td className="px-2 text-right">
           {/* What was recorded stands until it is deliberately typed over —
               the box shows the saved figure rather than an empty field that
@@ -430,7 +464,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
               className={`w-24 border rounded px-1.5 py-1 mono text-right ${
                 row.actual_pairs==null?"border-slate-300":"border-emerald-300 text-emerald-800"}`} />
             {/* One click for the commonest entry of all. */}
-            {!row.recorded_only && <button type="button" disabled={busy}
+            {!row.recorded_only && !row.unplanned && <button type="button" disabled={busy}
               title={`This row ran to plan — ${fmt(row.planned_pairs)} pairs`}
               aria-label={`${row.job_card_no||row.order_no} ${row.stage} ran to plan`}
               onClick={()=>setEntry(d=>({...d,[productionActualKey(row)]:String(Number(row.planned_pairs)||0)}))}
@@ -479,7 +513,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
       </div>}
       {!visible.length&&<div className="text-sm text-slate-500 text-center py-8">
         {scope==="day"
-          ? <>Nothing is scheduled for {niceDay(day)}.{" "}
+          ? <>Nothing is scheduled for {niceDay(day)}. Use <b>Add a line</b> above to record work done that day anyway, or{" "}
               <button onClick={()=>setScope("week")} className="font-semibold text-indigo-700">Show the whole week</button></>
           : <>Nothing is scheduled in this Monday–Saturday week.</>}
       </div>}

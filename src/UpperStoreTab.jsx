@@ -58,7 +58,16 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
     return new Set(orders.filter(o=>{ const r=ledger[o.order_no]; return o.production_complete || (r && (r.closed || r.total_pending<=0)); })
       .map(o=>o.order_no));
   },[orders,dispatches]);
-  const stock = useMemo(()=>upperStock(moves),[moves]);
+  /* The company's series: families A-Z, and within a family by product code
+     (JA001, JA002…) — the same order every article picker uses. */
+  const articleRank = useMemo(()=>{
+    const codes = Object.fromEntries(Object.entries(INPUTS.articles||{}).filter(([,a])=>a&&a.product_code).map(([n,a])=>[n,a.product_code]));
+    const groups = families(Object.keys(INPUTS.articles||{}), codes);
+    const rank = {}; let i = 0;
+    for(const f of Object.keys(groups).sort()) for(const { article } of groups[f]) rank[article] = i++;
+    return rank;
+  },[]);
+  const stock = useMemo(()=>upperStock(moves,{articleRank}),[moves,articleRank]);
   const moving = useMemo(()=>movingStatus(moves,tags,today,rules.moving_days),[moves,tags,today,rules.moving_days]);
   const shortage = useMemo(()=>upperShortage(orders,moves,done),[orders,moves,done]);
   const fabrication = useMemo(()=>outsideFabrication(jobs,today,rules.fabrication_due_days),[jobs,today,rules.fabrication_due_days]);

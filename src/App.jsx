@@ -3628,27 +3628,35 @@ function ScheduleTab({state,setPlanOverride}){
   const overrides=Object.fromEntries(state.orders.map(o=>[o.order_no,o.override||{}]));
   /* An order whose job cards are all CLOSED is finished and leaves the board. */
   const rows=queueOrder(state.orders, overrides).filter(o=>!o.production_complete);
-  /* A DATE WINDOW, NOT THE WHOLE HORIZON.
-     The board drew every order across every day it spanned — on live data a
-     100-day range squeezed into ~750px, which is 7px a day: the stage bars
-     went sub-pixel and the thing became a stripe. It opens on the next two
-     weeks from today, which is the span a planner actually works to, and
-     zooms out on request. */
-  const WINDOWS = { "2w":14, "6w":42, all:null };
+  /* A ZOOM LEVEL, NOT A CROP.
+     Squeezing a 100-day plan into ~750px made each day 7px and the bars a
+     stripe, so the board used to open on a fixed two-week WINDOW — which cut
+     off everything before today and after day 14 with no way to reach it.
+     Now the whole plan is drawn at a set width per day inside a sideways
+     scroll that opens at today: "2 weeks" is how much fits on a screen, not
+     how much exists. Everything still fits the plan into one screen. */
+  const PX_PER_DAY = { "2w":56, "6w":20, all:null };
   const [zoom,setZoom]=React.useState("2w");
   const planMax=Math.max(...rows.map(o=>o.dispatch_day),1);
   const planMin=Math.min(...rows.map(o=>Math.min(...o.stages.map(s=>s.start))),0);
   const todayDay=dayIndex(todayIso(), INPUTS.origin);
-  const width=WINDOWS[zoom];
-  /* Clamped to the plan: a window starting after the last order would show an
-     empty board and look broken. */
-  const minDay=width==null?planMin:Math.max(planMin,Math.min(todayDay,planMax-width+1));
-  const maxDay=width==null?planMax:Math.min(planMax,minDay+width-1);
+  const px=PX_PER_DAY[zoom];
+  /* Today is always on the board, even when every order is in the past or
+     the future, so "Today" has somewhere to scroll to. */
+  const minDay=px==null?planMin:Math.min(planMin,todayDay);
+  const maxDay=px==null?planMax:Math.max(planMax,todayDay+13);
   const span=Math.max(1,maxDay-minDay+1);
   const days=Array.from({length:span},(_,i)=>minDay+i);
-  const todayIdx=dayIndex(todayIso(), INPUTS.origin);
+  const todayIdx=todayDay;
   const showToday=todayIdx>=minDay&&todayIdx<=maxDay;
-  const tickEvery=span>90?14:7;
+  const tickEvery=px==null?(span>90?14:7):px>=40?1:7;
+  const sideWidth=setPlanOverride?128:58;
+  const boardWidth=px==null?860:Math.max(860,112+16+span*px+sideWidth);
+  const scroller=React.useRef(null);
+  const scrollToDay=d=>{ if(scroller.current&&px) scroller.current.scrollLeft=Math.max(0,(d-minDay-1)*px); };
+  /* Open — and re-open after a zoom — with today at the left edge, one day
+     of context before it. */
+  React.useEffect(()=>{ scrollToDay(todayDay); },[zoom,minDay]);
   const ticks=days.filter(d=>((d-minDay)%tickEvery)===0);
   /* THE PLANNER SCHEDULES JOB CARDS. An order with more than one card is
      drawn as its own summary row with the cards beneath it, because "when is
@@ -3759,8 +3767,15 @@ function ScheduleTab({state,setPlanOverride}){
     <FloorToday state={state}/>
     <div className="flex items-center gap-2 flex-wrap mb-2">
       <div className="serif text-base font-semibold text-slate-800">The plan ahead</div>
-      <div className="inline-flex rounded-lg bg-slate-100 p-0.5 ml-auto">
-        {[["2w","Next 2 weeks"],["6w","6 weeks"],["all","Everything"]].map(([k,label])=>
+      {px!=null && <div className="inline-flex gap-1 ml-auto">
+        {[["Earlier",-7],["Today",0],["Later",7]].map(([label,step])=>
+          <button key={label} onClick={()=>{ const el=scroller.current; if(!el) return;
+              if(step===0) scrollToDay(todayDay); else el.scrollLeft+=step*px; }}
+            className="text-xs font-semibold rounded-md px-2 py-1 border border-slate-300 bg-white">
+            {label==="Earlier"?"◀ Earlier":label==="Later"?"Later ▶":"Today"}</button>)}
+      </div>}
+      <div className={`inline-flex rounded-lg bg-slate-100 p-0.5 ${px==null?"ml-auto":""}`}>
+        {[["2w","2 weeks"],["6w","6 weeks"],["all","Everything"]].map(([k,label])=>
           <button key={k} onClick={()=>setZoom(k)} aria-pressed={zoom===k}
             className="text-xs font-semibold rounded-md px-2.5 py-1"
             style={zoom===k?{background:"#fff",color:"#1e293b"}:{background:"transparent",color:"#64748b"}}>
@@ -3779,8 +3794,8 @@ function ScheduleTab({state,setPlanOverride}){
         6. <b>Nothing is planned on a Sunday or a holiday</b> (the working calendar on Machine load). A run that reaches one carries on the next working day; only outside-stitching transit counts those days, because the lorry still moves.
       </div>
     </details>
-    <div className="overflow-x-auto">
-    <div style={{minWidth:860}}>
+    <div className="overflow-x-auto" ref={scroller} data-testid="schedule-scroller">
+    <div style={{minWidth:boardWidth}}>
       <div className="flex items-center gap-2" style={{marginBottom:2}}>
         <div className="flex-none" style={{width:112}}/>
         <div className="relative flex-1" style={{height:13}}>
@@ -3788,7 +3803,7 @@ function ScheduleTab({state,setPlanOverride}){
             <span key={d} className="mono absolute text-slate-400" style={{left:`${100*(d-minDay)/span}%`,fontSize:9,whiteSpace:"nowrap"}}>{niceDate(fromDay(d,INPUTS.origin))}</span>))}
           {showToday && <span className="mono absolute font-semibold" style={{left:`${100*(todayIdx-minDay)/span}%`,fontSize:9,color:"#0f766e",transform:"translateX(-50%)"}}>today</span>}
         </div>
-        <div className="flex-none" style={{width:setPlanOverride?128:58}}/>
+        <div className="flex-none" style={{width:sideWidth}}/>
       </div>
       {rows.map(o=>{
         const pri=PRI_STYLE[o.priority]||PRI_STYLE[3];
