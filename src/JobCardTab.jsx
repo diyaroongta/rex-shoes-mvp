@@ -200,21 +200,15 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         }
       }
       setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs.${stockNote} `
-        + `Print it below, or choose another order to raise the next one.`);
+        + `Print it below, or choose another order to raise the next one. `
+        + `If the PDF does not come through, reopen it any time from Job Orders Database → Job card.`);
       if(onIssued)await onIssued(made);
     }catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
   }
 
-  function print(){
-    const node=document.querySelector(".job-card");
-    if(!node)return;
-    const w=window.open("","_blank","width=900,height=1000");
-    if(!w){setErr("Popup blocked — allow popups to print the job card.");return;}
-    w.document.open();
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Job card</title><style>*{box-sizing:border-box}body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}table{width:100%;border-collapse:collapse}[data-noprint]{display:none!important}.job-card-page{page-break-after:always}.job-card-page:last-child{page-break-after:auto}@page{size:A4 portrait;margin:10mm}</style></head><body>${node.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script></body></html>`);
-    w.document.close();
-  }
+  const cardBox=React.useRef(null);
+  const print=()=>printJobCard(cardBox.current,setErr);
 
   if(fabricators===null||jobs===null)return <div className="p-5 text-sm text-slate-500">Loading current Order Book balances…</div>;
 
@@ -331,7 +325,7 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 
-    {card&&<div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><CardSwitch value={cardKind} onChange={setCardKind}/>{cardKind==="CUTTING"?<JobCard card={card} article={article}/>:<StageJobCard card={card} article={article} kind={cardKind}/>}</div>}
+    {card&&<div ref={cardBox} className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><CardSwitch value={cardKind} onChange={setCardKind}/>{cardKind==="CUTTING"?<JobCard card={card} article={article}/>:<StageJobCard card={card} article={article} kind={cardKind}/>}</div>}
   </div>;
 }
 
@@ -404,10 +398,26 @@ function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
   </div>;
 }
 
+/* Printing opens a clean window holding only the document on screen — the
+   invoice's mechanism. Shared with the Job Orders Database's reprint, so a
+   card printed again later comes out exactly as it did the first time.
+   It looks INSIDE the box it is given: this screen stays mounted behind the
+   others, so a page-wide querySelector could print a hidden draft in place of
+   the card actually on screen. */
+export function printJobCard(box,onError){
+  const node=box&&box.querySelector(".job-card");
+  if(!node)return;
+  const w=window.open("","_blank","width=900,height=1000");
+  if(!w){onError("Popup blocked — allow popups to print the job card.");return;}
+  w.document.open();
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Job card</title><style>*{box-sizing:border-box}body{margin:0;padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#000}table{width:100%;border-collapse:collapse}[data-noprint]{display:none!important}.job-card-page{page-break-after:always}.job-card-page:last-child{page-break-after:auto}@page{size:A4 portrait;margin:10mm}</style></head><body>${node.outerHTML}<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script></body></html>`);
+  w.document.close();
+}
+
 /* The three printable documents of one job order. The pasting and packing
    cards follow the factory's own PASTING JC / PACKING JC formats; the cutting
    card is the ARMOUR one already in use. Printing takes whichever is shown. */
-function CardSwitch({value,onChange}){
+export function CardSwitch({value,onChange}){
   const kinds=[{kind:"CUTTING",title:"Cutting & stitching"},...cardKinds().map(k=>({kind:k.kind,title:k.title==="PACKING JC"?"Packing":"Pasting"}))];
   return <div data-noprint className="flex items-center gap-1 mb-2">
     <span className="text-[11px] text-slate-500 mr-1">Card:</span>

@@ -392,5 +392,13 @@ test("articles follow the series the screen gives, A-Z for the rest", () => {
   assert.deepEqual(upperStock(log).groups.map(g => g.article), ["ARMOUR","JACK LACE","JACK VELCRO","ZED"]);
 });
 
+/* The shape check let 2026-02-30 through to a ::date cast, which answered 500. */
+test("a movement date must be a real day, not just the right shape", () => {
+  const base = { kind:"in", article:"SPIKE", size:"8", qty:10, source_type:"line", source:"Line 1", mts:true };
+  assert.ok(validateUpperMoves([{ ...base, moved_on:"2026-02-30" }]).problems.some(p => /2026-02-30 is not a real date/.test(p)));
+  assert.ok(validateUpperMoves([{ ...base, qty:3e9 }]).problems.some(p => /not a quantity that can be recorded/.test(p)));
+  assert.equal(validateUpperMoves([{ ...base, moved_on:"2026-02-28" }]).problems.length, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

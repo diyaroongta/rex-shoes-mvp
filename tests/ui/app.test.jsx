@@ -1027,6 +1027,31 @@ describe("an uploaded PI can be changed structurally, not only corrected",()=>{
     await waitFor(()=>expect(printedRows()).toBeGreaterThan(before));
   });
 
+  /* "Add a specific size" was on the photographed slip and NOT on an uploaded
+     PI, so a PI that needed one more size could only take a whole range — the
+     client read it as the option having been removed. It has to reach the
+     invoice, like every other control here. */
+  it("a specific size can be added to an uploaded PI and reaches the invoice",async()=>{
+    readOnePi();
+    const user=userEvent.setup();
+    render(<App/>);
+    await uploadPi(user);
+    await user.click(screen.getByRole("button",{name:"Generate PI from these edits"}));
+    const printedRows = () => screen.getAllByLabelText(/pairs$/).filter(el=>el.closest("#pi-area")).length;
+    const before = printedRows();
+
+    const review = screen.getByText("Review before saving").parentElement;
+    const field = name => [...review.querySelectorAll("label")].find(l=>l.textContent.startsWith(name)).querySelector("input");
+    await user.type(field("Size"), "9s");
+    await user.type(field("Quantity"), "24");
+    await user.click(within(review).getByRole("button",{name:"Add size"}));
+
+    const added = await within(review).findByLabelText("REX GOLA (V) 8X10 size 9s pairs");
+    expect(added).toHaveValue(24);
+    await user.click(await screen.findByRole("button",{name:/Generate PI|Regenerate/i}));
+    await waitFor(()=>expect(printedRows()).toBeGreaterThan(before));
+  });
+
   /* One article must not be removable down to nothing — a PI with no lines is
      not a PI. */
   it("the last article cannot be removed",async()=>{

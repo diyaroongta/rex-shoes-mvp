@@ -64,5 +64,12 @@ test("ready = packed (less rejections) minus shipped, MTO orders only", () => {
   assert.deepEqual([r.rows[0].packed, r.rows[0].dispatched, r.rows[0].ready, r.rows[0].to_make], [280, 100, 180, 220]);
 });
 
+/* The shape check let 2026-02-30 through to a ::date cast, which answered 500. */
+test("a movement date must be a real day, not just the right shape", () => {
+  const { problems } = validateMoves([{ article:"A", size:"8s", kind:"opening", qty:5, moved_on:"2026-02-30" }]);
+  assert.ok(problems.some(p => /2026-02-30 is not a real date/.test(p)));
+  assert.equal(validateMoves([{ article:"A", size:"8s", kind:"opening", qty:5, moved_on:"2026-02-28" }]).problems.length, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exitCode = failed ? 1 : 0;

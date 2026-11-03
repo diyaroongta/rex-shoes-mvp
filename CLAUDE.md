@@ -391,6 +391,7 @@ shared/            imported by BOTH browser and server — pure, testable
   customer-history.js what a customer has been given before: shoes, then variants
   repair.js        shoes sent back before dispatch: movements in, out and rejected
   upper-store.js   stitched uppers: in from the line, out to pasting/moulding, counted
+  valid.js         real dates and integer-sized quantities, checked BEFORE Postgres can refuse them
   procurement-timing.js  WHEN a shortfall bites, from the stage that consumes it
   fabricators.js   internal lines and job workers in one list; what each type requires
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs
@@ -608,6 +609,13 @@ Each of these was a real bug found in production. Most have a regression test no
 | An editor laid out across a board wider than the screen | Once the schedule became a scrolling board far wider than the screen and opened scrolled to today, the Adjust panel — rendered inside it — put its controls at the board's left edge, off-screen. The planner saw an empty box. Anything opened INSIDE the scrolling board is pinned to the visible width (`position:sticky; left:0`, width measured from the scroller). |
 | Production only reportable where the plan put it | Daily plan vs achievement listed only `stage.alloc` rows, and `alloc` is work still TO DO — so a day before a card's start, or one the plan had moved past after an entry, had no row and could not be filled. Back-filling before go-live was impossible. `entryTargets` / `unplannedRow` add a line for ANY date against a real card and stage, saved with `planned_pairs:0` and flagged `unplanned`; the validator accepts it only against a card and stage that exist. |
 | Sizes sorted as numbers | Live stock sorted sizes with a numeric compare, so adult 1, 2 came before kids 6s, 7s. `sizeRank` follows the roll: 6s..13s, then 1..5.5, then the bare 6..13 of a B range. Articles follow family then product code, as every picker does. |
+| A date Postgres refused, reported as a server fault | Job work never checked its issue date; finished stock and the upper store checked only its SHAPE. So `2026-13-40` reached a `::date` cast and the save answered a bare "Server error" every time it was retried, and `02/11/2026` was read by the server's date style as 11 FEBRUARY and saved without a word. `shared/valid.js` (`isRealDate`, `fitsInteger`) is checked in the validators first and names the field. As a backstop, `wrap()` answers any Postgres class 22/23 error (a value the database refused) as a 400 in the database's own words. |
+| A cast that one bad row turned into a permanent 500 | The party-terms refresh cast every order's stored discount to numeric in SQL. One order carrying "40%" failed the whole request — and kept failing, because the order was still there next time. Read JSON fields as TEXT and convert in JS. `tests/api/postgres.test.js` (`npm run test:pg`, local throwaway database only) runs these against a real server, because a mocked query cannot fail this way. |
+| "Server error" that matched no log line | The generic 500 gave the factory nothing to report and us nothing to search for. Every 500 now carries `(ref XXXXXX)`, printed beside the full error in the Vercel log. |
+| Every job order copying the catalogue photos | A job order books its material issue on the stock sheet, and every reference change snapshotted the reference AND the whole catalogue — every article photo — into `reference_data_history`. Megabytes of unchanged photos per job card, on a database with a storage cap. Only the changes that can alter the catalogue (workbook upload, restore) snapshot it now. |
+| A bulk-upload article matched on its cell alone | The Order Book upload matched `GOLA PLUS` with its article cell only, ignoring the row's own Closure and Colour columns, so every row went to whichever Gola Plus came first; and a row that left those columns blank got no closure or colour at all, even when the article's name says `VELCRO` and the master carries its colours. The row's columns now choose the variant, a tie is refused NAMING the candidates, a closure the row contradicts is refused, and blanks are filled from the article — said once in a warning. |
+| A control on the slip but not on the PI | "Add a specific size" was on the photographed slip and not on an uploaded PI's review, so a PI needing one more size could only take a whole range — read by the client as the feature having been removed. It writes to `piCards`, like every other PI control. |
+| A job card that could not be printed twice | A PDF that failed half-way meant raising the card again. The Job Orders Database reopens any issued card from its stored snapshot (`SavedJobCard`) with its own number. Printing looks inside its own box, because Create Job Order stays mounted behind other screens and a page-wide `querySelector(".job-card")` could print a hidden draft. |
 | A line moved by its position | Changing a card's product remapped every line onto the new article's range at the SAME INDEX in its range list, so an unmatched "8X10" became "11X12" and was invoiced as 11s/12s at ₹899. Re-picking a line's rate basis cleared its exact sizes, so "11 over 3" printed as 18 each of 11s/12s/13s. `remapLine` / `rekeySizes` in `shared/intake.js` follow the WRITTEN sizes: keep them, move only to a range that holds them, otherwise leave the line unmatched for the clerk. |
 
 ---
@@ -618,6 +626,7 @@ Each of these was a real bug found in production. Most have a regression test no
 npm test           # core + React interaction + mocked API/database contracts
 npm run test:coverage
 npm run check      # coverage thresholds + production build
+npm run test:pg    # handlers against a REAL local Postgres (TEST_DATABASE_URL)
 ```
 
 `.github/workflows/ci.yml` runs the complete check on every push to main and PR.

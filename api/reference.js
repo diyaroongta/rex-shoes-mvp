@@ -22,15 +22,22 @@ class InputError extends Error { constructor(message,status=400){super(message);
 const reject=(message,status=400)=>{throw new InputError(message,status);};
 const BOM_STAGES=new Set(["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","ASSEMBLY","PACKING","DISPATCH"]);
 
-async function mutateReference(changeType, article, mutation){
+/* THE CATALOGUE IS SNAPSHOTTED ONLY BY WHAT CAN CHANGE IT.
+   Every snapshot used to copy the whole catalogue — every article PHOTO — into
+   reference_data_history, including the stock booking that rides along with
+   EVERY job order issued. Megabytes of unchanged photos per job card, on a
+   database with a storage cap, for a change that cannot touch a photo.
+   A restore of a snapshot without a catalogue leaves the catalogue alone,
+   which is exactly right for a change that never touched it. */
+async function mutateReference(changeType, article, mutation, { catalogue=false } = {}){
   const client=await db().connect();
   try{
     await client.query("begin");
     const {rows}=await client.query("select value from reference_data where id = 1 for update");
     const ref=JSON.parse(JSON.stringify(rows.length?rows[0].value:INPUTS));
-    const {rows:catalogueBefore}=await client.query(
-      "select article_code, image, description, price from catalogue order by article_code for update");
-    const before=JSON.stringify({reference:ref,catalogue:catalogueBefore});
+    const catalogueBefore=catalogue?(await client.query(
+      "select article_code, image, description, price from catalogue order by article_code for update")).rows:null;
+    const before=JSON.stringify(catalogue?{reference:ref,catalogue:catalogueBefore}:{reference:ref});
     const result=(await mutation(ref,client))||{};
     await client.query(`insert into reference_data (id, value) values (1, $1)
                         on conflict (id) do update set value = $1, updated_at = now()`,
@@ -434,7 +441,7 @@ export default wrap(async (req, res) => {
           return { articles: Object.keys(snapshotRef.articles || {}).length,
                    materials: Object.keys(snapshotRef.materials || {}).length,
                    catalogue: snapshotCatalogue?.length??null };
-        });
+        }, { catalogue:true });
         return res.status(200).json({ ok:true, restored_revision:id,
           undid: rows[0].change_type, article_code: rows[0].article_code,
           articles_total: result.articles, materials_total: result.materials,
@@ -546,7 +553,7 @@ export default wrap(async (req, res) => {
         }
         return {articles,replacements:[...new Set(replacements)],rates,newMaterials:[...new Set(newMaterials)],packed,packedSingles,priced,catalogue,
           articlesTotal:Object.keys(ref.articles||{}).length,materialsTotal:Object.keys(ref.materials||{}).length};
-      });
+      }, { catalogue:true });
       return res.status(200).json({
         ok:true,article:result.articles[0],articles:result.articles,
         replaced:result.replacements.length>0,replaced_articles:result.replacements,rates:result.rates,

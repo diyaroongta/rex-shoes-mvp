@@ -17,6 +17,7 @@
  * Pure: no database, no clock. `now` is injected where a date is needed.
  */
 import { RULES, payableFor, jobCost } from "./fabricators.js";
+import { isRealDate, fitsInteger } from "./valid.js";
 
 export const SLIP = {
   internal_line: "Internal Issue Slip",
@@ -48,6 +49,12 @@ export function validateIssue(input = {}, fabricator = null){
   else if(!fabricator.active) problems.push(`${fabricator.name} is not active and cannot take new work`);
   if(!article) problems.push("Choose the article or style being sent");
   if(qty <= 0) problems.push("Enter how many to issue");
+  else if(!fitsInteger(qty)) problems.push(`${qty} pairs is not a quantity that can be issued — check the figure`);
+  /* The issue date reaches a ::date cast. Unchecked, a date Postgres cannot
+     read failed the save as "Server error", and 02/11/2026 was read as
+     11 February and saved without a word. */
+  const issuedOn = input.issued_on == null ? "" : String(input.issued_on).trim();
+  if(issuedOn && !isRealDate(issuedOn)) problems.push(`Issue date "${issuedOn}" is not a real date — pick it from the calendar`);
 
   /* Sample work is small by definition. A four-figure quantity against a
      sample maker is a bulk order sent to the wrong place, and it is worth
@@ -67,7 +74,7 @@ export function validateIssue(input = {}, fabricator = null){
       stage: clean(input.stage) || "STITCHING",
       order_no: clean(input.order_no) || null,
       note: clean(input.note).slice(0, 300) || null,
-      issued_on: input.issued_on || null,
+      issued_on: issuedOn || null,
       slip: fabricator ? slipFor(fabricator) : null,
       sample: !!(fabricator && fabricator.type === "sample"),
       sample_status: fabricator && fabricator.type === "sample" ? "pending" : null,

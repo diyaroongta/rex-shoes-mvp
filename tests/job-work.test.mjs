@@ -174,6 +174,28 @@ test("an empty register is empty, not an error", () => {
   assert.deepEqual(withFabricators(null), []);
 });
 
+console.log("\nZ — what Postgres would refuse is refused first, by name");
+
+/* The issue date reached a ::date cast unchecked. 2026-13-40 failed the save
+   as a bare "Server error" every time it was retried; 02/11/2026 was read as
+   11 February and saved without a word. */
+test("an issue date must be a real calendar day", () => {
+  for(const bad of ["2026-13-40", "2026-02-30", "02/11/2026", "+020026-11-02"]){
+    const out = validateIssue({ article:"SPIKE", qty:10, issued_on:bad }, LINE);
+    assert.equal(out.ok, false, bad);
+    assert.ok(out.problems.some(p => p.includes(bad) && /not a real date/.test(p)), bad);
+  }
+  assert.equal(validateIssue({ article:"SPIKE", qty:10, issued_on:"2026-11-02" }, LINE).value.issued_on, "2026-11-02");
+  assert.equal(validateIssue({ article:"SPIKE", qty:10, issued_on:"" }, LINE).value.issued_on, null,
+    "a blank date is today's, taken by the server");
+});
+
+test("a quantity past the database's integer is refused, not crashed on", () => {
+  const out = validateIssue({ article:"SPIKE", qty:3e9 }, LINE);
+  assert.equal(out.ok, false);
+  assert.ok(out.problems.some(p => /check the figure/.test(p)));
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes
    its coverage file, so a suite that passed reported 0% and dragged the whole

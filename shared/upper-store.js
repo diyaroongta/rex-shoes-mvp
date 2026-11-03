@@ -33,6 +33,7 @@
  * Pure — no database, no clock. `today` is always passed in.
  */
 import { ROLL_KY } from "./bridge.js";
+import { isRealDate, fitsInteger } from "./valid.js";
 
 export const UPPER_KINDS = {
   in:       { label:"Stock in (QC passed)" },
@@ -199,7 +200,8 @@ export function validateUpperMoves(input = [], existing = []){
     if(kind === "adjust" ? (!Number.isFinite(qty) || qty === 0) : (!Number.isFinite(qty) || qty <= 0))
       problems.push(`${at}${kind === "adjust" ? "an adjustment must be a whole number other than 0"
                                              : "quantity must be a whole number of 1 or more"}`);
-    if(moved_on && !ISO.test(moved_on)) problems.push(`${at}date must be YYYY-MM-DD`);
+    if(moved_on && !isRealDate(moved_on)) problems.push(`${at}${moved_on} is not a real date (YYYY-MM-DD)`);
+    if(Number.isFinite(qty) && !fitsInteger(qty)) problems.push(`${at}${Math.abs(qty)} pairs is not a quantity that can be recorded`);
 
     const row = { kind, article, colour, size, qty: Number.isFinite(qty) ? qty : 0,
       moved_on: moved_on || null,

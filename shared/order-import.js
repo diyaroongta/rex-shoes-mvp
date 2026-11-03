@@ -1,4 +1,4 @@
-import { matchArticle, articleTypeCombos, comboSizesForArticle, pairsPerCarton } from "./bridge.js";
+import { matchArticle, matchCandidates, articleTypeCombos, comboSizesForArticle, pairsPerCarton, SPLIT_ARTICLE_TYPES } from "./bridge.js";
 
 /* Bulk order import from a spreadsheet. Pure — no xlsx dependency, no I/O.
    Takes rows already read out of a sheet (array of arrays) and returns order
@@ -84,6 +84,36 @@ function closureCell(v,row,errors){
   errors.push({row,error:`Closure must be Lace or Velcro (read "${raw}")`});
   return "";
 }
+
+/* CLOSURE AND COLOUR COME WITH THE ARTICLE when the row does not say.
+   A bulk upload left every order's closure and colours blank unless the sheet
+   had filled those columns, even when the article itself settles them —
+   "GOLA PLUS VELCRO BLACK" is a Velcro shoe, and the article master carries
+   its sole and upper colour. So each order had to be corrected by hand, which
+   does not scale to a sheet of fifty. What the ROW says always wins; a
+   closure the row contradicts is refused rather than silently picked.
+   A colour is filled only from the master's own Sole/Upper Colour — a colour
+   word in a NAME does not say whether it is the sole or the upper. */
+function closureIn(text){
+  const t=String(text||"").toUpperCase();
+  if(/\(V(?:ELCRO)?\)|\bVELCRO\b/.test(t)) return "Velcro";
+  if(/\(L(?:ACE)?\)|\bLACE\b/.test(t)) return "Lace";
+  return "";
+}
+function fromArticle(article, def, written, rawArticle=""){
+  /* SPIKE and the other split shoes are Velcro in some ranges and Lace in
+     others — the RANGE says which, so the order as a whole has no closure. */
+  const own=SPLIT_ARTICLE_TYPES.has(article) ? "" : (closureIn(rawArticle)||closureIn(article));
+  const conflict=!!(written.vl && own && written.vl!==own);
+  return {
+    conflict, own,
+    vl: written.vl || own,
+    sole_colour: written.sole_colour || String((def&&def.sole_colour)||"").trim(),
+    upper_colour: written.upper_colour || String((def&&def.upper_colour)||"").trim(),
+    filled: (!written.vl&&!!own) || (!written.sole_colour&&!!(def&&def.sole_colour)) || (!written.upper_colour&&!!(def&&def.upper_colour)),
+  };
+}
+const filledNote = n => `${n} order${n===1?"":"s"} took a closure or colour the sheet left blank from the article itself — check them on the preview.`;
 
 function numberCell(v, units=""){
   if(typeof v === "number") return Number.isFinite(v)?v:null;
@@ -206,14 +236,25 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
     const rawArticle=String(get(r,"article")||"").trim();
     if(!rawArticle || /^total$/i.test(rawArticle)) continue;
     out.rowCount++;
+    const writtenVl=closureCell(get(r,"vl"),row,out.errors);
+    if(out.errors.some(e=>e.row===row)) continue;
+    const writtenUpper=String(get(r,"upper_colour")||"").trim(), writtenSole=String(get(r,"sole_colour")||"").trim();
+    /* THE ROW'S OWN CLOSURE AND COLOUR CHOOSE THE VARIANT. The match used to
+       read the article cell alone, so "GOLA PLUS" beside Closure "Velcro" and
+       Colour "Black" went to whichever Gola Plus happened to be first. */
     const direct=Object.keys(articles).find(a=>a.toUpperCase()===rawArticle.toUpperCase());
-    const article=direct||matchArticle(rawArticle,"");
+    const hint=[rawArticle,writtenVl].filter(Boolean).join(" "), hue=writtenUpper||writtenSole;
+    const article=direct||matchArticle(hint,hue);
     if(!article||!articles[article]){out.errors.push({row,error:`${opts.sheetName?opts.sheetName+": ":""}Unknown article "${rawArticle}" — add its catalogue/BOM before importing`});continue;}
+    const tied=direct?[]:matchCandidates(hint,hue);
+    if(tied.length){out.errors.push({row,error:`${opts.sheetName?opts.sheetName+": ":""}"${rawArticle}" fits ${tied.length} articles (${tied.join(", ")}) — fill its Closure and Colour, or write the full article name`});continue;}
     const party=String(get(r,"party")||"").trim();
     const date=toIsoDate(get(r,"order_date"));
     if(!party||!date){out.errors.push({row,error:`${opts.sheetName?opts.sheetName+": ":""}${!party?"Customer is blank":"Order date is blank or unreadable"}`});continue;}
-    const vl=closureCell(get(r,"vl"),row,out.errors);
-    if(out.errors.some(e=>e.row===row)) continue;
+    const filled=fromArticle(article,articles[article],{vl:writtenVl,sole_colour:writtenSole,upper_colour:writtenUpper},rawArticle);
+    if(filled.conflict){out.errors.push({row,error:`${article} is a ${filled.own} article, but the row says ${writtenVl}`});continue;}
+    if(filled.filled) out.filledCount=(out.filledCount||0)+1;
+    const vl=filled.vl;
     const combos=articleTypeCombos(article,vl);
     const lines=[];
     const unsupported=[];
@@ -242,10 +283,12 @@ function parseOrderBook(rows,headerRow,map,reference,opts){
         order_nature:explicitNature||sheetNature||undefined,vl:vl||undefined,
         dispatch_timeline:String(get(r,"dispatch_timeline")||"").trim()||undefined,
         sole_type:String(get(r,"sole_type")||"").trim()||undefined,
-        sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
+        sole_colour:filled.sole_colour||undefined,upper_colour:filled.upper_colour||undefined,
         current_status:String(get(r,"current_status")||"").trim()||undefined,printing}
     });
   }
+  if(out.filledCount) out.warnings.push(filledNote(out.filledCount));
+  delete out.filledCount;
   return out;
 }
 
@@ -323,15 +366,21 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
         if(Number.isFinite(qty)&&qty>0) lines.push({combo:c.combo,qty,label:c.combo});
       }
       if(!lines.length){ out.errors.push({row:rowNo,error:`Enter pairs in at least one size column for ${article}`}); continue; }
-      const requiredMeta=[["Order Nature","order_nature"],
-        ["Sole Colour","sole_colour"],["Upper Colour","upper_colour"]];
-      const missingMeta=requiredMeta.filter(([,k])=>!String(get(r,k)||"").trim()).map(([label])=>label);
+      const writtenClosure=closureCell(get(r,"vl"),rowNo,out.errors);
+      if(out.errors.some(e=>e.row===rowNo)) continue;
+      const filled=fromArticle(article,articles[article],{vl:writtenClosure,
+        sole_colour:String(get(r,"sole_colour")||"").trim(),upper_colour:String(get(r,"upper_colour")||"").trim()});
+      if(filled.conflict){ out.errors.push({row:rowNo,error:`${article} is a ${filled.own} article, but the row says ${writtenClosure}`}); continue; }
+      const requiredMeta=[["Order Nature",String(get(r,"order_nature")||"").trim()],
+        ["Sole Colour",filled.sole_colour],["Upper Colour",filled.upper_colour]];
+      const missingMeta=requiredMeta.filter(([,v])=>!v).map(([label])=>label);
       if(missingMeta.length){ out.errors.push({row:rowNo,error:`Complete ${missingMeta.join(", ")} for ${article}`}); continue; }
       const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
       if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row:rowNo,error:"Priority must be 1, 2 or 3"});continue;}
       const printing=booleanCell(get(r,"printing"),"Print",rowNo,out.errors);
-      const closure=closureCell(get(r,"vl"),rowNo,out.errors);
+      const closure=filled.vl;
       if(out.errors.some(e=>e.row===rowNo)) continue;
+      if(filled.filled) out.filledCount=(out.filledCount||0)+1;
       const estimated=String(get(r,"estimated_dispatch_date")||"").trim();
       const estimatedIso=estimated?toIsoDate(get(r,"estimated_dispatch_date")):null;
       if(estimated&&!estimatedIso){out.errors.push({row:rowNo,error:`Could not read estimated dispatch date "${estimated}"`});continue;}
@@ -344,8 +393,8 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
           vl:closure||undefined,
           dispatch_timeline:String(get(r,"dispatch_timeline")||"").trim()||undefined,
           sole_type:String(get(r,"sole_type")||"").trim()||undefined,
-          sole_colour:String(get(r,"sole_colour")||"").trim()||undefined,
-          upper_colour:String(get(r,"upper_colour")||"").trim()||undefined,
+          sole_colour:filled.sole_colour||undefined,
+          upper_colour:filled.upper_colour||undefined,
           current_status:String(get(r,"current_status")||"").trim()||undefined,
           estimated_dispatch_date:estimatedIso||undefined,
           printing,
@@ -371,15 +420,18 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
     const rawPriority=get(r,"priority"), priority=rawPriority==null||String(rawPriority).trim()===""?2:numberCell(rawPriority);
     if(!Number.isInteger(priority)||priority<1||priority>3){out.errors.push({row:rowNo,error:"Priority must be 1, 2 or 3"});continue;}
     const piNo=String(get(r,"pi_no")||"").trim();
-    const vl=closureCell(get(r,"vl"),rowNo,out.errors);
+    const writtenVl=closureCell(get(r,"vl"),rowNo,out.errors);
     if(out.errors.some(e=>e.row===rowNo)) continue;
-    const soleColour=String(get(r,"sole_colour")||"").trim();
-    const upperColour=String(get(r,"upper_colour")||"").trim();
+    const filled=fromArticle(article,articles[article],{vl:writtenVl,
+      sole_colour:String(get(r,"sole_colour")||"").trim(),upper_colour:String(get(r,"upper_colour")||"").trim()});
+    if(filled.conflict){ out.errors.push({row:rowNo,error:`${article} is a ${filled.own} article, but the row says ${writtenVl}`}); continue; }
+    const vl=filled.vl, soleColour=filled.sole_colour, upperColour=filled.upper_colour;
     // PI identity wins. Without it, two different PIs for the same customer,
     // date and article collapsed into one order and lost their line boundary.
     const key = piNo
       ? `PI||${piNo}||${party}||${article}||${vl}||${soleColour}||${upperColour}`
       : `${party}||${date}||${article}||${vl}||${soleColour}||${upperColour}`;
+    if(!buckets.has(key) && filled.filled) out.filledCount=(out.filledCount||0)+1;
     if(!buckets.has(key)) buckets.set(key, {
       order_date: date, article_code: article, party, priority,
       lines: [],
@@ -408,6 +460,8 @@ export function parseOrderSheet(rows, reference, packing = {}, opts={}){
   }
 
   if(!wide) out.orders = [...buckets.values()].filter(o => o.lines.length);
+  if(out.filledCount) out.warnings.push(filledNote(out.filledCount));
+  delete out.filledCount;
   const piParties=new Map();
   for(const order of out.orders){
     const no=String(order.pi?.pi_no||"").trim(); if(!no) continue;

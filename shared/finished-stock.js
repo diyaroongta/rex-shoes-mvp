@@ -18,6 +18,7 @@
  *
  * Pure: no database, no clock.
  */
+import { isRealDate, fitsInteger } from "./valid.js";
 import { finishedGoods } from "./finished-goods.js";
 
 export const MOVE_KINDS = {
@@ -48,7 +49,8 @@ export function validateMoves(input = []){
     /* The sign follows the KIND, so "issued 40" can never add 40 by accident. */
     if(sign) qty = sign * Math.abs(qty);
     const moved_on = String(m.moved_on || "").slice(0, 10);
-    if(moved_on && !/^\d{4}-\d{2}-\d{2}$/.test(moved_on)){ problems.push(`${at}: date must be YYYY-MM-DD`); continue; }
+    if(moved_on && !isRealDate(moved_on)){ problems.push(`${at}: ${moved_on} is not a real date (YYYY-MM-DD)`); continue; }
+    if(!fitsInteger(qty)){ problems.push(`${at}: ${Math.abs(qty)} pairs is not a quantity that can be recorded`); continue; }
     rows.push({ article, size, kind, qty,
       order_no: String(m.order_no || "").trim() || null,
       note: String(m.note || "").trim().slice(0, 300) || null,

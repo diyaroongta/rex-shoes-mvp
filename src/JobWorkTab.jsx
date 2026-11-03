@@ -6,6 +6,9 @@ import { selectableFor, optionLabel } from "../shared/fabricators.js";
 import { lineBoard } from "../shared/line-load.js";
 import { validateIssue, summarise, withFabricators, slipFor,
          SAMPLE_STATUS, SAMPLE_LABEL } from "../shared/job-work.js";
+import JobCard from "./JobCard.jsx";
+import StageJobCard from "./StageJobCard.jsx";
+import { CardSwitch, printJobCard } from "./JobCardTab.jsx";
 
 /* Issued-job-order database — work assigned to an internal line or outside fabricator.
  *
@@ -31,6 +34,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   const [receiving, setReceiving] = useState(null);   // {id, qty, received}
   const [gotBack, setGotBack] = useState("");
   const [slipFor_, setSlip] = useState(null);         // a job opened as a printable slip
+  const [cardOf, setCardOf] = useState(null);         // a job reopened as its full job card
   /* Archived rows are off the working list by default and one click away.
      They are still counted in every balance — archiving is housekeeping, not
      an undo. */
@@ -253,15 +257,16 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     </div>}
 
     {slipFor_ && <JobSlip job={slipFor_} onPrint={printSlip} onClose={()=>setSlip(null)} />}
+    {cardOf && <SavedJobCard job={cardOf} onError={setErr} onClose={()=>setCardOf(null)} />}
 
     <Register title={`Out now (${open.length})`} rows={open} empty="Nothing is out with anyone."
       onReceive={r=>{ setReceiving(r); setGotBack(String(r.outstanding)); }}
-      onSlip={setSlip} onVerdict={verdict} busy={busy}
+      onSlip={setSlip} onCard={setCardOf} onVerdict={verdict} busy={busy}
       receiving={receiving} gotBack={gotBack} setGotBack={setGotBack}
       onConfirm={takeBack} onCancel={()=>setReceiving(null)} />
 
     {(!!done.length || showArchived) && <Register title={`Completed (${done.length})`} rows={done}
-      onSlip={setSlip} closed busy={busy}
+      onSlip={setSlip} onCard={setCardOf} closed busy={busy}
       onArchive={archive} onDelete={id=>setConfirmDel(id)}
       confirmDel={confirmDel} onCancelDelete={()=>setConfirmDel(null)} onReallyDelete={remove} />}
     <div className="flex items-center gap-3 flex-wrap mt-2">
@@ -276,7 +281,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   </div>;
 }
 
-function Register({ title, rows, empty, onReceive, onSlip, onVerdict, busy,
+function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, busy,
                     receiving, gotBack, setGotBack, onConfirm, onCancel, closed,
                     onArchive, onDelete, confirmDel, onCancelDelete, onReallyDelete }){
   return <div className="mb-4">
@@ -317,6 +322,9 @@ function Register({ title, rows, empty, onReceive, onSlip, onVerdict, busy,
                   : <span className="text-slate-300">—</span>}
               </td>
               <td className="text-right px-3 whitespace-nowrap">
+                {r.card && onCard && <button onClick={()=>onCard(r)}
+                  className="mr-2 font-semibold text-slate-800 hover:underline"
+                  title="Open the job card exactly as it was issued, to check it or print it again.">Job card</button>}
                 <button onClick={()=>onSlip(r)} className="text-slate-600 hover:underline">Slip</button>
                 {!closed && <button onClick={()=>onReceive(r)} disabled={busy}
                   className="ml-2 font-semibold text-indigo-700 hover:underline disabled:opacity-40">Receive</button>}
@@ -381,6 +389,34 @@ function Register({ title, rows, empty, onReceive, onSlip, onVerdict, busy,
         </tbody>
       </table>
     </div>
+  </div>;
+}
+
+/* REPRINT. A job card's PDF can fail half-way — a popup blocked, a phone that
+   lost the download — and the floor still needs the pairs and sizes on it.
+   The card was SNAPSHOTTED onto the job when it was issued, so it is shown
+   from that snapshot, not rebuilt from today's Order Book: a reprint must say
+   what was issued, even after the order has moved on. Its number is the job
+   order's own. */
+export function SavedJobCard({ job, onClose, onError }){
+  const [kind, setKind] = useState("CUTTING");
+  const box = React.useRef(null);
+  const card = { ...(job.card || {}), card_no: String(job.id) };
+  const article = (INPUTS.articles || {})[card.article || job.article] || null;
+  /* The panel opens ABOVE the lists, and the button that opened it may be far
+     down the page — without this the click appears to do nothing. */
+  useEffect(()=>{ const el = box.current; if(el && el.scrollIntoView) el.scrollIntoView({ behavior:"smooth", block:"start" }); },[job.id]);
+  return <div ref={box} className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm mb-4">
+    <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
+      <div className="text-sm font-semibold text-slate-800">Job order {job.id} — {job.article}{job.order_no ? ` · ${job.order_no}` : ""}</div>
+      <span className="text-[11px] text-slate-500">As issued on {String(job.issued_on || "").slice(0,10)}.</span>
+      <button onClick={()=>printJobCard(box.current, onError)}
+        className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">Reprint / Save PDF</button>
+      <button onClick={onClose} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
+    </div>
+    <CardSwitch value={kind} onChange={setKind} />
+    {kind === "CUTTING" ? <JobCard card={card} article={article} />
+                        : <StageJobCard card={card} article={article} kind={kind} />}
   </div>;
 }
 

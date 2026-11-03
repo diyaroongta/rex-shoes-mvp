@@ -52,15 +52,31 @@ export function wrap(handler, opts = {}){
       return await handler(req, res);
     }
     catch(e){
-      console.error(req.method, req.url, e);
+      /* A value the DATABASE refused — a date it cannot read, a number past
+         its column, a check constraint — is the request's fault, not the
+         server's. Postgres says which in plain words, so it goes back as a
+         400 with those words instead of a bare "Server error" that reads as
+         the app being broken. Classes 22 (data exception) and 23 (integrity
+         constraint) are exactly that set. */
+      const code = String((e && e.code) || "");
+      if(/^2[23][0-9A-Z]{3}$/.test(code)){
+        console.error(req.method, req.url, e);
+        return fail(res, 400, `The database refused this: ${e.message}`);
+      }
+      /* Anything else stays generic on screen, but carries a REFERENCE that
+         is printed beside the full error in the server log. "Server error"
+         alone could not be matched to any log line, so a fault the factory
+         hit repeatedly could not be found. */
+      const ref = Math.random().toString(36).slice(2, 8).toUpperCase();
+      console.error(`[ref ${ref}]`, req.method, req.url, e);
       // Setup problems are worth showing; anything else stays generic.
-      const setup = SETUP_CODES.has(e && e.code)
+      const setup = SETUP_CODES.has(code)
         || /is not set|does not exist|provider \d+/.test(String(e && e.message));
       const msg = setup
-        ? `${e.message}${SETUP_CODES.has(e && e.code)
+        ? `${e.message}${SETUP_CODES.has(code)
             ? " — the database schema is out of date. Run: psql \"$DATABASE_URL\" -f db/schema.sql"
             : ""}`
-        : "Server error";
+        : `Server error (ref ${ref})`;
       return fail(res, 500, msg);
     }
   };

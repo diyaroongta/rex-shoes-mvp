@@ -146,9 +146,13 @@ export default wrap(async (req, res) => {
     if(!party.length) return fail(res, 404, `no such party: ${name}`);
     const terms = termsOf(party[0]);
 
+    /* The discount is read as TEXT and compared in JS. Casting it to numeric
+       in SQL failed the whole request with a 500 the moment one order carried
+       a discount Postgres could not read ("40%", a blank) — and kept failing,
+       because the order was still there on the next try. */
     const { rows: affected } = await q(
       `select order_no, coalesce(pi->>'pi_no','') as pi_no,
-              (pi->>'discount_pct')::numeric as discount_pct
+              pi->>'discount_pct' as discount_pct
          from orders where party = $1 order by order_no`, [name]);
 
     if(req.body.preview){

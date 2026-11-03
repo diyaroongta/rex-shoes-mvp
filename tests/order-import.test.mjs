@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { parseOrderSheet, parseOrderWorkbook, wideTemplateHeaders } from "../shared/order-import.js";
 import { INPUTS } from "../shared/inputs.js";
+import { setReference } from "../shared/bridge.js";
 
 const headers=wideTemplateHeaders(INPUTS);
 const row=Array(headers.length).fill("");
@@ -137,6 +138,51 @@ assert.ok(skipped.warnings.some(w=>/Mystery Data: skipped/.test(w)),"unread shee
   const wideRead=parseOrderSheet([wideHdr,["B","2026-09-30","SMART BOY TEST","MTO","Black","Black",24]],ref,ref.packing);
   assert.deepEqual(wideRead.errors,[]);
   assert.deepEqual(wideRead.orders[0].lines.map(l=>[l.combo,l.qty]),[["11",24]]);
+}
+
+/* GOLA PLUS ON A BULK UPLOAD. The Order Book row says GOLA PLUS, and the
+   closure and colour sit in their own columns. The article was matched on its
+   cell ALONE, so every row went to whichever Gola Plus came first — closure
+   and colour wrong on every order, corrected one by one. And a row that left
+   those columns blank got nothing, even when the article settles it. */
+{
+  const ref=JSON.parse(JSON.stringify(INPUTS));
+  const base=ref.articles["REX GOLA PLUS"];
+  delete ref.articles["REX GOLA PLUS"];
+  const variant=(sole,upper)=>({...JSON.parse(JSON.stringify(base)),sole_colour:sole,upper_colour:upper});
+  ref.articles["GOLA PLUS LACE BLACK"]=variant("Black","Black");
+  ref.articles["GOLA PLUS VELCRO BLACK"]=variant("Black","Black");
+  ref.articles["GOLA PLUS VELCRO WHITE"]=variant("White","White");
+  setReference(ref);
+  const hdr=["PI NO","ORDER DATE","CUSTOMER NAME","ARTICLE NAME","COLOUR","SOLE COLOUR","CLOSURE (LACE/VELCRO)","7s","8s","9s","10s"];
+  const row=(art,colour,sole,closure)=>["PI/GP","2026-11-01","Bulk buyer",art,colour,sole,closure,24,24,24,24];
+  const read=parseOrderSheet([hdr,
+    row("GOLA PLUS","White","","Velcro"),          // the columns choose the variant
+    row("Gola Plus (V) Black","","",""),          // the cell says it; the master colours it
+    row("GOLA PLUS","","",""),                    // nothing separates them: asked, not guessed
+    row("GOLA PLUS LACE BLACK","","","Velcro"),   // the row contradicts the article
+  ],ref,ref.packing);
+  const [white,black]=read.orders;
+  assert.equal(white.article_code,"GOLA PLUS VELCRO WHITE","closure and colour columns must choose the variant");
+  assert.equal(white.pi.vl,"Velcro");
+  assert.equal(white.pi.upper_colour,"White");
+  assert.equal(white.pi.sole_colour,"White","a blank sole colour comes from the article master");
+  assert.equal(black.article_code,"GOLA PLUS VELCRO BLACK");
+  assert.equal(black.pi.vl,"Velcro","a closure in the article cell is the order's closure");
+  assert.deepEqual([black.pi.sole_colour,black.pi.upper_colour],["Black","Black"]);
+  assert.equal(read.orders.length,2);
+  const tie=read.errors.find(e=>e.row===4);
+  assert.ok(tie && /fits 3 articles/.test(tie.error) && /GOLA PLUS VELCRO WHITE/.test(tie.error),
+    "an unresolvable row must name its candidates, not pick the first");
+  assert.ok(read.errors.some(e=>e.row===5&&/is a Lace article, but the row says Velcro/.test(e.error)));
+  assert.ok(read.warnings.some(w=>/2 orders took a closure or colour/.test(w)),"what was filled in is said once");
+
+  // The wide template fills its required colours from the master as well.
+  const wideHdr=["Party","Order Date","Article","Order Nature","Closure (Lace/Velcro)","Sole Colour","Upper Colour","Pairs 7X10"];
+  const wide=parseOrderSheet([wideHdr,["B","2026-11-01","GOLA PLUS VELCRO WHITE","MTO","","","",96]],ref,ref.packing);
+  assert.deepEqual(wide.errors,[]);
+  assert.deepEqual([wide.orders[0].pi.vl,wide.orders[0].pi.sole_colour,wide.orders[0].pi.upper_colour],["Velcro","White","White"]);
+  setReference(INPUTS);
 }
 
 console.log("\norder import: uploaded Order Book, wide and legacy formats passed\n");

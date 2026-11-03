@@ -173,6 +173,14 @@ export function matchAmbiguous(category,color){
   return !r.exact && r.pool.length>1;
 }
 
+/* The articles still tied, so a refusal can NAME them — "fits 4 articles"
+   with no list sends the clerk hunting through the master. Empty when the
+   match is settled. */
+export function matchCandidates(category,color){
+  const r=rank(category,color);
+  return !r.exact && r.pool.length>1 ? r.pool.map(x=>x.code) : [];
+}
+
 export function comboRangeKY(combo){ // non-B combos only; returns [i,j] in ROLL_KY
   if(combo.endsWith("B")) return null;
   const [a,b]=combo.split("X");

@@ -1144,12 +1144,26 @@ describe("setup errors are diagnosable",()=>{
     expect(res.body.error).toMatch(/db\/schema\.sql/);
   });
 
+  /* A value the database refused is the request's fault. It used to come back
+     as a bare "Server error", which the factory could only read as the app
+     being broken — and retried, and got again. */
+  it("answers a value Postgres refused as a 400 in its own words",async()=>{
+    const {wrap}=await import("../../api/_lib/http.js");
+    const quiet=vi.spyOn(console,"error").mockImplementation(()=>{});
+    const boom=wrap(async()=>{const e=new Error('date/time field value out of range: "2026-13-40"');e.code="22008";throw e;});
+    const res=response();
+    await boom({headers:AUTH,method:"POST",url:"/api/dispatches"},res);
+    quiet.mockRestore();
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/2026-13-40/);
+  });
+
   it("still hides genuine internal faults",async()=>{
     const {wrap}=await import("../../api/_lib/http.js");
     const boom=wrap(async()=>{throw new TypeError("x is not a function");});
     const res=response();
     await boom({headers:AUTH,method:"POST",url:"/api/pis"},res);
-    expect(res.body.error).toBe("Server error");
+    expect(res.body.error).toMatch(/^Server error \(ref [A-Z0-9]+\)$/);
   });
 });
 

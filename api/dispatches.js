@@ -10,13 +10,11 @@ import { cleanGatePassFields } from "../shared/gate-pass.js";
 import { validateMoves } from "../shared/finished-stock.js";
 import { validateJobCardFields } from "../shared/production-actuals.js";
 import { validateUpperMoves, checkApproval, checkDelete, validateTag } from "../shared/upper-store.js";
+import { isRealDate } from "../shared/valid.js";
 
-function validDate(value){
-  if(value==null||value==="") return true;
-  const s=String(value); if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-  const [y,m,d]=s.split("-").map(Number),dt=new Date(Date.UTC(y,m-1,d));
-  return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d;
-}
+/* A blank date is allowed (the insert takes today); anything else must be a
+   real calendar day, or the ::date cast answers with a 500. */
+const validDate = value => value == null || value === "" || isRealDate(value);
 
 /* Packing / dispatch reports. Recording one reduces an order's pending
    quantity; it never edits the order itself, so the original order stays

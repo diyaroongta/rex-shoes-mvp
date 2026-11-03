@@ -1263,6 +1263,18 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
   }));
   const delPiLine=(i,k)=>setPiCards(cs=>cs.map((c,j)=>
     j===i?{...c,lines:c.lines.filter((_,m)=>m!==k)}:c));
+  /* ADD A SPECIFIC SIZE, on an uploaded PI too. The photographed slip had it;
+     the PI review offered only "+ Add size range", so a Gola Plus PI that
+     needed one more size read as the option having been taken away. The
+     result goes into `piCards` for the same reason as addPiLine. */
+  const addPiSize=(i,next)=>setPiCards(cs=>cs.map((c,j)=>{
+    if(j!==i) return c;
+    const lines=next.map((nl,k)=>k<c.lines.length
+      ? {...c.lines[k],sizes:nl.sizes,qty:nl.qty}
+      : {combo:nl.combo,type:comboType(c.article,nl.combo),exact:true,raw:"",qty:nl.qty,sizes:nl.sizes,
+         ppc:packQty(c.article,nl.combo)??"",size_order:nl.size_order||comboSizesForArticle(c.article,nl.combo)});
+    return {...c,lines};
+  }));
   const addPiCard=()=>setPiCards(cs=>[...(cs||[]),blankPiCard()]);
   const delPiCard=i=>setPiCards(cs=>cs.filter((_,j)=>j!==i));
 
@@ -2166,6 +2178,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
               <button onClick={()=>addPiLine(ci)}
                 className="text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-md px-2.5 py-1.5 mt-1">
                 + Add size range</button>
+              <div className="mt-2">
+                <AddSize articleCode={c.article} lines={c.lines} onChange={next=>addPiSize(ci,next)} />
+              </div>
               </div>
               <details className="mx-3 mb-3 border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
                 <summary className="text-xs font-semibold text-indigo-800 cursor-pointer">Packing list &amp; BOM used for {c.article}</summary>
