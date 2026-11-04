@@ -190,7 +190,7 @@ export default wrap(async (req, res) => {
              where party=$1 and nullif(pi->>'pi_no','') is null and active`,[name,payload]);
         rowCount+=result.rowCount;
       }
-      await syncPiMaster(client);
+      await syncPiMaster(client, affected.map(r=>r.pi_no));
       await client.query("commit");
     }catch(e){await client.query("rollback");throw e;}finally{client.release();}
     return res.status(200).json({

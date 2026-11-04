@@ -1,7 +1,7 @@
 import { q, db } from "./_lib/db.js";
 import { cascadeCancel } from "./_lib/cascade.js";
 import { fail, wrap } from "./_lib/http.js";
-import { ensurePiTable, syncPiMaster } from "./_lib/pis.js";
+import { ensurePiTable, syncPiMaster, stripSnapshot } from "./_lib/pis.js";
 import { INPUTS as SEED } from "../shared/inputs.js";
 import { remainingForOrder, releasedBySource, buildRunLines, nextRunNo } from "../shared/pi-split.js";
 import { ordersFromPiSnapshot } from "../shared/pi-schedule.js";
@@ -13,8 +13,10 @@ async function reference(){
 }
 
 export default wrap(async (req,res)=>{
+  /* NOTHING IS WRITTEN BY LOOKING. Listing PIs used to re-sync — rewrite —
+     every PI first, so each page load wrote every snapshot again. Every write
+     path syncs the PIs it changes, so the list only reads. */
   if(req.method==="GET"){
-    await syncPiMaster();
     if(req.query?.history){
       const piNo=String(req.query.pi_no||"").trim();
       if(!piNo) return fail(res,400,"pi_no is required for revision history");
@@ -23,7 +25,7 @@ export default wrap(async (req,res)=>{
       const {rows:latest}=await q(`select null::bigint as id, pi_no, revision, status, snapshot,
         updated_at as recorded_at, true as current from proforma_invoices where pi_no=$1`,[piNo]);
       if(!latest.length&&!past.length) return fail(res,404,`no such PI: ${piNo}`);
-      return res.status(200).json([...past,...latest]);
+      return res.status(200).json([...past,...latest].map(r=>({...r,snapshot:stripSnapshot(r.snapshot)})));
     }
     /* Archived PIs are hidden from the working list but never lost. `?archived=1`
        shows only those, so restoring one is possible without a database query. */
@@ -31,7 +33,7 @@ export default wrap(async (req,res)=>{
     const { rows } = await q(`select pi_no, pi_date, party, status, revision, snapshot, archived, created_at, updated_at
       from proforma_invoices where archived = $1 order by pi_date desc, pi_no desc`,[archived]);
     return res.status(200).json(rows.map(r=>({
-      ...r,
+      ...r, snapshot:stripSnapshot(r.snapshot),
       pi_date:r.pi_date instanceof Date?r.pi_date.toISOString().slice(0,10):String(r.pi_date||""),
     })));
   }
@@ -138,7 +140,7 @@ export default wrap(async (req,res)=>{
           (select last_value from order_no_seq),
           coalesce((select max(substring(order_no from '([0-9]+)$')::bigint)
                       from orders where order_no ~ '[0-9]+$'),2000)), true)`);
-        await syncPiMaster(client);
+        await syncPiMaster(client, [piNo]);
         await client.query("commit");
       }catch(e){await client.query("rollback");throw e;}
       finally{client.release();}
@@ -210,7 +212,7 @@ export default wrap(async (req,res)=>{
         (select last_value from order_no_seq),
         coalesce((select max(substring(order_no from '([0-9]+)$')::bigint)
                     from orders where order_no ~ '[0-9]+$'),2000)), true)`);
-      await syncPiMaster(client);
+      await syncPiMaster(client, [piNo]);
       await client.query("commit");
     }catch(e){await client.query("rollback");throw e;}
     finally{client.release();}

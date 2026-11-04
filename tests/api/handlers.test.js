@@ -711,7 +711,11 @@ describe("database API contracts",()=>{
     expect(saved.packing.CUSTOM["1X2"]).toBe(12);
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("reference_data_history"))).toBe(true);
     const historyCall=client.query.mock.calls.find(([sql])=>String(sql).includes("insert into reference_data_history"));
-    expect(JSON.parse(historyCall[1][2])).toMatchObject({reference:ref,catalogue:[]});
+    /* A packing edit cannot change the catalogue, so its snapshot does not
+       copy the catalogue's photos — those copies filled the database. */
+    const snapshot=JSON.parse(historyCall[1][2]);
+    expect(snapshot).toMatchObject({reference:ref});
+    expect(snapshot).not.toHaveProperty("catalogue");
     expect(client.query).toHaveBeenCalledWith("commit");
   });
 

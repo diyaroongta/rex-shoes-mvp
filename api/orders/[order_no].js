@@ -145,7 +145,11 @@ export default wrap(async (req, res) => {
          returning order_no, order_date, article_code, priority, party, lines, pi, plan_override, version`,
         [...vals, order_no, expected]);
       if(!out.length){await client.query("rollback");return fail(res,409,"This order changed in another session. Reload it before saving your edits.");}
-      await syncPiMaster(client); await client.query("commit");
+      /* A schedule change is not a PI change — plan_override is not in the
+         snapshot — so an Adjust writes nothing to the PI master. Any other
+         edit re-syncs only this order's PI (before and after, if it moved). */
+      if(!planOnly) await syncPiMaster(client,[rows[0].pi?.pi_no,out[0].pi?.pi_no]);
+      await client.query("commit");
       const r=out[0];
       return res.status(200).json({...r,
         order_date:r.order_date instanceof Date?r.order_date.toISOString().slice(0,10):String(r.order_date)});
@@ -165,13 +169,13 @@ export default wrap(async (req, res) => {
     const client = await db().connect();
     try{
       await client.query("begin");
-      const { rows } = await client.query("select order_no from orders where order_no = $1 and active for update", [order_no]);
+      const { rows } = await client.query("select order_no, pi from orders where order_no = $1 and active for update", [order_no]);
       if(!rows.length){ await client.query("rollback"); return fail(res, 404, `no such order: ${order_no} — it may already be cancelled. Reload the Order Book.`); }
       const out = await cascadeCancel(client, [order_no], {
         confirmDispatched: String((req.query||{}).confirm_dispatched||"") === "1",
         user: (req.user||{}).username || null });
       if(out.refused){ await client.query("rollback"); return res.status(409).json({ error: out.message, impact: out.impact }); }
-      await syncPiMaster(client);
+      await syncPiMaster(client, [rows[0].pi?.pi_no]);
       await client.query("commit");
       return res.status(200).json({ cancelled: order_no, impact: out.impact });
     }catch(e){ try{ await client.query("rollback"); }catch(_){ } throw e; }

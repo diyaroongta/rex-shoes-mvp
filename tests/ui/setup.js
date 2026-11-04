@@ -14,6 +14,7 @@ globalThis.URL.revokeObjectURL = globalThis.URL.revokeObjectURL || vi.fn();
    element. The app calls it to bring a refusal into view — a real behaviour
    worth keeping — and without this stub any test that surfaces an error dies
    in the effect rather than on the assertion it was written for. */
-globalThis.Element.prototype.scrollIntoView =
+/* A file run in the node environment (tests/api/postgres.test.js) has no DOM. */
+if(globalThis.Element) globalThis.Element.prototype.scrollIntoView =
   globalThis.Element.prototype.scrollIntoView || function(){};
 globalThis.__BUILD__='test';

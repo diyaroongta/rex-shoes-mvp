@@ -144,7 +144,7 @@ export default wrap(async (req, res) => {
              printing: !!d.printing })]);
         out.push(row(rows[0]));
       }
-      await syncPiMaster(client);
+      await syncPiMaster(client, drafts.map(d=>d.pi?.pi_no));
       await client.query("commit");
       return res.status(201).json(out);
     }catch(e){ await client.query("rollback"); throw e; }

@@ -130,6 +130,37 @@ run("against a real Postgres", () => {
     expect(rows[0].len).toBeLessThan(img.length);
   });
 
+  /* THE DATABASE FILLED UP. Listing PIs rewrote every PI's snapshot, every
+     order save (even a schedule Adjust) rewrote every PI again, and each PI
+     carried the uploaded photo once per order. Neon's size limit was reached
+     and every save then failed with "could not extend file". */
+  it("never writes the PI master by looking, or by a schedule Adjust", async () => {
+    const photo = "data:image/jpeg;base64," + "B".repeat(50000);
+    const made = await call("orders", "POST", "/api/orders", { orders:[{ order_date:"2026-11-01",
+      article_code:"REX GOLA (V)", priority:1, party:"PI Party",
+      lines:[{ combo:"8X10", qty:72 }], pi:{ pi_no:"PI/T1", attachment:photo } }] });
+    expect(made.statusCode).toBe(201);
+    const no = made.body[0].order_no;
+    const version = async () => (await client.query("select xmin::text x, length(snapshot::text) len from proforma_invoices where pi_no='PI/T1'")).rows[0];
+    const first = await version();
+    expect(first.len).toBeLessThan(photo.length);          // the photo is not copied in
+
+    expect((await call("pis", "GET", "/api/pis")).statusCode).toBe(200);
+    expect((await version()).x).toBe(first.x);            // looking writes nothing
+
+    const adjust = await call("order", "PATCH", `/api/orders/${no}?order_no=${no}`, { plan_override:{ start_on:"2026-11-10" } });
+    expect(adjust.statusCode).toBe(200);
+    expect((await version()).x).toBe(first.x);            // an Adjust is not a PI change
+
+    const { rows:[{ n }] } = await client.query("select count(*)::int n from proforma_invoice_revisions where pi_no='PI/T1'");
+    const edit = await call("order", "PATCH", `/api/orders/${no}?order_no=${no}`, { pi:{ remarks:"rush" } });
+    expect(edit.statusCode).toBe(200);
+    expect((await version()).x).not.toBe(first.x);        // a real edit still reaches the PI
+    const { rows:revs } = await client.query("select length(snapshot::text) len from proforma_invoice_revisions where pi_no='PI/T1'");
+    expect(revs.length).toBe(n + 1);
+    expect(revs.every(r => r.len < photo.length)).toBe(true);
+  });
+
   it("answers every list the app loads at start-up with 200", async () => {
     for(const [name, url] of [
       ["orders", "/api/orders"], ["settings", "/api/settings"], ["parties", "/api/parties"],
