@@ -268,3 +268,41 @@ describe("the production plan board",()=>{
     expect(screen.getByText(/Nothing is on the board yet/)).toBeInTheDocument();
   });
 });
+
+/* Seen on the live Schedule: Adjust opened on an order with no job card and
+   showed an empty "Stage by stage" table, a queue position that moved nothing
+   and a release date that could be pinned and changed nothing. The plan runs
+   job cards, so there was nothing there to overrule — and the panel now says
+   so, and says where to go. */
+describe("Adjust on an order that is not on the plan",()=>{
+  const bare={order_no:"JO2246",unit_key:"JO2246",priority:2,stages:[],override:{seq:null,start_on:null,machine:{},days:{}},
+    dispatch_date:null,release_date:null,plan_warnings:[]};
+  it("says there is nothing to overrule and where to raise the job card",async()=>{
+    const { PlanOverrideEditor } = await import("../../src/App.jsx");
+    render(<PlanOverrideEditor order={bare} queue={["JO2246"]} onChange={vi.fn()} onClose={vi.fn()}/>);
+    const note=screen.getByRole("note");
+    expect(note).toHaveTextContent(/JO2246 is not on the plan yet, so there is nothing here to overrule/);
+    expect(note).toHaveTextContent(/Job orders → Create Job Order/);
+    expect(screen.queryByText("Stage by stage")).toBeNull();
+    expect(screen.queryByRole("button",{name:"Run first"})).toBeNull();
+  });
+  it("names a pin that is doing nothing and lets it be cleared",async()=>{
+    const user=userEvent.setup(), onChange=vi.fn();
+    const { PlanOverrideEditor } = await import("../../src/App.jsx");
+    render(<PlanOverrideEditor order={{...bare,stock_status:"awaiting",override:{...bare.override,start_on:"2026-10-07"}}}
+      queue={[]} onChange={onChange} onClose={vi.fn()}/>);
+    expect(screen.getByRole("note")).toHaveTextContent(/A release date of .* is pinned on this order/);
+    expect(screen.getByRole("note")).toHaveTextContent(/waiting for its stock decision/);
+    await user.click(screen.getByRole("button",{name:/Clear all overrides/}));
+    expect(onChange).toHaveBeenCalledWith({});
+  });
+  it("still opens the full editor for a job that has stages",async()=>{
+    const { PlanOverrideEditor } = await import("../../src/App.jsx");
+    const { articles, materials, workcenters:wcs, origin } = INPUTS;
+    const state=compute([{order_no:"JO1",order_date:"2026-07-06",article_code:ART,priority:2,party:"P",lines:[{combo:"8X10",qty:500}]}],
+      articles,materials,wcs,origin,{});
+    render(<PlanOverrideEditor order={state.units[0]} queue={["JO1"]} onChange={vi.fn()} onClose={vi.fn()}/>);
+    expect(screen.getByText("Stage by stage")).toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Run first"})).toBeInTheDocument();
+  });
+});

@@ -47,6 +47,7 @@ import { comboSizes, mrpForSize } from "../shared/pi.js";
 import { can, canSeeTab, defaultTab, isReadOnly, ROLE_LABEL, canEditSchedule, canDecideStock } from "../shared/permissions.js";
 import StockDecisions from "./StockDecisions.jsx";
 import PlanBoard from "./PlanBoard.jsx";
+import { mergeOverrides } from "../shared/plan-board.js";
 import { productionActualKey } from "../shared/production-actuals.js";
 import { DEFAULT_CALENDAR, isOffDay, holidayName } from "../shared/holidays.js";
 
@@ -248,6 +249,23 @@ export default function App({ user=null, onSignOut=null }={}){
     catch(e){ setLoadErr(e.message||String(e)); }
     refresh();
   };
+  /* MANY OVERRIDES AT ONCE — an uploaded planning sheet. `changes` is
+     [{order_no, unit_key, override}]. Each ORDER's blob is built once, with
+     every one of its cards' changes in it, and saved once: calling
+     setPlanOverride in a loop would build each card's blob from the same
+     stale copy of the order, and the last card saved would wipe the others. */
+  const setPlanOverrides = async changes => {
+    const blobs = mergeOverrides(orders||[], changes);
+    setOrders(os=>os.map(o=>blobs[o.order_no]?{...o,plan_override:blobs[o.order_no]}:o));
+    const failed=[];
+    for(const [no, blob] of Object.entries(blobs)){
+      try{ await api.setPlanOverride(no, blob); }
+      catch(e){ failed.push(`${no}: ${e.message||e}`); }
+    }
+    if(failed.length) setLoadErr(`The plan was not saved for ${failed.join("; ")}`);
+    await refresh();
+    return { saved:Object.keys(blobs).length-failed.length, failed };
+  };
   /* CANCEL, NOT JUST HIDE. Removing an order used to archive the order row
      alone, leaving its job cards open, its production entries counting and
      its packing reports in the Dispatch Book. It now cancels the whole chain
@@ -370,6 +388,13 @@ export default function App({ user=null, onSignOut=null }={}){
     planInputs.orders, INPUTS.articles, withStockBalances(INPUTS.materials, INPUTS.stock_meta), wcs, INPUTS.origin,
     {...(targets?{targets}:{}), overrides:planOverrides, units:planInputs.units, calendar, materialDone:planInputs.materialDone,
      progress:progressFrom([...(productionActuals||[]), ...(extra||[])])}),
+    [planInputs,wcs,targets,planOverrides,productionActuals,calendar]);
+  /* The same planner again, with extra overrides laid over the live ones and
+     nothing saved: "what would the plan be if this sheet were applied?" */
+  const planWith = React.useCallback(extra => planInputs && compute(
+    planInputs.orders, INPUTS.articles, withStockBalances(INPUTS.materials, INPUTS.stock_meta), wcs, INPUTS.origin,
+    {...(targets?{targets}:{}), overrides:{...planOverrides, ...(extra||{})}, units:planInputs.units, calendar,
+     materialDone:planInputs.materialDone, progress:progressFrom(productionActuals)}),
     [planInputs,wcs,targets,planOverrides,productionActuals,calendar]);
 
   /* ONE set of plan inputs for the live plan and for "what would this entry
@@ -719,7 +744,8 @@ export default function App({ user=null, onSignOut=null }={}){
             Production Planner and the administrator are handed the means to
             change it; the server refuses everyone else regardless. */}
         {tab==="plan" && state && <>
-          <PlanBoard state={state} caps={caps} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} onReplan={syncAll} />
+          <PlanBoard state={state} caps={caps} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} onReplan={syncAll}
+            planWith={planWith} onApplySheet={canEditSchedule(role)?setPlanOverrides:null} />
           <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} />
         </>}
         {tab==="procurement" && <ProcurementTab state={state} role={role}
@@ -3462,7 +3488,7 @@ function PlanningLogic({orders}){
    "back to automatic" is always one button away, and nothing here is refused:
    an instruction the capacity cannot support is carried out and the cost of it
    is printed underneath. */
-function PlanOverrideEditor({order, queue, onChange, onClose}){
+export function PlanOverrideEditor({order, queue, onChange, onClose}){
   const ov = order.override || {seq:null,start_on:null,machine:{},days:{}};
   /* A batch is pinned by its own key, not its order's — five cards of one
      order are five separate places in the queue. */
@@ -3480,6 +3506,35 @@ function PlanOverrideEditor({order, queue, onChange, onClose}){
     return patch({[map]:next});
   };
   const BTN="text-xs font-semibold rounded-lg px-2.5 py-1 border border-slate-300 bg-white hover:bg-slate-50";
+  /* AN ORDER WITH NO JOB CARD HAS NOTHING TO ADJUST. The plan schedules job
+     cards, so an order nobody has carded has no stages, no machine and no
+     dispatch date. This panel used to open on it anyway: an empty "Stage by
+     stage" table, a queue position that moved nothing, and a release date that
+     could be pinned and visibly changed nothing — a control that works and
+     does nothing reads as a broken screen. It says what to do instead. */
+  if(!stages.length){
+    const pinned = ov.seq!=null || !!ov.start_on;
+    return <div role="note" className="border border-amber-300 bg-amber-50 rounded-xl p-3 mb-2 text-xs text-amber-900">
+      <div className="flex items-start gap-2">
+        <div>
+          <div className="text-sm font-semibold mb-0.5">Adjust {order.plan_title || order.order_no}</div>
+          <b>{order.plan_title || order.order_no} {order.production_complete
+            ? "has finished production, so there is nothing left on the plan to overrule."
+            : "is not on the plan yet, so there is nothing here to overrule."}</b>
+          {!order.production_complete && <> The plan schedules <b>job cards</b>, and no job card has been raised for this order.
+            {order.stock_status==="awaiting" && <> It is still waiting for its stock decision on the Order Book — decide that first.</>}
+            {" "}Raise one under <b>Job orders → Create Job Order</b>; the card then appears on this board with its own Adjust,
+            and on <b>Production → Production plan</b>, where it can be moved, resized and locked.</>}
+          {pinned && <div className="mt-1.5">
+            {ov.start_on ? <>A release date of {niceDate(ov.start_on)} is pinned on this order. </> : null}
+            {ov.seq!=null ? <>It is pinned to queue position {ov.seq}. </> : null}
+            A pin on the order takes effect only if the order is run as a single job card.{" "}
+            <button onClick={()=>onChange({})} className="underline font-semibold">Clear all overrides — plan this automatically</button></div>}
+        </div>
+        <button onClick={onClose} className="ml-auto text-xs text-slate-500 px-1.5">close</button>
+      </div>
+    </div>;
+  }
   return <div className="border border-indigo-200 bg-indigo-50/40 rounded-xl p-3 mb-2">
     <div className="flex items-center gap-2 flex-wrap mb-2">
       <span className="text-sm font-semibold text-indigo-900">Adjust {order.plan_title || order.order_no}</span>

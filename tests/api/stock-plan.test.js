@@ -128,6 +128,13 @@ describe("a lock made on a job card is stored",()=>{
       "JO5001#JC7":{seq:null,start_on:null,machine:{MOLDING:"MOLDING_PVC_VERTICAL"},days:{},at:{STITCHING:"2026-08-03"}},
       "JO5001#JC8":{seq:null,start_on:null,machine:{},days:{CUTTING:2}}});
   });
+  it("keeps the day-by-day plan an uploaded sheet writes for a card",async()=>{
+    const res=await patch({plan_override:{units:{"JO5001#JC7":{at:{PACKING:"2026-08-10"},
+      daily:{PACKING:{"2026-08-10":700,"2026-08-11":800,"next week":5},CUTTING:{}}}}}});
+    expect(res.statusCode).toBe(200);
+    expect(res.body.plan_override.units["JO5001#JC7"]).toEqual({seq:null,start_on:null,machine:{},days:{},
+      at:{PACKING:"2026-08-10"},daily:{PACKING:{"2026-08-10":700,"2026-08-11":800}}});
+  });
   it("drops a card whose override is empty, so a card handed back leaves no trace",async()=>{
     const res=await patch({plan_override:{units:{"JO5001#JC7":{},"JO5001#JC8":{at:{CUTTING:"not a date"}}}}});
     expect(res.statusCode).toBe(200);

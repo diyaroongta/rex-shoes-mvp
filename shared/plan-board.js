@@ -149,8 +149,12 @@ export function checkMove(state, move, { wcs, articles, origin, calendar } = {})
 
   const machine = { ...ov.machine };
   if(target !== st.work_center) machine[st.stage] = target;
+  /* A block that came from a planning sheet carries a day-by-day split. Moving
+     it by hand moves the whole block, so that split no longer describes it. */
+  const daily = { ...(ov.daily || {}) };
+  delete daily[st.stage];
   return { ok:true, start, end, start_date:fromDay(start, origin), end_date:fromDay(end, origin),
-    override:cleanOverride({ ...ov, machine, at:{ ...(ov.at || {}), [st.stage]:move.date } }) };
+    override:cleanOverride({ ...ov, machine, daily, at:{ ...(ov.at || {}), [st.stage]:move.date } }) };
 }
 
 /* Freeze a block exactly where the engine put it, without moving it. */
@@ -165,9 +169,9 @@ export function lockAsIs(unit, stage){
    A duration set in Adjust is a separate decision and is left alone. */
 export function unlockStage(unit, stage){
   const ov = normalizeOverride(unit.override);
-  const at = { ...(ov.at || {}) }, machine = { ...ov.machine };
-  delete at[stage]; delete machine[stage];
-  return cleanOverride({ ...ov, at, machine });
+  const at = { ...(ov.at || {}) }, machine = { ...ov.machine }, daily = { ...(ov.daily || {}) };
+  delete at[stage]; delete machine[stage]; delete daily[stage];
+  return cleanOverride({ ...ov, at, machine, daily });
 }
 
 /* An override with nothing in it is {}, which hands the job back whole. */
@@ -178,6 +182,7 @@ export function cleanOverride(ov){
   if(Object.keys(n.machine).length) out.machine = n.machine;
   if(Object.keys(n.days).length) out.days = n.days;
   if(n.at) out.at = n.at;
+  if(n.daily) out.daily = n.daily;
   return out;
 }
 
@@ -195,4 +200,30 @@ export function moveEffects(before, after){
       sla:u.sla, now_late:u.sla === "breach" && b.sla !== "breach", days_late:u.sla === "breach" ? slip : 0 });
   }
   return out.sort((a, z) => (z.now_late - a.now_late) || z.moved_days - a.moved_days || a.unit_key.localeCompare(z.unit_key));
+}
+
+/* MANY OVERRIDES, ONE SAVE PER ORDER. `changes` is [{order_no, unit_key,
+   override}] — an uploaded planning sheet. An order's override blob holds its
+   own fields at the top and each job card's under `units[<unit key>]`, and is
+   saved whole. So each order's blob is built ONCE here, with every one of its
+   cards' changes in it: saving card by card from the same copy of the order
+   would let the last card saved wipe the ones before it. An empty override
+   removes that card's entry. Returns {order_no: blob} for the orders touched. */
+export function mergeOverrides(orders, changes){
+  const blobs = {};
+  for(const c of changes || []){
+    const cur = (orders || []).find(o => o.order_no === c.order_no);
+    if(!cur) continue;
+    const blob = blobs[c.order_no] || JSON.parse(JSON.stringify(cur.plan_override || {}));
+    const has = !!(c.override && Object.keys(c.override).length);
+    if(c.unit_key && c.unit_key !== c.order_no){
+      const units = { ...(blob.units || {}) };
+      if(has) units[c.unit_key] = c.override; else delete units[c.unit_key];
+      if(Object.keys(units).length) blob.units = units; else delete blob.units;
+      blobs[c.order_no] = blob;
+    }else{
+      blobs[c.order_no] = { ...(has ? c.override : {}), ...(blob.units ? { units:blob.units } : {}) };
+    }
+  }
+  return blobs;
 }

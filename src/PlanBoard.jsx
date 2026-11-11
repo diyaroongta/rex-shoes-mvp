@@ -4,6 +4,7 @@ import { todayIso } from "./lib/today.js";
 import { dayIndex, fromDay, workCalendar, normalizeOverride } from "../shared/engine.js";
 import { boardRows, boardSpan, checkMove, lockAsIs, unlockStage, cleanOverride, moveEffects,
          dropTargets } from "../shared/plan-board.js";
+import PlanSheet from "./PlanSheet.jsx";
 
 const fmt = n => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const DAY_W = 96, LANE_H = 50, NAME_W = 148, WINDOW = 21;
@@ -27,7 +28,7 @@ const dow = iso => new Date(iso + "T00:00:00").toLocaleDateString(undefined, { w
  * administrator: the board is then read-only, and the server refuses the edit
  * in any case.
  */
-export default function PlanBoard({ state, caps, setPlanOverride = null, onReplan = null }){
+export default function PlanBoard({ state, caps, setPlanOverride = null, onReplan = null, planWith = null, onApplySheet = null }){
   const origin = INPUTS.origin;
   /* The board is drawn from the capacities the plan was BUILT from. */
   const wcs = useMemo(() => {
@@ -93,7 +94,10 @@ export default function PlanBoard({ state, caps, setPlanOverride = null, onRepla
     const ov = normalizeOverride(unit.override), n = Math.floor(Number(form.days));
     const daysMap = { ...ov.days };
     if(n >= 1) daysMap[block.stage] = n; else delete daysMap[block.stage];
-    apply(block, cleanOverride({ ...ov, days:daysMap }), n >= 1
+    /* A duration set by hand replaces a day-by-day split that came off a sheet. */
+    const daily = { ...(ov.daily || {}) };
+    delete daily[block.stage];
+    apply(block, cleanOverride({ ...ov, days:daysMap, daily }), n >= 1
       ? `${nameOf(block)} ${block.stage} set to run in ${n} day${n === 1 ? "" : "s"}.`
       : `${nameOf(block)} ${block.stage} goes back to its capacity-based duration.`);
   }
@@ -115,6 +119,9 @@ export default function PlanBoard({ state, caps, setPlanOverride = null, onRepla
           className="text-xs font-semibold px-3 py-1 rounded-lg bg-indigo-700 text-white">Re-plan</button>}
       </div>
     </div>
+
+    {/* The same plan as a workbook: out, edited in Excel, and back in. */}
+    <PlanSheet state={state} wcs={wcs} planWith={planWith} onApply={onApplySheet} />
 
     {refusal && <div role="alert" className="mb-2 text-xs font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
       Not moved. {refusal}</div>}

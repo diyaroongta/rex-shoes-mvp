@@ -216,6 +216,20 @@ export function normalizeOverride(raw){
   for(const [stage,iso] of Object.entries(raw.at||{}))
     if(typeof iso === "string" && /^\d{4}-\d{2}-\d{2}$/.test(iso)) at[stage] = iso;
   if(Object.keys(at).length) o.at = at;
+  /* THE PLAN AS A SHEET SAYS IT: `daily: {STAGE: {"YYYY-MM-DD": pairs}}` —
+     this stage runs exactly these pairs on exactly these days. It is what an
+     uploaded planning sheet writes (shared/plan-sheet.js). A locked block
+     like `at`, but with the day-by-day split given rather than worked out. */
+  const daily = {};
+  for(const [stage,days] of Object.entries(raw.daily||{})){
+    const clean = {};
+    for(const [iso,pairs] of Object.entries(days && typeof days === "object" ? days : {})){
+      const n = Number(pairs);
+      if(/^\d{4}-\d{2}-\d{2}$/.test(iso) && Number.isFinite(n) && n > 0) clean[iso] = n;
+    }
+    if(Object.keys(clean).length) daily[stage] = clean;
+  }
+  if(Object.keys(daily).length) o.daily = daily;
   return o;
 }
 
@@ -223,7 +237,7 @@ export const hasOverride = o => {
   const n = normalizeOverride(o);
   return n.seq != null || n.start_on != null
     || Object.keys(n.machine).length > 0 || Object.keys(n.days).length > 0
-    || Object.keys(n.at||{}).length > 0;
+    || Object.keys(n.at||{}).length > 0 || Object.keys(n.daily||{}).length > 0;
 };
 
 /* The natural queue is priority, then order date, then order number. An
@@ -288,11 +302,12 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
   const pinned={};
   for(const o of ordered){
     const ov=normalizeOverride(overrides[o.order_no]);
-    if(!ov.at) continue;
+    if(!ov.at && !ov.daily) continue;
     const art=articles[o.article_code]; const qty=o.lines.reduce((s,l)=>s+l.qty,0);
     const done=(progress||{})[o.order_no]||{};
     for(const [stage,autoWc,kind] of route(art, o, wcs && wcs._lead_time_rules)){
-      const iso=ov.at[stage];
+      const sheet=(ov.daily||{})[stage]||null;
+      const iso=sheet?Object.keys(sheet).sort()[0]:(ov.at||{})[stage];
       if(!iso||kind!=="normal") continue;
       const record=done[stage];
       const made=record?Math.max(0,Math.min(qty,Number(record.done)||0)):0;
@@ -306,19 +321,55 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
       const lastOn=record&&record.on?dayIndex(record.on,origin):null;
       /* A lock on a Sunday or a holiday starts on the next working day, and
          work already reported cannot be locked to happen again yesterday. */
-      const start=nextWorkingDay(lastOn==null?asked:Math.max(asked,lastOn+1),off);
-      const n=forcedDays||Math.max(1,Math.ceil(remaining/cap-1e-9));
-      const span=[]; for(let d=start; span.length<n && d<=start+horizon; d++) if(!off(d)) span.push(d);
       if(!used[wcCode]) used[wcCode]={};
       const alloc={}; let left=remaining;
-      span.forEach((d,i)=>{
-        /* More than a day's capacity SPLITS over consecutive working days;
-           a forced span spreads the pairs evenly across it instead. */
-        const take=i===span.length-1?left:forcedDays?remaining/n:Math.min(cap,left);
-        alloc[d]=take; left-=take;
+      const book=(d,take)=>{
+        alloc[d]=(alloc[d]||0)+take; left-=take;
         used[wcCode][d]=(used[wcCode][d]||0)+take;
         if(used[wcCode][d]>cap+1e-6) (forcedLoad[wcCode]=forcedLoad[wcCode]||{})[d]=true;
-      });
+      };
+      const span=[];
+      if(sheet){
+        /* DAY BY DAY, AS THE SHEET SAYS. Each named day takes the pairs
+           written against it — INCLUDING a Sunday or a holiday: a planner who
+           writes work against a closed day means the line to run, and that is
+           how Sunday working is planned. Pairs the sheet leaves unplanned
+           follow on the next working days at capacity; pairs beyond the job
+           are not booked. Both are said, never silently fixed. */
+        const offDays=[];
+        for(const day of Object.keys(sheet).sort()){
+          const d=dayIndex(day,origin);
+          if(lastOn!=null&&d<=lastOn) continue;       // already reported on the floor
+          const take=Math.min(sheet[day],left);
+          if(take<=1e-9) continue;
+          book(d,take); span.push(d);
+          if(off(d)) offDays.push(day);
+        }
+        const planned=Object.values(sheet).reduce((a,n)=>a+n,0);
+        if(planned>remaining+1e-6)
+          warnings.push({order_no:o.order_no,stage,kind:"sheet_over",
+            message:`The planning sheet puts ${round2(planned,0)} pairs of ${stage} against a job with ${round2(remaining,0)} left to make. The extra ${round2(planned-remaining,0)} were not booked.`});
+        if(left>1e-9){
+          const short=left;
+          let d=nextWorkingDay(span.length?span[span.length-1]+1:Math.max(asked,lastOn==null?asked:lastOn+1),off);
+          for(let guard=0; left>1e-9&&guard<horizon; guard++, d=nextWorkingDay(d+1,off)){ book(d,Math.min(cap,left)); span.push(d); }
+          warnings.push({order_no:o.order_no,stage,kind:"sheet_short",
+            message:`The planning sheet plans ${round2(remaining-short,0)} of the ${round2(remaining,0)} pairs of ${stage}. The other ${round2(short,0)} follow on the next working days.`});
+        }
+        if(offDays.length)
+          warnings.push({order_no:o.order_no,stage,kind:"off_day_worked",
+            message:`${stage} is planned on ${offDays.join(", ")}, when the factory is normally closed.`});
+        if(!span.length) continue;                     // nothing left that the sheet could place
+      }else{
+        const start=nextWorkingDay(lastOn==null?asked:Math.max(asked,lastOn+1),off);
+        const n=forcedDays||Math.max(1,Math.ceil(remaining/cap-1e-9));
+        for(let d=start; span.length<n && d<=start+horizon; d++) if(!off(d)) span.push(d);
+        span.forEach((d,i)=>{
+          /* More than a day's capacity SPLITS over consecutive working days;
+             a forced span spreads the pairs evenly across it instead. */
+          book(d,i===span.length-1?left:forcedDays?remaining/n:Math.min(cap,left));
+        });
+      }
       const block={start:span[0],end:span[span.length-1],order_no:o.order_no,article:o.article_code,locked:true};
       if(wc.exclusive){
         if(!busy[wcCode]) busy[wcCode]=[];
@@ -328,7 +379,8 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
             +`One machine cannot run both — move or unlock one of them.`});
         busy[wcCode].push(block);
       }
-      (pinned[o.order_no]=pinned[o.order_no]||{})[stage]={wcCode,autoWc,start:block.start,end:block.end,alloc,asked,forcedDays,wanted};
+      (pinned[o.order_no]=pinned[o.order_no]||{})[stage]={wcCode,autoWc,start:block.start,end:block.end,alloc,asked,
+        forcedDays:sheet?null:forcedDays,wanted,sheet:!!sheet};
     }
   }
 
@@ -377,7 +429,7 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
           message:`${stage} is locked to start ${fromDay(pin.start,origin)}, but the stage before it does not finish until `
             +`${fromDay(readyOn-1,origin)}. Move the lock later, or unlock it.`});
         stages.push({stage,work_center:pin.wcCode,start:pin.start,end:pin.end,instant:false,alloc:pin.alloc,
-          locked:true,precedence_broken:broken||undefined,forced_days:pin.forcedDays||undefined,
+          locked:true,from_sheet:pin.sheet||undefined,precedence_broken:broken||undefined,forced_days:pin.forcedDays||undefined,
           forced_machine:pin.wanted&&wcs[pin.wanted]&&pin.wanted!==pin.autoWc?pin.wanted:undefined});
         /* What follows a lock follows it — and never runs ahead of the stage
            the lock itself is waiting for. */
@@ -681,11 +733,12 @@ export function overridesForUnits(units, overrides={}){
     const single=countByParent[parent]===1;
     /* A locked block is, like a start date, a decision about one piece of
        work: it follows the order onto its card only when there is one card. */
-    if(machine||days||single&&(n.seq!=null||n.start_on!=null||n.at)) map[key]={
+    if(machine||days||single&&(n.seq!=null||n.start_on!=null||n.at||n.daily)) map[key]={
       ...(machine?{machine}:{}), ...(days?{days}:{}),
       ...(single&&n.seq!=null?{seq:n.seq}:{}),
       ...(single&&n.start_on!=null?{start_on:n.start_on}:{}),
       ...(single&&n.at?{at:n.at}:{}),
+      ...(single&&n.daily?{daily:n.daily}:{}),
     };
     if(!single&&(n.seq!=null||n.start_on!=null)&&!told.has(parent)){
       told.add(parent);

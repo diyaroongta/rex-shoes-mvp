@@ -273,6 +273,51 @@ in `schedule_problems`. Over capacity on a pooled line is allowed and amber.
 A `plan_override` PATCH is now planner/admin ONLY — Sales holds the whole
 orders endpoint and could otherwise drag the board.
 
+**The plan goes out as a workbook and comes back as locks.** The factory plans
+on a sheet, so Production plan has **Download plan (.xlsx)** and **Upload
+edited plan** (`shared/plan-sheet.js`, `src/PlanSheet.jsx`). One row is one
+job, at one stage, on one day; the planner changes the Date, the Work centre
+or the Pairs, or adds and deletes rows to split work differently.
+
+- **It is the app's OWN sheet that round-trips, not the factory's.** Their
+  monthly planning workbook (`WEEKLY PLANNING - NOVEMBER 2026`) names an
+  article, a size and a party per cell and no job card, and two live cards for
+  "GOLA PLUS · MTS" cannot be told apart by that — a row matched to the wrong
+  card silently re-plans somebody else's work. Every row carries a `Ref`
+  (`unit_key::STAGE`); a row without one is refused by number, and a workbook
+  with no Date/Ref heading is refused with what to do instead.
+- **"Changed" is judged against the sheet AS DOWNLOADED**, which travels in the
+  workbook as the `As downloaded` sheet. The plan moves between download and
+  upload; compared with the LIVE plan, every block that moved by itself would
+  read as an edit and be locked. Only what the planner changed is locked —
+  unless they tick "lock every block in the sheet".
+- **What is written is `daily: {STAGE: {date: pairs}}`** in the job's override
+  (plus `at`, so the board sees a lock). The engine books exactly those pairs
+  on exactly those days — INCLUDING a Sunday or a holiday, which is how Sunday
+  working is planned — and says what did not add up (`sheet_short`: the rest
+  follows on the next working days; `sheet_over`: the extra is not booked;
+  `off_day_worked`). Nothing is silently fixed.
+- **A job is applied whole or not at all.** A stage the sheet fixes before the
+  one ahead of it, two articles on one moulding machine over the same days, a
+  machine that cannot make the article: each stops THAT job, in words.
+- **The engine has the last word** (`settle`). The sheet's own rows cannot show
+  what re-planning the UNLOCKED stages will do to a lock, so the result is run
+  through the real planner (`planWith`) and any job the engine reports as
+  `precedence_broken` or `locked_clash` is taken out, with the engine's
+  message, and the plan run again. The preview shown before Apply is that
+  plan, with the dispatch dates it moves.
+- **One save per ORDER** (`mergeOverrides`). An order's blob holds every card's
+  override; saving card by card from the same copy let the last card wipe the
+  others.
+- Dates are read DAY FIRST (`02/11/2026` is 2 November), and a row that cannot
+  be read blocks the whole upload rather than letting part of a sheet apply.
+- NOT there yet: the sheet can only name work centres the app HAS. The
+  client's sheet plans Cutting M/C-1..3, Stitching Line 1..4 and two injection
+  machines; the app has one cutting hall and one stitching centre. Until those
+  exist as work centres (with their own capacities — the client asked for
+  that separately), "which line" cannot be said on the sheet. Night shift is
+  not modelled at all: capacity is per day.
+
 **Procurement answers WHEN, not just what.** A list sorted by shortfall answers
 "what is short"; the buyer asks "what is short and needed on Thursday", and a
 small shortfall due tomorrow beats a huge one due in three weeks. Every piece was

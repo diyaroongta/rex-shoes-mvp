@@ -181,10 +181,13 @@ run("stock first, against a real Postgres", () => {
   it("a block locked on a job card is still locked after the orders are read again", async () => {
     const before = (await call("orders", "GET", "/api/orders")).body.find(o => o.order_no === orderNo);
     const unit = `${orderNo}#JC1`;
-    const r = await call("order", "PATCH", `/api/orders/${orderNo}`, { plan_override:{ units:{ [unit]:{ at:{ STITCHING:"2026-11-17" } } } } });
+    /* ...and the day-by-day split an uploaded planning sheet writes with it. */
+    const r = await call("order", "PATCH", `/api/orders/${orderNo}`, { plan_override:{ units:{ [unit]:{ at:{ STITCHING:"2026-11-17" },
+      daily:{ STITCHING:{ "2026-11-17":120, "2026-11-18":80 } } } } } });
     expect(r.body.error).toBeUndefined();
     const after = (await call("orders", "GET", "/api/orders")).body.find(o => o.order_no === orderNo);
     expect(after.plan_override.units[unit].at).toEqual({ STITCHING:"2026-11-17" });
+    expect(after.plan_override.units[unit].daily).toEqual({ STITCHING:{ "2026-11-17":120, "2026-11-18":80 } });
     /* A schedule change is not a commercial one: the stock decision is untouched. */
     expect(after.stock_allocation).toEqual(before.stock_allocation);
     await call("order", "PATCH", `/api/orders/${orderNo}`, { plan_override:{} });
