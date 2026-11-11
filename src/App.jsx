@@ -739,15 +739,16 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} jobs={jobs} calendar={calendar}
           replan={replan} onChanged={refreshProductionActuals} />}
-        {/* The board is where the plan is CHANGED — drag, lock, re-plan — and
-            the day-by-day list under it is the same plan, printable. Only the
+        {/* ONE picture of the plan, laid out like the factory's own weekly
+            planning sheet: a row a day, a column a work centre. It used to be a
+            board of floating bars over a separate day-by-day table of the same
+            plan — two views that each needed the other to be read. Only the
             Production Planner and the administrator are handed the means to
             change it; the server refuses everyone else regardless. */}
-        {tab==="plan" && state && <>
-          <PlanBoard state={state} caps={caps} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} onReplan={syncAll}
-            planWith={planWith} onApplySheet={canEditSchedule(role)?setPlanOverrides:null} />
-          <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} />
-        </>}
+        {tab==="plan" && state &&
+          <PlanBoard state={state} caps={caps} actuals={productionActuals}
+            setPlanOverride={canEditSchedule(role)?setPlanOverride:null} onReplan={syncAll}
+            planWith={planWith} onApplySheet={canEditSchedule(role)?setPlanOverrides:null} />}
         {tab==="procurement" && <ProcurementTab state={state} role={role}
           onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
@@ -3346,109 +3347,6 @@ function EditOrder({o,onSave,onCancel}){
 
 /* Day-by-day production plan: what runs on which machine on which date.
    Built entirely from the computed stage allocations — nothing new is inferred. */
-function PlanTab({state,caps,actuals=[],setPlanOverride}){
-  // Same editor as the Schedule board. A planner looking at "Tuesday is
-  // overloaded" wants to move THAT job, on the screen where they can see it.
-  const [editing,setEditing]=React.useState(null);
-  const productionRows=state.units&&state.units.length?state.units:state.orders;
-  const editUnit = productionRows.find(o=>(o.unit_key||o.order_no)===editing);
-  const queue = queueOrder(productionRows,
-    Object.fromEntries(productionRows.map(o=>[o.unit_key||o.order_no,o.override||{}]))).map(o=>o.unit_key||o.order_no);
-  /* In the order a shoe passes through them. Reading the reference document's
-     own key order put PACKING second and DISPATCH third — the columns were the
-     storage order, not the production order. */
-  const centres = workCentresInOrder(INPUTS.workcenters);
-  // The schedule was built from the edited capacities; reading the seed here
-  // made this screen disagree with Machine load the moment one was changed.
-  const capacityOf = c => (caps && caps[c]) ?? INPUTS.workcenters[c].capacity_per_day;
-  const actualByKey=new Map(actuals.map(row=>[productionActualKey(row),row]));
-  const byDay = {};
-  for(const o of productionRows){
-    for(const st of o.stages){
-      if(st.instant || !st.alloc) continue;
-      for(const [day,pairs] of Object.entries(st.alloc)){
-        const d = Number(day);
-        (byDay[d] = byDay[d] || {});
-        const production_on=fromDay(d,INPUTS.origin);
-        const actual=actualByKey.get(productionActualKey({production_on,work_center:st.work_center,stage:st.stage,order_no:o.order_no,unit_key:o.unit_key||o.order_no}));
-        (byDay[d][st.work_center] = byDay[d][st.work_center] || []).push({
-          order_no:o.order_no, unit_key:o.unit_key||o.order_no, card_no:o.card_no,
-          article:o.article, party:o.party, pairs, stage:st.stage,
-          actual_pairs:actual==null?null:Number(actual.actual_pairs), sla:o.sla });
-      }
-    }
-  }
-  const days = Object.keys(byDay).map(Number).sort((a,b)=>a-b);
-  if(!days.length) return <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm text-center text-slate-500 text-sm">
-    Nothing scheduled yet — add an order and the production plan builds itself.</div>;
-
-  const active = centres.filter(c=>days.some(d=>byDay[d][c]));
-
-  return <div data-print-area className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-    <div className="flex items-center gap-3 mb-3 flex-wrap">
-      <div>
-        <div className="text-sm font-semibold text-slate-700">Production plan</div>
-        <div className="text-xs text-slate-500">Every working day from {niceDate(fromDay(days[0],INPUTS.origin))} to {niceDate(fromDay(days[days.length-1],INPUTS.origin))} — what runs where.</div>
-      </div>
-      <button onClick={()=>window.print()} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Print / save PDF</button>
-    </div>
-    {setPlanOverride && <p className="text-xs text-slate-500 -mt-2 mb-3">
-      Click any order number below to overrule its plan — run it earlier or later, pin its start
-      date, move a stage to another machine, or force a stage into a set number of days.</p>}
-    {editUnit && setPlanOverride && (
-      <PlanOverrideEditor order={{...editUnit,order_no:editUnit.unit_key||editUnit.order_no}} queue={queue}
-        onChange={ov=>setPlanOverride(editUnit.order_no,ov,editUnit.unit_key)}
-        onClose={()=>setEditing(null)} />)}
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm border-collapse">
-        <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
-          <th className="text-left py-2 px-2 whitespace-nowrap">Date</th>
-          {active.map(c=><th key={c} className="text-left py-2 px-2">{INPUTS.workcenters[c].name}</th>)}
-        </tr></thead>
-        <tbody>
-          {days.map(d=>{
-            const iso = fromDay(d,INPUTS.origin);
-            const dow = new Date(iso+"T00:00:00").toLocaleDateString(undefined,{weekday:"short"});
-            return <tr key={d} className="align-top hover:bg-slate-50">
-              <td className="py-2 px-2 whitespace-nowrap" style={{borderTop:"1px solid #eef0f4"}}>
-                <div className="mono text-xs font-semibold">{niceDate(iso)}</div>
-                <div className="text-xs text-slate-400">{dow}</div>
-              </td>
-              {active.map(c=>{
-                const jobs = byDay[d][c] || [];
-                const cap = capacityOf(c);
-                const used = jobs.reduce((a,j)=>a+j.pairs,0);
-                // Booked past capacity because a planner said so. Shown, not
-                // hidden — the line still has to find the extra pairs.
-                const forced = !!((state.forced_load||{})[c]||{})[d];
-                return <td key={c} className="py-2 px-2"
-                  style={{borderTop:"1px solid #eef0f4",background:forced?"#fffbeb":undefined}}>
-                  {!jobs.length ? <span className="text-slate-300 text-xs">—</span> : <>
-                    {jobs.map((j,i)=>(
-                      <div key={i} className="text-xs mb-1">
-                        {setPlanOverride
-                          ? <button onClick={()=>setEditing(editing===j.unit_key?null:j.unit_key)}
-                              aria-label={`Adjust the plan for ${j.card_no||j.order_no}`}
-                              className="mono font-semibold text-indigo-800 underline decoration-dotted underline-offset-2">
-                              {j.card_no||j.order_no}</button>
-                          : <span className="mono font-semibold">{j.card_no||j.order_no}</span>}
-                        {j.card_no&&<span className="mono text-slate-400"> · {j.order_no}</span>}
-                        <span className="text-slate-500"> · {fmt(Math.round(j.pairs))} pr</span>
-                        {j.actual_pairs!=null&&<span className="text-emerald-700"> · {fmt(j.actual_pairs)} actual</span>}
-                        <div className="text-slate-400">{j.article} · {j.stage}</div>
-                      </div>))}
-                    <div className="text-xs mono" style={{color:forced?"#b45309":"#94a3b8"}}>
-                      {Math.round(100*used/cap)}% of {fmt(cap)}{forced?" · forced":""}</div>
-                  </>}
-                </td>;})}
-            </tr>;})}
-        </tbody>
-      </table>
-    </div>
-    <p className="text-xs text-slate-400 mt-3"><span style={{background:"#fffbeb",padding:"1px 4px",borderRadius:3,color:"#b45309"}}>Amber</span> is a day booked past capacity because a stage was pinned to a shorter run in Schedule → Adjust. A molding machine carries one MOULD at a time, so a molding column can show two cards of the same article on one day — up to that machine's capacity — while a different article waits for the changeover. The molding machines run in parallel with each other. The pooled centres share a day up to capacity.</p>
-  </div>;
-}
-
 function PlanningLogic({orders}){
   const queue=[...orders].sort((a,b)=>a.priority-b.priority||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)||String(a.order_no).localeCompare(String(b.order_no)));
   return <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden">

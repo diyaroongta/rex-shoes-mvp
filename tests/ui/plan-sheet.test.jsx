@@ -52,7 +52,7 @@ describe("the plan as a spreadsheet",()=>{
     render(<PlanSheet state={plan()} wcs={wcs} planWith={planWith} onApply={vi.fn()}/>);
     await user.click(screen.getByRole("button",{name:"Download plan (.xlsx)"}));
     expect(saved.name).toBe("production-plan-2026-07-06.xlsx");
-    expect(saved.wb.SheetNames).toEqual(["Plan","As downloaded","How to edit"]);
+    expect(saved.wb.SheetNames).toEqual(["Plan","As downloaded","Week view","How to edit"]);
     const grid=XLSX.utils.sheet_to_json(saved.wb.Sheets.Plan,{header:1});
     expect(grid[0].slice(0,4)).toEqual(["Date","Day","Stage","Work centre"]);
     expect(grid.length).toBeGreaterThan(14);

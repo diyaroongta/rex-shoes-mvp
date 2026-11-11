@@ -273,6 +273,31 @@ in `schedule_problems`. Over capacity on a pooled line is allowed and amber.
 A `plan_override` PATCH is now planner/admin ONLY — Sales holds the whole
 orders endpoint and could otherwise drag the board.
 
+**The Production plan screen is the factory's own weekly sheet, not a board of
+bars.** The first version drew floating bars — rows of work centres, columns
+of days — above a separate day-by-day table of the same plan. The client's
+verdict was "too much and too confusing… make it like the excels they had":
+two pictures of one plan, each needing the other, nearly every bar outlined
+red because nearly every job is late against a placeholder promise, and locks
+that appeared without anyone knowing why. `src/PlanBoard.jsx` is now ONE table
+per week (`weeklySheets`): a row a day, a column a work centre, each cell the
+jobs running there with that day's pairs, a `n% of capacity` foot and a week
+total — the layout of their `WEEKLY PLANNING` workbook. Things worth keeping:
+
+- **A lock explains itself and is one click to take back.** Any move locks, so
+  a slip of the mouse locks. Every change shows an **Undo**; the opened job
+  says in words why it is locked (moved by hand, or set by an uploaded sheet);
+  the count of locks is one of four figures at the top, with **Unlock all**.
+- **Status is a word, not an outline.** `late`, `out of order`, a padlock and
+  a left bar. A screen where everything is outlined red says nothing.
+- **A job opened far down the page is scrolled into view** — the box is above
+  the tables (the "control nobody can see" trap, again).
+- Job rows are `div role="button"`, not `<button>`: the print stylesheet hides
+  every button inside the printed region, and the plan has to print.
+- The old `PlanTab` day table is gone; what it showed (pairs made, capacity
+  used, print) is in the weekly table. The downloaded workbook carries the
+  same layout as a read-only `Week view` sheet.
+
 **The plan goes out as a workbook and comes back as locks.** The factory plans
 on a sheet, so Production plan has **Download plan (.xlsx)** and **Upload
 edited plan** (`shared/plan-sheet.js`, `src/PlanSheet.jsx`). One row is one

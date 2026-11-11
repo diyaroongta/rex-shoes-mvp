@@ -10,8 +10,8 @@
  */
 import assert from "node:assert/strict";
 import { compute, dayIndex, fromDay, normalizeOverride } from "../shared/engine.js";
-import { planRows, sheetRows, helpRows, sheetDate, parsePlanSheet, planFromSheet, settle, COLUMNS } from "../shared/plan-sheet.js";
-import { checkMove, unlockStage, mergeOverrides } from "../shared/plan-board.js";
+import { planRows, sheetRows, helpRows, weekViewRows, sheetDate, parsePlanSheet, planFromSheet, settle, COLUMNS } from "../shared/plan-sheet.js";
+import { checkMove, unlockStage, mergeOverrides, boardRows, boardSpan, weeklySheets, unlockAll } from "../shared/plan-board.js";
 import { INPUTS } from "../shared/inputs.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
@@ -69,6 +69,19 @@ test("the sheet names the work centre, the article and the day in words", () => 
   assert.equal(first[COL.Day], "Mon");
   assert.equal(first[COL.Ref], "JO1::CUTTING");
   assert.ok(helpRows(wcs).some(r => r[0] === "PVC rotary" && r[1] === "MOLDING"));
+});
+
+test("the week view lays the same plan out a row a day, a column a work centre", () => {
+  const view = weekViewRows(plan([A]), wcs, origin);
+  const head = view.find(r => r[0] === "Date");
+  assert.deepEqual(head.slice(0, 3), ["Date", "Day", "Cutting hall (2500 a day)"]);
+  const monday = view.find(r => r[0] === "2026-07-06");
+  assert.equal(monday[1], "Mon");
+  assert.equal(monday[2], "JO1 · REX GOLA (V) · 1500");
+  const total = view.find(r => r[0] === "Week total");
+  assert.equal(total[2], 1500);
+  assert.match(view[0][0], /edit the "Plan" sheet, not this one/);
+  assert.deepEqual(weekViewRows(plan([]), wcs, origin), [["Nothing is on the plan yet."]]);
 });
 
 console.log("\nB — dates, day first");
@@ -351,6 +364,30 @@ test("a sheet's days are kept through the override's own clean-up", () => {
   const n = normalizeOverride({ daily:{ PACKING:{ "2026-08-10":700, "soon":5, "2026-08-11":0 }, CUTTING:{} } });
   assert.deepEqual(n.daily, { PACKING:{ "2026-08-10":700 } });
   assert.equal(normalizeOverride({ daily:{ CUTTING:{} } }).daily, undefined);
+});
+
+console.log("\nI — the weekly table and unlocking");
+test("the weekly table groups each day's jobs under their work centre, with week totals", () => {
+  const state = plan([A, B], { JO1:{ at:{ PACKING:"2026-07-20" } } });
+  const rows = boardRows(state, wcs).filter(r => r.blocks.length);
+  const span = boardSpan(rows);
+  const weeks = weeklySheets(rows, span.first, span.last, origin);
+  assert.equal(weeks[0].from, "2026-07-06");
+  assert.equal(weeks[0].days.length, 7);
+  const monday = weeks[0].days[0].cells.CUTTING;
+  assert.deepEqual(monday.jobs.map(j => [j.block.unit_key, j.pairs]), [["JO1", 1500], ["JO2", 1000]]);
+  assert.equal(monday.pairs, 2500);
+  assert.equal(weeks[0].totals.CUTTING, 2700);
+  /* Every pair on the plan is on exactly one day of exactly one week. */
+  const all = weeks.flatMap(w => w.days).flatMap(d => Object.values(d.cells)).reduce((a, c) => a + c.pairs, 0);
+  assert.equal(Math.round(all), 7 * (1500 + 1200));
+  assert.equal(weeks.find(w => w.days.some(d => d.date === "2026-07-20")).days.find(d => d.date === "2026-07-20").cells.PACKING.jobs[0].block.locked, true);
+});
+test("unlock all hands every locked stage of a job back, and keeps a set duration", () => {
+  const state = plan([A], { JO1:{ at:{ PACKING:"2026-07-20", CUTTING:"2026-07-07" }, machine:{ MOLDING:"MOLDING_PVC_VERTICAL" },
+    daily:{ DISPATCH:{ "2026-07-24":1500 } }, days:{ STITCHING:2 } } });
+  assert.deepEqual(unlockAll(state.units[0]), { machine:{ MOLDING:"MOLDING_PVC_VERTICAL" }, days:{ STITCHING:2 } });
+  assert.deepEqual(unlockAll(plan([A], { JO1:{ at:{ PACKING:"2026-07-20" } } }).units[0]), {});
 });
 
 console.log("\nI — saving");

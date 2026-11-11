@@ -2,8 +2,8 @@ import React, { useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { todayIso } from "./lib/today.js";
-import { planRows, sheetRows, helpRows, parsePlanSheet, planFromSheet, settle,
-         PLAN_SHEET, SNAPSHOT_SHEET, HELP_SHEET } from "../shared/plan-sheet.js";
+import { planRows, sheetRows, helpRows, weekViewRows, parsePlanSheet, planFromSheet, settle,
+         PLAN_SHEET, SNAPSHOT_SHEET, HELP_SHEET, WEEK_SHEET } from "../shared/plan-sheet.js";
 import { moveEffects } from "../shared/plan-board.js";
 
 const fmt = n => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
@@ -33,7 +33,7 @@ const daysText = days => Object.keys(days || {}).sort().map(d => `${nice(d)}: ${
  * shows the answer. An upload is checked by the real planner (`planWith`)
  * before it is offered, so the preview is the plan that will be saved.
  */
-export default function PlanSheet({ state, wcs, planWith = null, onApply = null }){
+export default function PlanSheet({ state, wcs, planWith = null, onApply = null, children = null }){
   const origin = INPUTS.origin;
   const ctx = { wcs, articles:INPUTS.articles, origin, calendar:state.calendar };
   const [sheet, setSheet] = useState(null);        // { name, rows, baseline, problems }
@@ -52,6 +52,11 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null 
       ws["!cols"] = widths;
       XLSX.utils.book_append_sheet(wb, ws, name);
     }
+    /* The same plan the way the factory lays its own sheet out — a row a day,
+       a column a work centre — to read and print. It is not read back. */
+    const view = XLSX.utils.aoa_to_sheet(weekViewRows(state, wcs, origin));
+    view["!cols"] = [{ wch:12 }, { wch:6 }, ...Object.keys(wcs).map(() => ({ wch:34 }))];
+    XLSX.utils.book_append_sheet(wb, view, WEEK_SHEET);
     const help = XLSX.utils.aoa_to_sheet(helpRows(wcs));
     help["!cols"] = [{ wch:44 }, { wch:70 }, { wch:12 }];
     XLSX.utils.book_append_sheet(wb, help, HELP_SHEET);
@@ -92,16 +97,19 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null 
     finally{ setBusy(false); }
   }
 
-  return <div className="mb-3">
+  return <div className="mb-3" data-noprint>
+    {/* One row of buttons. What each does is on its tooltip and in the
+        workbook's own "How to edit" sheet, not in a sentence across the page. */}
     <div className="flex items-center gap-2 flex-wrap">
-      <span className="text-xs font-semibold text-slate-600">Plan as a sheet</span>
-      <button onClick={download} disabled={!rows.length} className={BTN}>Download plan (.xlsx)</button>
+      <button onClick={download} disabled={!rows.length} className={BTN}
+        title="The plan as an Excel workbook: one row per job, stage and day">Download plan (.xlsx)</button>
       {onApply && <>
-        <button onClick={() => input.current && input.current.click()} className={BTN}>Upload edited plan</button>
+        <button onClick={() => input.current && input.current.click()} className={BTN}
+          title="Upload the workbook after changing dates, machines or pairs in it — the plan follows the sheet">Upload edited plan</button>
         <input ref={input} type="file" accept=".xlsx,.xls" aria-label="Upload an edited plan workbook" className="hidden"
           onChange={e => e.target.files && e.target.files[0] && read(e.target.files[0])} />
       </>}
-      <span className="text-xs text-slate-500">Download, change dates, machines or pairs in Excel, and upload the same file — the plan follows the sheet.</span>
+      {children}
     </div>
     {err && <div role="alert" className="mt-2 text-xs font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{err}</div>}
     {msg && !sheet && <div role="status" className="mt-2 text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{msg}</div>}

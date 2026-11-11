@@ -45,7 +45,7 @@ export function boardRows(state, wcs){
         party:u.party, article:u.article, stage:st.stage, work_center:st.work_center,
         start:st.start, end:st.end, start_date:st.start_date, end_date:st.end_date,
         pairs:Math.round(pairsOf(st)), days, working_days:Object.keys(days).length,
-        locked:!!st.locked, precedence_broken:!!st.precedence_broken,
+        locked:!!st.locked, from_sheet:!!st.from_sheet, precedence_broken:!!st.precedence_broken,
         /* Late is the JOB's dispatch against its promise, not this one stage. */
         late:u.sla === "breach", at_risk:u.sla === "at_risk",
         over:Object.keys(days).some(d => (forced[st.work_center] || {})[d]),
@@ -226,4 +226,53 @@ export function mergeOverrides(orders, changes){
     }
   }
   return blobs;
+}
+
+/* THE PLAN AS THE FACTORY WRITES IT: one sheet per week, a row per day, a
+   column per work centre, and in each cell the jobs running there that day
+   with that day's pairs. Built from the same blocks as everything else, so the
+   table, the workbook and the engine cannot disagree.
+
+     weeks   [{ monday, days:[{ day, cells:{work_centre: {jobs:[{block, pairs}], pairs}} }], totals }]
+
+   `from`/`to` are day numbers; weeks run Monday to Sunday. */
+export function weeklySheets(rows, from, to, origin){
+  const weekday = d => new Date(fromDay(d, origin) + "T00:00:00Z").getUTCDay();
+  const mondayOf = d => d - ((weekday(d) + 6) % 7);
+  const cells = new Map();
+  for(const row of rows || []) for(const block of row.blocks){
+    for(const [d, pairs] of Object.entries(block.days)){
+      const key = `${d}|${row.work_center}`;
+      if(!cells.has(key)) cells.set(key, { jobs:[], pairs:0 });
+      const c = cells.get(key);
+      c.jobs.push({ block, pairs });
+      c.pairs += pairs;
+    }
+  }
+  const weeks = [];
+  for(let monday = mondayOf(from); monday <= to; monday += 7){
+    const days = [], totals = {};
+    for(let d = monday; d < monday + 7; d++){
+      const dayCells = {};
+      for(const row of rows || []){
+        const c = cells.get(`${d}|${row.work_center}`);
+        if(!c) continue;
+        c.jobs.sort((a, z) => a.block.unit_key.localeCompare(z.block.unit_key, undefined, { numeric:true }));
+        dayCells[row.work_center] = c;
+        totals[row.work_center] = (totals[row.work_center] || 0) + c.pairs;
+      }
+      days.push({ day:d, date:fromDay(d, origin), cells:dayCells, any:Object.keys(dayCells).length > 0 });
+    }
+    weeks.push({ monday, from:fromDay(monday, origin), to:fromDay(monday + 6, origin), days, totals,
+                 any:days.some(x => x.any) });
+  }
+  return weeks;
+}
+
+/* Every lock on one job, handed back to the planner at once. */
+export function unlockAll(unit){
+  let ov = normalizeOverride(unit.override);
+  const stages = new Set([...Object.keys(ov.at || {}), ...Object.keys(ov.daily || {})]);
+  for(const stage of stages) ov = normalizeOverride(unlockStage({ ...unit, override:ov }, stage));
+  return cleanOverride(ov);
 }

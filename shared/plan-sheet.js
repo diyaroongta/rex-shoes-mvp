@@ -36,11 +36,12 @@
  * and back; everything that decides anything is here.
  */
 import { dayIndex, fromDay, workCalendar, normalizeOverride, workCentresInOrder } from "./engine.js";
-import { boardRows, machineFits, cleanOverride } from "./plan-board.js";
+import { boardRows, boardSpan, weeklySheets, machineFits, cleanOverride } from "./plan-board.js";
 
 export const PLAN_SHEET = "Plan";
 export const SNAPSHOT_SHEET = "As downloaded";
 export const HELP_SHEET = "How to edit";
+export const WEEK_SHEET = "Week view";
 export const COLUMNS = ["Date", "Day", "Stage", "Work centre", "Job card", "Order", "Party", "Article",
                         "Sizes", "Pairs", "Locked", "Ref (do not change)"];
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -103,11 +104,33 @@ export function helpRows(wcs){
     ["Do NOT change the Ref column. It is how a row is matched to its job card and stage."],
     ["Day, Job card, Order, Party, Article, Sizes and Locked are there to read by. Changing them changes nothing."],
     ["The sheet \"As downloaded\" is the plan as it was when this file was made. Leave it alone: it is how the upload tells what you changed."],
+    ["The sheet \"Week view\" is the same plan laid out week by week, to read and print. It is not read back."],
     ["Only the jobs you change are locked. Everything else is still planned automatically, around them."],
     [],
     ["WORK CENTRES", "Stage", "Pairs a day"],
     ...workCentresInOrder(wcs).map(code => [(wcs[code] || {}).name || code, (wcs[code] || {}).stage, (wcs[code] || {}).capacity_per_day]),
   ];
+}
+
+/* THE SAME PLAN, LAID OUT THE WAY THE FACTORY LAYS ITS OWN: a block per week,
+   a row a day, a column a work centre, and in each cell the jobs running there
+   with that day's pairs. For reading and printing only — it is never read
+   back, because a cell of free text cannot be tied to a job card. */
+export function weekViewRows(state, wcs, origin){
+  const rows = boardRows(state, wcs).filter(r => r.blocks.length);
+  const span = boardSpan(rows);
+  if(!span) return [["Nothing is on the plan yet."]];
+  const out = [["WEEKLY PRODUCTION PLAN — to read and print. To change the plan, edit the \"Plan\" sheet, not this one."]];
+  const job = ({ block:b, pairs }) => `${b.card_no ? `JC ${b.card_no}` : b.order_no} · ${b.article} · ${Math.round(pairs)}${b.locked ? " (locked)" : ""}`;
+  for(const week of weeklySheets(rows, span.first, span.last, origin)){
+    if(!week.any) continue;
+    out.push([], [`WEEK OF ${week.from} TO ${week.to}`],
+      ["Date", "Day", ...rows.map(r => `${r.name} (${r.capacity_per_day} a day)`)]);
+    for(const d of week.days)
+      out.push([d.date, dowOf(d.date), ...rows.map(r => ((d.cells[r.work_center] || {}).jobs || []).map(job).join("\n"))]);
+    out.push(["Week total", "", ...rows.map(r => week.totals[r.work_center] ? Math.round(week.totals[r.work_center]) : "")]);
+  }
+  return out;
 }
 
 /* A date as the planner may have left it: 2026-11-17, 17/11/2026, 17-11-26,

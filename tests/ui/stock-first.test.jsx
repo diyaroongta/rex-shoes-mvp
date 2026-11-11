@@ -169,77 +169,136 @@ describe("the dispatch reminder",()=>{
   });
 });
 
-describe("the production plan board",()=>{
+/* THE WEEKLY PRODUCTION PLAN. It was a board of floating bars; the factory
+   asked for something that reads like the planning sheet they already keep —
+   a table per week, a row a day, a column a work centre — and for a lock to
+   say why it is there and be easy to take back. */
+describe("the weekly production plan",()=>{
   const { articles, materials, workcenters:wcs, origin } = INPUTS;
   const A={order_no:"JO1",order_date:"2026-07-06",article_code:ART,priority:2,party:"Board Party",lines:[{combo:"8X10",qty:1500}]};
   const plan=(overrides={})=>compute([A],articles,materials,wcs,origin,{overrides});
   const stage=(state,name)=>state.units[0].stages.find(s=>s.stage===name);
-  const block=name=>screen.getByRole("button",{name:new RegExp(`^JO1 ${name},`)});
+  const job=name=>screen.getAllByRole("button",{name:new RegExp(`^JO1 ${name} on `)})[0];
 
-  it("draws a block per stage on its work centre, and splits a big one over days",()=>{
+  it("is one table per week: a row a day, a column a work centre, the jobs in each cell",()=>{
     render(<PlanBoard state={plan()} setPlanOverride={vi.fn()}/>);
-    expect(screen.getByRole("row",{name:"Cutting hall"})).toBeInTheDocument();
-    expect(block("CUTTING")).toHaveAccessibleName(/1,500 pairs/);
-    expect(block("CUTTING").getAttribute("title")).toMatch(/JO1 · Board Party · REX GOLA \(V\)/);
+    const week=screen.getByRole("grid",{name:"Plan for the week of 2026-07-06"});
+    expect(within(week).getByRole("columnheader",{name:"Cutting hall"})).toHaveTextContent("2,500 a day");
+    const cell=within(week).getByRole("gridcell",{name:"Cutting hall 2026-07-06"});
+    expect(cell).toHaveTextContent("JO1");
+    expect(cell).toHaveTextContent("1,500");
+    expect(cell).toHaveTextContent("REX GOLA (V)");
+    expect(cell).toHaveTextContent("Board Party");
+    expect(cell).toHaveTextContent("60% of 2,500");
+    expect(within(week).getByRole("rowheader",{name:/Week total/})).toBeInTheDocument();
+    expect(screen.getByText(/Week of 6 Jul – 12 Jul/i)).toBeInTheDocument();
   });
-  it("moves a block from the panel and locks it",async()=>{
+  it("marks the closed day, and shows a job larger than a day's capacity on each day it runs",()=>{
+    const state=plan();
+    render(<PlanBoard state={state} setPlanOverride={vi.fn()}/>);
+    expect(screen.getAllByRole("rowheader",{name:/Sun.*closed/}).length).toBeGreaterThan(0);
+    const mould=stage(state,"MOLDING");
+    const days=screen.getAllByRole("button",{name:/^JO1 MOLDING on /});
+    expect(days).toHaveLength(Object.keys(mould.alloc).length);
+    expect(days[0]).toHaveAccessibleName(/1,200 pairs/);
+    expect(days[1]).toHaveAccessibleName(/300 pairs/);
+  });
+  it("sums the plan up in four figures",()=>{
+    render(<PlanBoard state={plan()} setPlanOverride={vi.fn()}/>);
+    expect(screen.getByText("Jobs on the plan").parentElement).toHaveTextContent("1");
+    expect(screen.getByText("Locked by a planner").parentElement).toHaveTextContent(/0.*everything is planned automatically/);
+  });
+  it("opens a job in a box that says what it is and how it is planned",async()=>{
+    const user=userEvent.setup();
+    render(<PlanBoard state={plan()} setPlanOverride={vi.fn()}/>);
+    await user.click(job("CUTTING"));
+    const box=screen.getByRole("region",{name:"Selected job"});
+    expect(box).toHaveTextContent(/Job\s*JO1/);
+    expect(box).toHaveTextContent(/Stage\s*CUTTING on Cutting hall/);
+    expect(box).toHaveTextContent(/Automatic — the planner places it/);
+  });
+  it("moves a job from the box and locks it, and offers to undo",async()=>{
     const user=userEvent.setup(), set=vi.fn();
     const state=plan();
     render(<PlanBoard state={state} setPlanOverride={set}/>);
-    await user.click(block("CUTTING"));
+    await user.click(job("CUTTING"));
     const to=fromDay(dayIndex(stage(state,"CUTTING").start_date,origin)+2,origin);
-    fireEvent.change(screen.getByLabelText("Start this block on"),{target:{value:to}});
+    fireEvent.change(screen.getByLabelText("Start this job on"),{target:{value:to}});
     await user.click(screen.getByRole("button",{name:"Move and lock"}));
     expect(set).toHaveBeenCalledWith("JO1",{at:{CUTTING:to}},"JO1");
-    expect(screen.getByRole("status")).toHaveTextContent(/JO1 CUTTING locked to start/);
+    expect(screen.getByRole("status")).toHaveTextContent(/JO1 CUTTING moved to .* and locked there/);
+    /* A lock made by a slip of the mouse is taken back in one click. */
+    await user.click(screen.getByRole("button",{name:"Undo"}));
+    expect(set).toHaveBeenLastCalledWith("JO1",{},"JO1");
+    expect(screen.getByRole("status")).toHaveTextContent(/Undone — JO1 CUTTING is back as it was/);
   });
   it("refuses a move that breaks the stage order, and says why",async()=>{
     const user=userEvent.setup(), set=vi.fn();
     const state=plan();
     render(<PlanBoard state={state} setPlanOverride={set}/>);
-    await user.click(block("STITCHING"));
-    fireEvent.change(screen.getByLabelText("Start this block on"),{target:{value:stage(state,"CUTTING").start_date}});
+    await user.click(job("STITCHING"));
+    fireEvent.change(screen.getByLabelText("Start this job on"),{target:{value:stage(state,"CUTTING").start_date}});
     await user.click(screen.getByRole("button",{name:"Move and lock"}));
     expect(screen.getByRole("alert")).toHaveTextContent(/Not moved\. STITCHING of JO1 cannot start/);
     expect(set).not.toHaveBeenCalled();
   });
-  it("a block dragged onto another day is checked the same way and locked",()=>{
+  it("a job dragged onto another day is checked the same way and locked",()=>{
     const set=vi.fn(), state=plan();
     render(<PlanBoard state={state} setPlanOverride={set}/>);
     const to=fromDay(dayIndex(stage(state,"CUTTING").start_date,origin)+1,origin);
-    fireEvent.dragStart(block("CUTTING"),{dataTransfer:{setData(){}}});
+    fireEvent.dragStart(job("CUTTING"),{dataTransfer:{setData(){}}});
     fireEvent.drop(screen.getByRole("gridcell",{name:`Cutting hall ${to}`}));
     expect(set).toHaveBeenCalledWith("JO1",{at:{CUTTING:to}},"JO1");
   });
-  it("a block cannot be dragged onto a line that is not its stage",()=>{
+  it("a job cannot be dragged onto a line that is not its stage",()=>{
     const set=vi.fn(), state=plan();
     render(<PlanBoard state={state} setPlanOverride={set}/>);
-    fireEvent.dragStart(block("CUTTING"),{dataTransfer:{setData(){}}});
-    expect(screen.getByRole("row",{name:"Stitching lines"})).toHaveStyle({opacity:"0.35"});     // greyed while dragging
-    fireEvent.drop(screen.getByRole("gridcell",{name:`Stitching lines ${stage(state,"CUTTING").end_date}`}));
+    fireEvent.dragStart(job("CUTTING"),{dataTransfer:{setData(){}}});
+    const wrong=screen.getByRole("gridcell",{name:`Stitching lines ${stage(state,"CUTTING").end_date}`});
+    expect(wrong).toHaveStyle({opacity:"0.35"});                    // greyed while dragging
+    fireEvent.drop(wrong);
     expect(set).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(/CUTTING block, and Stitching lines is a STITCHING line/);
   });
-  it("shows a locked block with its padlock, and unlocks it",async()=>{
+  it("says why a job is locked, and unlocks it",async()=>{
     const user=userEvent.setup(), set=vi.fn();
     const day=stage(plan(),"PACKING").start_date;
     render(<PlanBoard state={plan({JO1:{at:{PACKING:day}}})} setPlanOverride={set}/>);
-    const locked=screen.getByRole("button",{name:/^JO1 PACKING,.*locked$/});
+    const locked=screen.getByRole("button",{name:/^JO1 PACKING on .*, locked/});
     expect(locked).toHaveTextContent("🔒");
     await user.click(locked);
+    expect(screen.getByRole("region",{name:"Selected job"})).toHaveTextContent(/Locked — a planner moved it or locked it here\. Re-planning will not move it until it is unlocked/);
     await user.click(screen.getByRole("button",{name:"Unlock"}));
     expect(set).toHaveBeenCalledWith("JO1",{},"JO1");
   });
-  it("locks a block where it is, and re-plans on request",async()=>{
+  it("says when a lock came from an uploaded planning sheet",async()=>{
+    const user=userEvent.setup();
+    const day=stage(plan(),"PACKING").start_date;
+    render(<PlanBoard state={plan({JO1:{at:{PACKING:day},daily:{PACKING:{[day]:1500}}}})} setPlanOverride={vi.fn()}/>);
+    await user.click(screen.getByRole("button",{name:/^JO1 PACKING on .*, locked/}));
+    expect(screen.getByRole("region",{name:"Selected job"})).toHaveTextContent(/Locked — set by an uploaded planning sheet/);
+  });
+  it("counts the locks and hands them all back at once",async()=>{
+    const user=userEvent.setup(), batch=vi.fn(async()=>({saved:1,failed:[]}));
+    const state=plan();
+    const locks={JO1:{at:{PACKING:stage(state,"PACKING").start_date,CUTTING:stage(state,"CUTTING").start_date},days:{STITCHING:2}}};
+    render(<PlanBoard state={plan(locks)} setPlanOverride={vi.fn()} onApplySheet={batch}/>);
+    expect(screen.getByText("Locked by a planner").parentElement).toHaveTextContent("2");
+    await user.click(screen.getByRole("button",{name:"Unlock all"}));
+    expect(globalThis.confirm).toHaveBeenCalled();
+    await waitFor(()=>expect(batch).toHaveBeenCalledWith([{order_no:"JO1",unit_key:"JO1",override:{days:{STITCHING:2}}}]));
+    expect(await screen.findByText(/2 locked job stages handed back to the automatic planner/)).toBeInTheDocument();
+  });
+  it("locks a job where it is, and re-plans on request",async()=>{
     const user=userEvent.setup(), set=vi.fn(), replan=vi.fn(async()=>{});
     const state=plan();
     render(<PlanBoard state={state} setPlanOverride={set} onReplan={replan}/>);
-    await user.click(block("PACKING"));
+    await user.click(job("PACKING"));
     await user.click(screen.getByRole("button",{name:"Lock as-is"}));
     expect(set).toHaveBeenCalledWith("JO1",{at:{PACKING:stage(state,"PACKING").start_date}},"JO1");
     await user.click(screen.getByRole("button",{name:"Re-plan"}));
     expect(replan).toHaveBeenCalled();
-    expect(await screen.findByText(/Re-planned\. 0 locked blocks kept/)).toBeInTheDocument();
+    expect(await screen.findByText(/Re-planned\. 0 locked job stages kept in place/)).toBeInTheDocument();
   });
   it("reports the knock-on effect once the plan has been recomputed",async()=>{
     const user=userEvent.setup();
@@ -247,25 +306,45 @@ describe("the production plan board",()=>{
     const to=fromDay(dayIndex(stage(before,"CUTTING").start_date,origin)+35,origin);
     const set=vi.fn();
     const {rerender}=render(<PlanBoard state={before} setPlanOverride={set}/>);
-    await user.click(block("CUTTING"));
-    fireEvent.change(screen.getByLabelText("Start this block on"),{target:{value:to}});
+    await user.click(job("CUTTING"));
+    fireEvent.change(screen.getByLabelText("Start this job on"),{target:{value:to}});
     await user.click(screen.getByRole("button",{name:"Move and lock"}));
     const override=set.mock.calls[0][1];
     rerender(<PlanBoard state={plan({JO1:override})} setPlanOverride={set}/>);
-    expect(await screen.findByText(/JO1 — dispatch .* → .*misses its promise by \d+ day/)).toBeInTheDocument();
+    expect(await screen.findByRole("table",{name:"Dispatch dates that moved"}))
+      .toHaveTextContent(/JO1.*dispatch .* → .*misses its promise by \d+ day/);
+  });
+  it("shows what the floor reported against the day it was made",()=>{
+    const state=plan();
+    const st=stage(state,"CUTTING");
+    render(<PlanBoard state={state} setPlanOverride={vi.fn()} actuals={[
+      {production_on:st.start_date,work_center:"CUTTING",stage:"CUTTING",order_no:"JO1",unit_key:"JO1",actual_pairs:900}]}/>);
+    expect(screen.getByRole("gridcell",{name:`Cutting hall ${st.start_date}`})).toHaveTextContent("made 900");
+  });
+  it("shades a line that is over its daily capacity and says by how much",()=>{
+    const state=plan({JO1:{days:{STITCHING:1}}});      // 1,500 pairs through a 2,000-a-day line is fine...
+    const tight=compute([A,{...A,order_no:"JO2",party:"Second"}],articles,materials,wcs,origin,
+      {overrides:{JO1:{days:{CUTTING:1}},JO2:{at:{CUTTING:"2026-07-06"}}}});      // ...two jobs forced onto one cutting day is not
+    render(<PlanBoard state={tight} setPlanOverride={vi.fn()}/>);
+    const cell=screen.getByRole("gridcell",{name:"Cutting hall 2026-07-06"});
+    expect(cell).toHaveTextContent(/3,000 · 120% of 2,500 · \+500 over/);
+    expect(screen.getByText("Days over capacity").parentElement).toHaveTextContent("1");
+    expect(state).toBeTruthy();
   });
   it("is read-only for anyone who may not edit the schedule",async()=>{
     const user=userEvent.setup();
     render(<PlanBoard state={plan()}/>);
     expect(screen.getByText(/Read-only — only the Production Planner or an administrator/)).toBeInTheDocument();
     expect(screen.queryByRole("button",{name:"Re-plan"})).toBeNull();
-    expect(block("CUTTING")).toHaveAttribute("draggable","false");
-    await user.click(block("CUTTING"));
+    expect(screen.queryByRole("button",{name:"Upload edited plan"})).toBeNull();
+    expect(job("CUTTING")).toHaveAttribute("draggable","false");
+    await user.click(job("CUTTING"));
     expect(screen.queryByRole("button",{name:"Move and lock"})).toBeNull();
+    expect(screen.getByRole("button",{name:"Download plan (.xlsx)"})).toBeEnabled();
   });
-  it("says so when nothing is on the board",()=>{
+  it("says so when nothing is on the plan",()=>{
     render(<PlanBoard state={compute([],articles,materials,wcs,origin,{})} setPlanOverride={vi.fn()}/>);
-    expect(screen.getByText(/Nothing is on the board yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing is on the plan yet/)).toBeInTheDocument();
   });
 });
 
