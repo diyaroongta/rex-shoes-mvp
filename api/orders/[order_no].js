@@ -3,8 +3,9 @@ import { fail, wrap } from "../_lib/http.js";
 import { INPUTS as SEED } from "../../shared/inputs.js";
 import { ensurePiTable, syncPiMaster } from "../_lib/pis.js";
 import { comboSizesForArticle, setReference } from "../../shared/bridge.js";
-import { normalizeOverride } from "../../shared/engine.js";
+import { normalizeOverride, hasOverride } from "../../shared/engine.js";
 import { orderImpact, cascadeCancel } from "../_lib/cascade.js";
+import { reconcileOrderStock } from "../_lib/stock-plan.js";
 
 /* Same reason as the create endpoint: edit an order for an article that was
    uploaded through Data & BOM and seed-based validation would reject it. */
@@ -93,10 +94,26 @@ function validatePatch(body, current, INPUTS){
     if(raw != null && (typeof raw !== "object" || Array.isArray(raw)))
       return { err:"plan_override must be an object" };
     const clean = normalizeOverride(raw);
-    for(const stage of Object.keys(clean.machine))
-      if(!INPUTS.workcenters[clean.machine[stage]])
-        return { err:`plan_override: "${clean.machine[stage]}" is not a work centre` };
-    out.plan_override = clean;
+    /* A CARD'S OVERRIDE LIVES UNDER `units[<unit key>]`, AND IT WAS BEING
+       THROWN AWAY HERE. normalizeOverride keeps the order's own four fields
+       and drops every other key — `units` among them — so an Adjust or a lock
+       made on a job card (which is every scheduled block: the plan runs job
+       cards, not orders) was stored as an empty override. It showed on screen
+       for the moment the browser's own copy lasted and was gone on the next
+       refresh. Each card's override is normalised the same way and kept. */
+    const units = {};
+    for(const [key, ov] of Object.entries((raw && raw.units) || {})){
+      if(ov == null) continue;
+      if(typeof ov !== "object" || Array.isArray(ov))
+        return { err:`plan_override: the override for ${key} must be an object` };
+      const unit = normalizeOverride(ov);
+      if(hasOverride(unit)) units[String(key)] = unit;
+    }
+    for(const ov of [clean, ...Object.values(units)])
+      for(const stage of Object.keys(ov.machine))
+        if(!INPUTS.workcenters[ov.machine[stage]])
+          return { err:`plan_override: "${ov.machine[stage]}" is not a work centre` };
+    out.plan_override = Object.keys(units).length ? { ...clean, units } : clean;
   }
   if(!Object.keys(out).length) return { err:"nothing to update" };
   return { patch: out };
@@ -108,7 +125,9 @@ export default wrap(async (req, res) => {
 
   if(req.method === "PATCH"){
     const { rows } = await q(
-      `select order_no, order_date, article_code, priority, party, lines, pi, plan_override, version
+      `select order_no, order_date, article_code, priority, party, lines, pi, plan_override, version,
+              to_jsonb(orders) ->> 'stock_status' as stock_status,
+              to_jsonb(orders) -> 'stock_allocation' as stock_allocation
          from orders where order_no = $1 and active`, [order_no]);
     if(!rows.length) return fail(res, 404, `no such order: ${order_no}`);
 
@@ -149,8 +168,15 @@ export default wrap(async (req, res) => {
          snapshot — so an Adjust writes nothing to the PI master. Any other
          edit re-syncs only this order's PI (before and after, if it moved). */
       if(!planOnly) await syncPiMaster(client,[rows[0].pi?.pi_no,out[0].pi?.pi_no]);
+      /* STOCK RESERVED FOR PAIRS THAT NO LONGER EXIST IS RELEASED HERE, in the
+         same transaction as the edit: a size reduced or removed gives its
+         excess back to free stock, and pairs added go back through the stock
+         check. Only an edit to what was ordered can change it. */
+      let stock={stock_status:rows[0].stock_status||null,stock_allocation:rows[0].stock_allocation||null};
+      if("lines" in patch||"article_code" in patch)
+        stock=(await reconcileOrderStock(client,rows[0],out[0],(req.user||{}).username||null))||stock;
       await client.query("commit");
-      const r=out[0];
+      const r={...out[0],...stock};
       return res.status(200).json({...r,
         order_date:r.order_date instanceof Date?r.order_date.toISOString().slice(0,10):String(r.order_date)});
     }catch(e){await client.query("rollback");throw e;}finally{client.release();}

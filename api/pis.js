@@ -2,6 +2,7 @@ import { q, db } from "./_lib/db.js";
 import { cascadeCancel } from "./_lib/cascade.js";
 import { fail, wrap } from "./_lib/http.js";
 import { ensurePiTable, syncPiMaster, stripSnapshot } from "./_lib/pis.js";
+import { stampOrdersByNo } from "./_lib/stock-plan.js";
 import { INPUTS as SEED } from "../shared/inputs.js";
 import { remainingForOrder, releasedBySource, buildRunLines, nextRunNo } from "../shared/pi-split.js";
 import { ordersFromPiSnapshot } from "../shared/pi-schedule.js";
@@ -140,6 +141,9 @@ export default wrap(async (req,res)=>{
           (select last_value from order_no_seq),
           coalesce((select max(substring(order_no from '([0-9]+)$')::bigint)
                       from orders where order_no ~ '[0-9]+$'),2000)), true)`);
+        /* Released into production is a new order on the book: it stops at
+           the stock check like one keyed in by hand. */
+        await stampOrdersByNo(client, created.map(c=>c.order_no));
         await syncPiMaster(client, [piNo]);
         await client.query("commit");
       }catch(e){await client.query("rollback");throw e;}
@@ -212,6 +216,7 @@ export default wrap(async (req,res)=>{
         (select last_value from order_no_seq),
         coalesce((select max(substring(order_no from '([0-9]+)$')::bigint)
                     from orders where order_no ~ '[0-9]+$'),2000)), true)`);
+      await stampOrdersByNo(client, inserted);
       await syncPiMaster(client, [piNo]);
       await client.query("commit");
     }catch(e){await client.query("rollback");throw e;}

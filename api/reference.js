@@ -10,6 +10,8 @@ import { assignCodes } from "../shared/product-codes.js";
 import { colouredMaterialName } from "../shared/bom-import.js";
 import { validatePurchaseOrder, validatePurchaseReceipt,
          purchaseOrderProgress } from "../shared/purchase-orders.js";
+import { materialIssues } from "./_lib/material-issues.js";
+import { ISSUE_MODES } from "../shared/material-issues.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -362,6 +364,11 @@ export default wrap(async (req, res) => {
   if(String((req.query||{}).resource||"")==="purchase_orders"
      || String((req.body||{}).resource||"")==="purchase_orders")
     return purchaseOrders(req,res);
+  /* Which material went to which job card. Its own table and its own
+     permission; it shares this file only for the twelve-function limit. */
+  if(String((req.query||{}).resource||"")==="material_issues"
+     || String((req.body||{}).resource||"")==="material_issues")
+    return materialIssues(req,res);
   if(req.method === "GET"){
     /* The revision log, so a wrong upload can actually be undone. Snapshots
        nobody can restore are not a safety net. Values are omitted here — the
@@ -788,6 +795,16 @@ export default wrap(async (req, res) => {
         }
         for(const [f, v] of Object.entries(fields)){
           if(f === "rec_add") continue;
+          /* HOW the material leaves the store: released whole with a job
+             order, or handed over when the floor asks. Blank clears it, and an
+             unset material goes on being released with the job order. */
+          if(f === "issue_mode"){
+            const mode = String(v == null ? "" : v).trim();
+            if(!mode){ delete cur.issue_mode; continue; }
+            if(!ISSUE_MODES.includes(mode))
+              reject(`issue mode for ${key} must be one of: ${ISSUE_MODES.join(", ")}`);
+            cur.issue_mode = mode; continue;
+          }
           if(["category","size","supplier","dispatch_location"].includes(f)){ cur[f] = String(v).slice(0,120); continue; }
           if(!["opening","rec","issue","min_stock","min","rate","supplier_rate"].includes(f))
             reject(`unknown stock field: ${f}`);

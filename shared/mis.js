@@ -22,8 +22,10 @@ const orderQuantity = order => {
   /* Engine rows split the commercial order into pairs ON cards (`qty`) and
      pairs WAITING for a card (`pending_pairs`). Both are ordered pairs. Raw
      database rows have no pending_pairs and keep their original qty/lines. */
+  /* Pairs supplied from finished goods (`from_stock_pairs`) are ordered too:
+     never on a card, so in neither figure, and still owed to the customer. */
   if(order && order.pending_pairs != null)
-    return (Number(order.qty) || 0) + (Number(order.pending_pairs) || 0);
+    return (Number(order.qty) || 0) + (Number(order.pending_pairs) || 0) + (Number(order.from_stock_pairs) || 0);
   if(order && order.qty != null && !isNaN(Number(order.qty))) return Number(order.qty);
   return (order && order.lines || [])
     .reduce((sum, line) => sum + (Number(line.qty) || 0), 0);

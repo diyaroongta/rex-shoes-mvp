@@ -11,6 +11,9 @@ import { validateMoves } from "../shared/finished-stock.js";
 import { validateJobCardFields } from "../shared/production-actuals.js";
 import { validateUpperMoves, checkApproval, checkDelete, validateTag } from "../shared/upper-store.js";
 import { isRealDate } from "../shared/valid.js";
+import { releaseForJob, undoReleaseForJob } from "./_lib/material-issues.js";
+import { stockPlan, jobCardStockGate, dispatchWithStock, restoreDispatchReservations, releaseAllFor,
+         upperWithdrawalGuard, finishedWithdrawalGuard } from "./_lib/stock-plan.js";
 
 /* A blank date is allowed (the insert takes today); anything else must be a
    real calendar day, or the ::date cast answers with a 500. */
@@ -61,7 +64,13 @@ async function jobWork(req, res){
         return fail(res,400,`${v.order_no} is for ${order.article_code}, not ${v.article}`);
       const {rows:prior}=await q(
         `select order_no, qty, shortage, status, card from job_work where order_no=$1`,[v.order_no]);
-      const balance=jobOrderBalance(order,prior);
+      /* STOCK FIRST. No card while the order still waits for its stock
+         decision; and once decided, the balance is what is to be PRODUCED —
+         pairs coming from finished goods are never put on a card, and a card
+         that starts at moulding carries only pairs whose uppers are reserved. */
+      const gate=await jobCardStockGate(v.order_no,b.card,prior,b.remake===true||b.remake==="true");
+      if(gate.error) return fail(res,gate.status,gate.error);
+      const balance=jobOrderBalance(gate.production||order,prior);
 
       /* A REMAKE IS ASKED FOR, NEVER ASSUMED.
          Pairs written off as a job-work shortage went out and never came back;
@@ -131,8 +140,19 @@ async function jobWork(req, res){
       [v.fabricator, v.fabricator_type, v.article, v.stage, v.order_no, v.qty,
        v.slip, v.sample, v.sample_status, Number(fab.rate), fab.payable, v.note,
        v.issued_on, b.card ? JSON.stringify(b.card) : null]);
+    /* THE CARD'S MATERIAL LEAVES THE STORE WITH IT. Booked here, on the server,
+       from the card that was just stored — never from a total the browser
+       worked out. It is reported beside the job order rather than failing it:
+       the card stands either way, and the operator is told what was NOT
+       booked instead of seeing an error over work that succeeded. */
+    let material_release;
+    try{ material_release = await releaseForJob(rows[0], v.issued_on, req.user?.username); }
+    catch(e){
+      console.error("material release failed for job", rows[0].id, e);
+      material_release = { ok:false, error:(e && e.message) || String(e) };
+    }
     return res.status(201).json({ ...rows[0], qty:Number(rows[0].qty),
-      received:Number(rows[0].received), rate:Number(rows[0].rate) });
+      received:Number(rows[0].received), rate:Number(rows[0].rate), material_release });
   }
 
   /* Receiving work back, and recording a sample's verdict. */
@@ -202,9 +222,14 @@ async function jobWork(req, res){
         `job ${id} has ${job.received} pairs received against it, so it is a real job and not `
         + `a mis-key. Deleting it would hand those pairs back to the Order Book as never issued. `
         + `Archive it instead.`);
+      /* Its automatic material release goes back to the store with it;
+         anything issued by hand against it blocks the delete. */
+      const undone = await undoReleaseForJob(id);
+      if(!undone.ok) return fail(res, 409, undone.error);
       await q(`delete from job_work where id = $1`, [id]);
       return res.status(200).json({ id, deleted:true, order_no:job.order_no,
-        note:`Deleted. ${job.qty} pairs return to ${job.order_no || "the Order Book"} as un-issued.` });
+        note:`Deleted. ${job.qty} pairs return to ${job.order_no || "the Order Book"} as un-issued.`
+          + (undone.reversed ? ` ${undone.reversed} material${undone.reversed===1?"":"s"} went back on the stock register.` : "") });
     }
 
     return fail(res, 400, `unknown mode: ${mode} — use archive or delete`);
@@ -370,6 +395,10 @@ async function finishedStockMoves(req, res){
     const client = await db().connect();
     try{
       await client.query("begin");
+      /* Pairs going OUT may not take what another order has reserved, and the
+         shelf cannot go below zero — see api/_lib/stock-plan.js. */
+      const guard = await finishedWithdrawalGuard(client, clean, (req.user||{}).username||null);
+      if(guard.error){ await client.query("rollback"); return fail(res, 409, guard.error); }
       const saved = [];
       for(const m of clean){
         const { rows } = await client.query(
@@ -379,6 +408,7 @@ async function finishedStockMoves(req, res){
           [m.article, m.size, m.qty, m.kind, m.order_no, m.note, m.moved_on, (req.user||{}).username||null]);
         saved.push(rows[0]);
       }
+      await guard.record();
       await client.query("commit");
       return res.status(201).json({ saved:saved.length, rows:saved });
     }catch(e){ await client.query("rollback"); throw e; }
@@ -478,6 +508,10 @@ async function upperStore(req, res){
     const out = await upperStoreLocked(async (client, existing) => {
       const { rows, problems } = validateUpperMoves(input, existing);
       if(problems.length) return { rollback:true, error:problems.slice(0,6).join("; ") };
+      /* An issue may not take uppers a stock decision RESERVED for another
+         order; an issue to the order that holds them clears its reservation. */
+      const guard = await upperWithdrawalGuard(client, rows, existing, who);
+      if(guard.error) return { rollback:true, error:guard.error };
       const saved = [];
       for(const m of rows){
         const { rows:ins } = await client.query(
@@ -489,6 +523,7 @@ async function upperStore(req, res){
            m.destination, m.damaged_at, m.rack, m.reason, m.status, m.moved_on, who, m.mts, m.rework]);
         saved.push(upperRow(ins[0]));
       }
+      await guard.record();
       return { saved };
     });
     if(out.error) return fail(res, 400, out.error);
@@ -557,6 +592,8 @@ async function upperStore(req, res){
 export default wrap(async (req, res) => {
   const resource = String((req.query||{}).resource || (req.body && req.body.resource) || "");
   if(resource === "upper_store") return upperStore(req, res);
+  /* Stock decisions, reservations and party locks — api/_lib/stock-plan.js. */
+  if(resource === "stock_plan") return stockPlan(req, res);
   if(resource === "finished_stock") return finishedStockMoves(req, res);
   if(resource === "job_card_docs") return jobCardDocs(req, res);
   if(String((req.query||{}).resource||"") === "job_work"
@@ -577,7 +614,8 @@ export default wrap(async (req, res) => {
          reaches the database before `gate_pass` has been added would
          otherwise fail this query — and with it the whole Dispatch Book. */
       `select id, order_no, dispatched, cartons, kind, note, dispatched_on, closes_order,
-              packing_list, hidden, to_jsonb(dispatches) -> 'gate_pass' as gate_pass
+              packing_list, hidden, to_jsonb(dispatches) -> 'gate_pass' as gate_pass,
+              to_jsonb(dispatches) -> 'from_stock' as from_stock
          from dispatches
         where $1::boolean or not hidden
         order by dispatched_on desc, id desc`,
@@ -733,8 +771,18 @@ export default wrap(async (req, res) => {
     const insertArgs = [order_no, JSON.stringify(clean), JSON.stringify(cleanCartons), k,
          (toStock ? `Moved to finished stock${note ? ` — ${note}` : ""}` : note) || null,
          dispatched_on || null, !!closes_order, sheet ? JSON.stringify(sheet) : null];
+    /* PAIRS SHIPPED OUT OF FINISHED GOODS. `from_stock` is {size: pairs} off
+       the shelf — the order's own reserved pairs first, then free stock. The
+       dispatch, the stock issue and the cleared reservation are written in one
+       transaction (api/_lib/stock-plan.js). */
+    const fromStock = req.body && req.body.from_stock && typeof req.body.from_stock === "object" ? req.body.from_stock : null;
+    if(!toStock && fromStock && Object.values(fromStock).some(v => Number(v) > 0))
+      return dispatchWithStock(res, { order:ord[0], clean, fromStock, insertSql, insertArgs,
+        dispatchedOn:dispatched_on, closes:!!closes_order, user:(req.user||{}).username || null });
     if(!toStock){
       const { rows } = await q(insertSql, insertArgs);
+      /* Closed short: whatever the order still had reserved is free again. */
+      if(closes_order) await releaseAllFor(null, [order_no], "Order closed short at dispatch", (req.user||{}).username || null);
       return res.status(201).json(rows[0]);
     }
     const client = await db().connect();
@@ -835,6 +883,10 @@ export default wrap(async (req, res) => {
          d.kind, d.note, d.dispatched_on, d.closes_order]);
       /* An MTS dispatch put pairs on the shelf; undoing it takes them off again. */
       await client.query("delete from finished_stock where dispatch_id = $1", [id]);
+      /* ...and one that shipped pairs FROM the shelf gives them back the same
+         way: the issue above is gone, and what the order had reserved is
+         reserved for it again. */
+      await restoreDispatchReservations(client, id, (req.user||{}).username || null);
       await client.query("delete from dispatches where id = $1", [id]);
       await client.query("commit");
       const pairs = Object.values(d.dispatched || {}).reduce((a,b)=>a+(Number(b)||0), 0);

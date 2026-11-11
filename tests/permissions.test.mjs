@@ -130,6 +130,42 @@ test("Procurement manages POs while Store can only receive them", () => {
   assert.equal(allow("viewer","PATCH",url,{resource:"purchase_orders",action:"receive"}),false);
 });
 
+test("the Store issues material against a job card; nobody without stock rights does", () => {
+  const url="/api/reference?resource=material_issues";
+  const body={job_id:12,type:"issue",moved_on:"2026-11-10",lines:[{material_key:"THREAD||SPOOL",qty:2}]};
+  for(const role of ["store","store_incharge","procurement","data","admin"]){
+    assert.equal(allow(role,"POST",url,body),true,`${role} should issue material`);
+    assert.equal(allow(role,"DELETE",url+"&id=4"),true,`${role} should undo an entry`);
+  }
+  for(const role of ["planner","sales","dispatch","owner","auditor","viewer"]){
+    assert.equal(allow(role,"POST",url,body),false,`${role} must not issue material`);
+    assert.equal(allow(role,"DELETE",url+"&id=4"),false,`${role} must not undo an entry`);
+  }
+  assert.match(can("planner","POST",url,body).reason,/cannot issue or take back material/);
+});
+
+test("a resource named in the BODY is judged the same way as one in the URL", () => {
+  /* The handler routes on either, so the policy has to as well — otherwise a
+     dispatch clerk's request could be steered at the issue log, or a store
+     keeper's at something the URL did not name. */
+  const body={resource:"material_issues",job_id:12,lines:[]};
+  assert.equal(allow("store","POST","/api/reference",body),true);
+  assert.equal(allow("dispatch","POST","/api/reference",body),false);
+  assert.equal(allow("planner","POST","/api/reference",body),false);
+});
+
+test("the issue grant does not reach the BOM", () => {
+  assert.equal(allow("store","PATCH","/api/reference",{packing:{}}),false);
+  assert.equal(allow("store","PATCH","/api/reference",{stock_meta:{"THREAD||SPOOL":{issue_mode:"on_demand"}}}),true,
+    "how a material is issued is a stock setting");
+});
+
+test("Issue Material is a Store screen", () => {
+  for(const role of ["store","store_incharge","admin"]) assert.equal(canSeeTab(role,"stock_issue"),true,role);
+  for(const role of ["sales","dispatch","planner","procurement","data","auditor"])
+    assert.equal(canSeeTab(role,"stock_issue"),false,role);
+});
+
 test("PO permission does not grant a BOM or MRP change", () => {
   assert.equal(allow("procurement","PATCH","/api/reference",{packing:{}}),false);
   assert.equal(allow("store","PATCH","/api/reference",{mrp:{}}),false);

@@ -332,6 +332,35 @@ alter table job_work add column if not exists archived boolean not null default 
 -- This is also what lets Job Orders calculate a reliable range/size balance.
 alter table job_work add column if not exists card jsonb;
 
+-- MATERIAL ISSUES: which material went to which job card.
+-- The stock register keeps one running Issued total per material; this is the
+-- log behind it, one row per movement, so a job card can be asked what it was
+-- given, what came back, and what its BOM still calls for. Every write also
+-- books the same quantity onto reference_data.stock_meta in the same
+-- transaction (api/_lib/material-issues.js), so the two cannot disagree.
+--   basis = job_order  released automatically when the job card was raised
+--   basis = on_demand  handed over, or taken back, by the store keeper
+-- `name` and `uom` are snapshotted: the log has to stay readable after a
+-- material is renamed or removed from the register.
+-- Also created on first use by the API, so this block is the record of the
+-- shape rather than a migration somebody has to remember to run.
+create table if not exists material_issues (
+  id           bigserial primary key,
+  job_id       bigint      not null references job_work(id) on delete restrict,
+  material_key text        not null,
+  name         text        not null,
+  uom          text        not null,
+  type         text        not null check (type in ('issue','return')),
+  basis        text        not null check (basis in ('job_order','on_demand')),
+  qty          numeric     not null check (qty > 0),
+  moved_on     date        not null,
+  note         text        not null default '',
+  moved_by     text,
+  created_at   timestamptz not null default now()
+);
+create index if not exists material_issues_job_idx on material_issues (job_id, id);
+create index if not exists material_issues_material_idx on material_issues (material_key, id);
+
 -- Hiding a dispatch is NOT undoing it. The goods really did ship, so the pairs
 -- must keep counting against the order — the row is only taken off the history
 -- list. Undoing (see dispatches_removed) is the other thing entirely: it says
@@ -501,3 +530,63 @@ create table if not exists upper_store_tags (
   set_at       timestamptz not null default now(),
   primary key (article, colour)
 );
+
+-- ---------------------------------------------------------------------------
+-- STOCK FIRST. A new order is checked against finished goods and upper stock
+-- before anything is put on a job card (shared/stock-plan.js).
+--
+-- stock_status      'awaiting' while a planner has still to decide, 'decided'
+--                   after. NULL on every order from before this existed, which
+--                   is never held back.
+-- stock_allocation  { mode: use | ignore | none, sizes: { size: { fg, upper:
+--                   { from_size: pairs } } }, ordered, decided_by, decided_at }
+alter table orders add column if not exists stock_status text;
+alter table orders add column if not exists stock_allocation jsonb;
+
+-- Who stock is spoken for. APPEND-ONLY: a row adds to what an order holds
+-- (reserve, qty > 0) or takes from it (release / issue / dispatch, qty < 0),
+-- and "reserved" is always the sum. Nothing here is ever updated or deleted;
+-- a correction is another row. The two stores keep their own ledgers
+-- (finished_stock, upper_store) for what is physically ON HAND — this table
+-- only says how much of it is promised, so free = on hand - reserved.
+-- `size` is the size DRAWN from the store and `for_size` the size ordered:
+-- a size 5 upper may be moulded into a size 4 shoe.
+create table if not exists stock_reservations (
+  id          bigserial primary key,
+  store       text        not null check (store in ('FG','UPPER')),
+  article     text        not null,
+  colour      text        not null default '',
+  size        text        not null,
+  for_size    text        not null,
+  qty         integer     not null check (qty <> 0),
+  kind        text        not null check (kind in ('reserve','release','issue','dispatch')),
+  order_no    text        not null,
+  party       text,
+  job_card_no text,
+  dispatch_id integer,
+  reason      text,
+  created_by  text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists stock_reservations_order_idx on stock_reservations (order_no);
+create index if not exists stock_reservations_sku_idx on stock_reservations (store, article, colour, size);
+
+-- Stock kept for one party (shoes made for a school, say). It is offered to
+-- that party's orders only. No row means no lock, which is the default.
+create table if not exists stock_party_locks (
+  store      text        not null check (store in ('FG','UPPER')),
+  article    text        not null,
+  colour     text        not null default '',
+  size       text        not null,
+  party      text        not null,
+  qty        integer     not null check (qty > 0),
+  created_by text,
+  created_at timestamptz not null default now(),
+  primary key (store, article, colour, size, party)
+);
+
+-- Pairs of a dispatch that came OUT OF FINISHED GOODS rather than off a job
+-- card: { sizes: { size: pairs }, combos: { range: pairs } }. Procurement
+-- reads it so shelf stock that shipped is not mistaken for pairs that were
+-- made (shared/material-demand.js).
+alter table dispatches add column if not exists from_stock jsonb;

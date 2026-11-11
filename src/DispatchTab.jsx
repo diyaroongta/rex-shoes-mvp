@@ -3,6 +3,7 @@ import { pairsPerCarton } from "../shared/bridge.js";
 import { buildLedger, ledgerTotals } from "../shared/dispatch-ledger.js";
 import * as api from "./lib/client.js";
 import PackingList from "./PackingList.jsx";
+import DispatchStockReminder from "./DispatchStockReminder.jsx";
 import { buildPackingList, draftFromOrder, sizeBalance, syncSheetPairs, checkAgainstOrder, lineSizeOrder } from "../shared/packing-list.js";
 import { comboSizesForArticle } from "../shared/bridge.js";
 import { repairLedger, heldByCombo } from "../shared/repair.js";
@@ -60,6 +61,13 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
      The range total in `draft` is then the SUM of these, never typed separately,
      so the dispatch, the packing list and the order cannot disagree. */
   const [sizeDraft,setSizeDraft]=useState({});
+  /* Pairs of this report that come OUT OF FINISHED GOODS, {size: pairs} — the
+     order's reserved stock, ticked by default on the reminder, or free stock
+     the clerk chose to ship. Never more than is leaving of that size. */
+  const [fromStock,setFromStock]=useState({});
+  const leavingBySize=()=>{ const out={};
+    for(const sizes of Object.values(sizeDraft)) for(const [s,n] of Object.entries(sizes||{})) out[s]=(out[s]||0)+(Number(n)||0);
+    return out; };
   const [kind,setKind]=useState("partial");
   const [note,setNote]=useState("");
   const [busy,setBusy]=useState(false);
@@ -159,7 +167,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
   const leavingFrom = (d, sd) => Object.fromEntries(Object.keys(d).map(c=>[c, sd[c] ? sd[c] : Number(d[c])||0]));
 
   function startReport(rec){
-    setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote("");
+    setOpen(rec.order.order_no); setErr(""); setMsg(""); setKind("partial"); setNote(""); setFromStock({});
     /* Pre-filled with what can actually SHIP. Pre-filling the whole outstanding
        balance would put pairs that are on the repair bench into the report by
        default, and the server would then refuse the whole thing. */
@@ -243,8 +251,13 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
       if(sheet) for(const line of buildPackingList(sheet).lines)
         if(line.combo) cartons[line.combo]=(cartons[line.combo]||0)+line.cartons;
 
+      /* From stock, capped at what is actually leaving of each size. */
+      const leaving=leavingBySize(), from_stock={};
+      for(const [size,n] of Object.entries(fromStock)){ const q=Math.min(Number(n)||0, leaving[size]||0); if(q>0) from_stock[size]=q; }
+
       const made = await api.addDispatch({ order_no:rec.order.order_no, dispatched, cartons,
         kind: closing ? "shortage" : kind, note, closes_order: closing,
+        ...(Object.keys(from_stock).length ? { from_stock } : {}),
         ...(sheet ? { packing_list: sheet } : {}) });
       setOpen(null); setPreview(null); setStale(false); setSheet(null);
       setLastRecorded(sheet && made && made.id ? { id:made.id, order_no:rec.order.order_no } : null);
@@ -371,6 +384,10 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                     <div className="text-xs font-semibold text-indigo-900 mb-2">
                       Packing report — {rec.order.order_no}
                     </div>
+                    {/* Finished goods reserved for this order — or free and
+                        matching it — said BEFORE the clerk fills the report in. */}
+                    <DispatchStockReminder orderNo={rec.order.order_no} leaving={leavingBySize()}
+                      value={fromStock} onChange={setFromStock} />
                     <div className="serif text-sm font-semibold text-slate-800 mb-1">
                       1 · What is leaving</div>
                     <table className="w-full text-xs mb-2">

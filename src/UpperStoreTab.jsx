@@ -6,7 +6,8 @@ import { articleSizes } from "./FinishedGoodsTab.jsx";
 import { families, labelFor } from "../shared/product-codes.js";
 import { buildLedger } from "../shared/dispatch-ledger.js";
 import { pairsPerCarton } from "../shared/bridge.js";
-import { upperStoreAccess } from "../shared/permissions.js";
+import { upperStoreAccess, canDecideStock } from "../shared/permissions.js";
+import StockRegisterPanel from "./StockRegisterPanel.jsx";
 import { repairRejection } from "../shared/repair.js";
 import { validateUpperMoves, upperStock, upperLedger, onHandBySize, movingStatus, outsideFabrication,
          upperShortage, rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, qcQueue,
@@ -77,7 +78,7 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
   const pending = moves.filter(m=>m.kind==="adjust"&&m.status==="pending");
   const qcWaiting = useMemo(()=>qcQueue(moves).length,[moves]);
 
-  const tabs = [["stock","Live stock"],
+  const tabs = [["stock","Live stock"],["reserved","Reserved & free"],
     ...(access?[["in","Stock in & QC"],["out","Issue"],["back","Return / damage"]]:[]),
     ["qc",`QC & rework${qcWaiting?` (${qcWaiting})`:""}`],
     ["count",`Physical count${pending.length?` (${pending.length})`:""}`],
@@ -94,6 +95,9 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
     {err && <div role="alert" className="mb-3 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}
     {!data ? <div className="text-sm text-slate-500 text-center py-8">Loading the upper store…</div> : <>
       {view==="stock" && <><Alerts alerts={alerts} rules={rules} /><LiveStock stock={stock} moving={moving} /></>}
+      {/* Who the uppers are spoken for: reserved by a stock decision, held for
+          the order they were stitched for, or kept for a party. */}
+      {view==="reserved" && <StockRegisterPanel store="UPPER" canLock={canDecideStock(role)} active={active} />}
       {view==="in" && <MoveForm kind="in" moves={moves} orders={orders} fabricators={fabricators} onSaved={load} />}
       {view==="out" && <MoveForm kind="out" moves={moves} orders={orders} fabricators={fabricators} onSaved={load} />}
       {view==="back" && <MoveForm kind="back" moves={moves} orders={orders} fabricators={fabricators} onSaved={load} />}

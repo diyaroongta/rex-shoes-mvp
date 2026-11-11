@@ -3,6 +3,7 @@ import { fail, wrap } from "../_lib/http.js";
 import { INPUTS as SEED } from "../../shared/inputs.js";
 import { ensurePiTable, syncPiMaster } from "../_lib/pis.js";
 import { comboSizesForArticle, setReference } from "../../shared/bridge.js";
+import { stampNewOrders } from "../_lib/stock-plan.js";
 
 /* Validate against the reference data actually in use, not the bundled seed.
    An article uploaded through Data & BOM lives in the database — validating
@@ -27,8 +28,18 @@ const row = r => ({
   // straight back into compute(), so an override that is not mapped here is an
   // override the plan never sees.
   plan_override: r.plan_override || {},
+  /* The stock decision: whether the order is still waiting for one, and which
+     pairs come from finished goods or upper stock. The planner reads these to
+     work out what is actually to be MADE — an allocation that is not mapped
+     here is one the plan never sees, and the full quantity is produced. */
+  stock_status: r.stock_status || null,
+  stock_allocation: r.stock_allocation || null,
   version: r.version,
 });
+/* Read through to_jsonb, not by name: a deployment that reaches the database
+   before these columns exist must still be able to list the order book. */
+const STOCK_FIELDS = `to_jsonb(orders) ->> 'stock_status' as stock_status,
+                      to_jsonb(orders) -> 'stock_allocation' as stock_allocation`;
 
 function validDate(value){
   const s=String(value||""); if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
@@ -72,7 +83,7 @@ export default wrap(async (req, res) => {
   if(req.method === "GET"){
     const { rows } = await q(
       `select order_no, order_date, article_code, priority, party, lines, pi, plan_override
-         , version from orders where active order by order_no`);
+         , version, ${STOCK_FIELDS} from orders where active order by order_no`);
     return res.status(200).json(rows.map(row));
   }
 
@@ -143,6 +154,21 @@ export default wrap(async (req, res) => {
              stitching: d.stitching || "inhouse",
              printing: !!d.printing })]);
         out.push(row(rows[0]));
+      }
+      /* STOCK FIRST. Each new order is checked against finished goods and
+         upper stock: one that something on the shelf matches waits for the
+         planner's decision, one that nothing matches goes straight through.
+         Inside a savepoint, because an order must never fail to save over a
+         stock check — it is then simply left undecided-free, as every order
+         was before this existed. */
+      try{
+        await client.query("savepoint stock_check");
+        const stamped = await stampNewOrders(client, out);
+        for(const o of out) Object.assign(o, stamped[o.order_no] || {});
+        await client.query("release savepoint stock_check");
+      }catch(e){
+        console.error("stock check failed for new orders", e);
+        await client.query("rollback to savepoint stock_check");
       }
       await syncPiMaster(client, drafts.map(d=>d.pi?.pi_no));
       await client.query("commit");

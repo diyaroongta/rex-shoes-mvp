@@ -161,6 +161,136 @@ run("against a real Postgres", () => {
     expect(revs.every(r => r.len < photo.length)).toBe(true);
   });
 
+  /* MATERIAL ISSUES. The register kept one running Issued total that the
+     BROWSER sent, so it could not say which job took a material and two cards
+     raised at once overwrote each other. These run the real SQL: an
+     INSERT ... SELECT from jsonb_to_recordset is exactly the kind of statement
+     a mocked query cannot vouch for. */
+  describe("material issues against a job card", () => {
+    const URL = "/api/reference?resource=material_issues";
+    const meta = async key => (await call("reference", "GET", "/api/reference")).body.stock_meta?.[key] || {};
+    const history = async () => (await client.query("select count(*)::int n from reference_data_history")).rows[0].n;
+    let jobId, released, onDemandKey, firstKey, spikeOrder;
+
+    it("raising a job card releases its by-job-order materials, on the server, one row each", async () => {
+      const made = await call("orders", "POST", "/api/orders", { orders:[{ order_date:"2026-11-01",
+        article_code:"SPIKE", priority:1, party:"Issue Party", lines:[{ combo:"2X5", qty:240 }] }] });
+      expect(made.statusCode).toBe(201);
+      spikeOrder = made.body[0].order_no;
+      const ref = (await call("reference", "GET", "/api/reference")).body;
+      const rates = ref.articles.SPIKE.combos["2X5"].rates;
+      /* A BOM line at rate 0 has nothing to issue, so it is not a release. */
+      const sum = {};
+      for(const stage of Object.values(rates)) for(const [k, v] of Object.entries(stage)) sum[k] = (sum[k] || 0) + Number(v);
+      const keys = Object.keys(sum).filter(k => sum[k] > 0);
+      [firstKey, onDemandKey] = keys;
+      /* One material is the store's to hand over when asked. */
+      const set = await call("reference", "PATCH", "/api/reference", { stock_meta:{ [onDemandKey]:{ issue_mode:"on_demand" } } });
+      expect(set.statusCode).toBe(200);
+      const before = await history();
+
+      const r = await call("dispatches", "POST", "/api/dispatches?resource=job_work", {
+        resource:"job_work", fabricator:"Rex Internal", article:"SPIKE", qty:100, stage:"STITCHING",
+        order_no:spikeOrder, issued_on:"2026-11-03", card:{ lines:[{ combo:"2X5", qty:100 }] } });
+      expect(r.statusCode).toBe(201);
+      jobId = Number(r.body.id);
+      expect(r.body.material_release).toMatchObject({ ok:true, released:keys.length - 1, on_demand:1 });
+
+      const list = await call("reference", "GET", `${URL}&job_id=${jobId}`);
+      expect(list.statusCode).toBe(200);
+      released = list.body;
+      expect(released).toHaveLength(keys.length - 1);
+      expect(released.every(m => m.basis === "job_order" && m.type === "issue" && m.moved_on === "2026-11-03")).toBe(true);
+      expect(released.some(m => m.material_key === onDemandKey)).toBe(false);
+      expect(released[0]).toMatchObject({ fabricator:"Rex Internal", article:"SPIKE", order_no:spikeOrder });
+
+      /* Hand-checked against the BOM: rate x 100 pairs, on the register. */
+      const total = Object.values(rates).reduce((n, stage) => n + (Number(stage[firstKey]) || 0), 0);
+      const row = released.find(m => m.material_key === firstKey);
+      expect(row.qty).toBeCloseTo(total * 100, 4);
+      expect((await meta(firstKey)).issue).toBeCloseTo(total * 100, 4);
+      expect((await meta(onDemandKey)).issue).toBeUndefined();
+      /* The store's most frequent write must not copy the reference document. */
+      expect(await history()).toBe(before);
+    });
+
+    it("the keeper issues an on-demand material, and more than the BOM is warned, not refused", async () => {
+      const r = await call("reference", "POST", URL, { resource:"material_issues", job_id:jobId, type:"issue",
+        moved_on:"2026-11-04", note:"asked for by the line", lines:[{ material_key:onDemandKey, qty:999999, name:"invented", uom:"XX" }] });
+      expect(r.statusCode).toBe(201);
+      expect(r.body.movements).toHaveLength(1);
+      const ref = (await call("reference", "GET", "/api/reference")).body;
+      expect(r.body.movements[0]).toMatchObject({ basis:"on_demand", type:"issue", qty:999999, moved_on:"2026-11-04",
+        name:ref.materials[onDemandKey].name, uom:ref.materials[onDemandKey].uom, moved_by:"tester" });
+      expect(r.body.warnings.join(" ")).toMatch(/against a BOM requirement of/);
+      expect(r.body.warnings.join(" ")).toMatch(/the register shows/);
+      expect((await meta(onDemandKey)).issue).toBe(999999);
+    });
+
+    it("a return is bounded by what the card holds, and takes the figure off Issued", async () => {
+      const over = await call("reference", "POST", URL, { resource:"material_issues", job_id:jobId, type:"return",
+        moved_on:"2026-11-05", lines:[{ material_key:onDemandKey, qty:1000000 }] });
+      expect(over.statusCode).toBe(400);
+      expect(over.body.error).toMatch(/only 999999 .* is out against job card/);
+      const back = await call("reference", "POST", URL, { resource:"material_issues", job_id:jobId, type:"return",
+        moved_on:"2026-11-05", lines:[{ material_key:onDemandKey, qty:999990 }] });
+      expect(back.statusCode).toBe(201);
+      expect((await meta(onDemandKey)).issue).toBe(9);
+    });
+
+    it("refuses a bad date and an unknown job card by name, not as a 500", async () => {
+      const bad = await call("reference", "POST", URL, { resource:"material_issues", job_id:jobId,
+        moved_on:"2026-13-40", lines:[{ material_key:onDemandKey, qty:1 }] });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.body.error).toMatch(/real date/);
+      const none = await call("reference", "POST", URL, { resource:"material_issues", job_id:987654,
+        moved_on:"2026-11-05", lines:[{ material_key:onDemandKey, qty:1 }] });
+      expect(none.statusCode).toBe(404);
+    });
+
+    it("an issue with a return against it cannot be undone until the return is", async () => {
+      const rows = (await call("reference", "GET", `${URL}&job_id=${jobId}`)).body.filter(m => m.basis === "on_demand");
+      const issued = rows.find(m => m.type === "issue"), returned = rows.find(m => m.type === "return");
+      const blocked = await call("reference", "DELETE", `${URL}&id=${issued.id}`);
+      expect(blocked.statusCode).toBe(409);
+      expect(blocked.body.error).toMatch(/Undo the return first/);
+      expect((await call("reference", "DELETE", `${URL}&id=${returned.id}`)).statusCode).toBe(200);
+      expect((await meta(onDemandKey)).issue).toBe(999999);
+      const twice = await call("reference", "DELETE", `${URL}&id=${returned.id}`);
+      expect(twice.statusCode).toBe(404);
+      expect(twice.body.error).toMatch(/already have been undone/);
+    });
+
+    it("a job card with hand entries cannot be deleted; without them its release goes back with it", async () => {
+      const del = () => call("dispatches", "DELETE", `/api/dispatches?resource=job_work&id=${jobId}&mode=delete`);
+      const refused = await del();
+      expect(refused.statusCode).toBe(409);
+      expect(refused.body.error).toMatch(/1 material issue was recorded by hand/);
+      const byHand = (await call("reference", "GET", `${URL}&job_id=${jobId}`)).body.find(m => m.basis === "on_demand");
+      expect((await call("reference", "DELETE", `${URL}&id=${byHand.id}`)).statusCode).toBe(200);
+      expect((await meta(onDemandKey)).issue).toBe(0);
+
+      const gone = await del();
+      expect(gone.statusCode).toBe(200);
+      expect(gone.body.note).toMatch(new RegExp(`${released.length} materials went back on the stock register`));
+      expect((await meta(firstKey)).issue).toBe(0);
+      expect((await call("reference", "GET", `${URL}&job_id=${jobId}`)).body).toEqual([]);
+    });
+
+    it("two cards raised at the same moment both land on the register", async () => {
+      const raise = () => call("dispatches", "POST", "/api/dispatches?resource=job_work", {
+        resource:"job_work", fabricator:"Rex Internal", article:"SPIKE", qty:50, stage:"STITCHING",
+        order_no:spikeOrder, issued_on:"2026-11-06", card:{ lines:[{ combo:"2X5", qty:50 }] } });
+      const [a, z] = await Promise.all([raise(), raise()]);
+      expect([a.statusCode, z.statusCode]).toEqual([201, 201]);
+      expect([a.body.material_release.ok, z.body.material_release.ok]).toEqual([true, true]);
+      const ref = (await call("reference", "GET", "/api/reference")).body;
+      const total = Object.values(ref.articles.SPIKE.combos["2X5"].rates)
+        .reduce((n, stage) => n + (Number(stage[firstKey]) || 0), 0);
+      expect(ref.stock_meta[firstKey].issue).toBeCloseTo(total * 100, 4);
+    });
+  });
+
   it("answers every list the app loads at start-up with 200", async () => {
     for(const [name, url] of [
       ["orders", "/api/orders"], ["settings", "/api/settings"], ["parties", "/api/parties"],
@@ -170,6 +300,7 @@ run("against a real Postgres", () => {
       ["dispatches", "/api/dispatches?resource=production_actuals"], ["dispatches", "/api/dispatches?resource=finished_stock"],
       ["dispatches", "/api/dispatches?resource=job_card_docs"], ["dispatches", "/api/dispatches?resource=repairs"],
       ["dispatches", "/api/dispatches?resource=upper_store"], ["reference", "/api/reference?resource=purchase_orders"],
+      ["reference", "/api/reference?resource=material_issues"],
     ]){
       const r = await call(name, "GET", url);
       expect([url, r.statusCode]).toEqual([url, 200]);

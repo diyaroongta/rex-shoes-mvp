@@ -49,7 +49,10 @@ export function jobCardIssueRows(lines, article){
 
 /* The stock_meta patch that books those issues. CUMULATIVE: `issue` is a
    running total on the register, so a card adds to it and never replaces it —
-   overwriting would erase every issue booked before this one. */
+   overwriting would erase every issue booked before this one.
+   NO SCREEN CALLS THIS ANY MORE. The total it builds comes from the caller's
+   copy of the register, so two cards raised at once overwrote each other; a
+   job card's release is booked by the server now (api/_lib/material-issues.js). */
 export function issuePatch(rows, stockMeta = {}){
   const patch = {};
   for(const row of rows || []){

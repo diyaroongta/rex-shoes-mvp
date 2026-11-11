@@ -28,8 +28,10 @@ export function pairsOf(order){
   /* A computed Order Book row keeps released pairs in `qty` and unreleased
      pairs in `pending_pairs`. Customer history is about the whole commercial
      order, so never lose the waiting portion. */
+  /* ...nor the pairs its stock decision supplies from finished goods, which
+     are ordered and owed but never on a card (`from_stock_pairs`). */
   if(order && order.pending_pairs != null)
-    return (Number(order.qty) || 0) + (Number(order.pending_pairs) || 0);
+    return (Number(order.qty) || 0) + (Number(order.pending_pairs) || 0) + (Number(order.from_stock_pairs) || 0);
   if(order && order.qty != null && !isNaN(Number(order.qty))) return Number(order.qty);
   let total = 0;
   for(const line of (order && order.lines) || []){

@@ -133,12 +133,22 @@ export function materialTotals(lines, article){
   for(const line of lines || []){
     const rates = (((article || {}).combos || {})[clean(line.combo)] || {}).rates || {};
     const qty = Math.round(num(line.qty));
-    for(const materials of Object.values(rates))
+    /* A line that STARTS PART-WAY DOWN THE ROUTE — pairs whose uppers are
+       already in the upper store start at moulding — takes nothing for the
+       stages before it. Without this a moulding-start card booked rexine and
+       thread out of the store for uppers that were stitched long ago. A line
+       with no `from_stage` is exactly what it always was. */
+    const from = STAGE_ORDER.indexOf(clean(line.from_stage).toUpperCase());
+    for(const [stage, materials] of Object.entries(rates)){
+      const at = STAGE_ORDER.indexOf(stage);
+      if(from > 0 && at >= 0 && at < from) continue;
       for(const [material, rate] of Object.entries(materials || {}))
         totals[material] = round4((totals[material] || 0) + num(rate) * qty);
+    }
   }
   return totals;
 }
+const STAGE_ORDER = ["CUTTING","PREPARATION","STITCHING","UPPER_QC","MOLDING","ASSEMBLY","PACKING","DISPATCH"];
 
 /* A component list is only valid against a material that exists on that stage:
    a piece cut from a material nobody issues cannot be cut. */

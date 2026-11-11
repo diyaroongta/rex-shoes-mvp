@@ -101,8 +101,25 @@ export const moldingUnassigned = a =>
    in the wrong place on the schedule. */
 export const TRANSIT_STAGE = "TRANSIT_IN";
 
+/* WORK THAT STARTS PART-WAY DOWN THE ROUTE.
+   Pairs covered by uppers already in the upper store are not cut or stitched
+   again: their job starts at MOULDING. `start_stage` on a unit drops every
+   stage before it — from the route, and from the material it asks for. A
+   start stage the routing does not contain is ignored rather than emptying
+   the route, so a typo can never turn real work into nothing. */
+const fromStage = (stages, startStage) => {
+  const i = startStage ? stages.indexOf(startStage) : -1;
+  return i > 0 ? stages.slice(i) : stages;
+};
+const beforeStart = (stage, startStage) => {
+  if(!startStage) return false;
+  const i = STAGE_SEQUENCE.indexOf(stage), s = STAGE_SEQUENCE.indexOf(startStage);
+  return i >= 0 && s >= 0 && i < s;
+};
+
 export function route(a, order, rules){
-  const base = a.routing.map(st => [st, wcFor(st, a.sole_type, a), "normal"]);
+  const start = order && order.start_stage;
+  const base = fromStage(a.routing, start).map(st => [st, wcFor(st, a.sole_type, a), "normal"]);
   const days = ((order && order.stitching) === "outside")
     ? Number((rules || {}).stitching_outside_transport_days) || 0 : 0;
   if(!days) return base;
@@ -117,9 +134,13 @@ export function orderReq(order, article){
   for(const l of order.lines){
     const c = article.combos[l.combo];
     if(!c) continue;
-    for(const stage of Object.keys(c.rates))
+    for(const stage of Object.keys(c.rates)){
+      /* A job that starts at moulding buys no cutting or stitching material:
+         its uppers are already made. */
+      if(beforeStart(stage, order.start_stage)) continue;
       for(const [m,rate] of Object.entries(c.rates[stage]))
         req[m]=(req[m]||0)+rate*l.qty;
+    }
   }
   return req;
 }
@@ -187,13 +208,22 @@ export function normalizeOverride(raw){
     const n = Number(days);
     if(Number.isFinite(n) && n >= 1) o.days[stage] = Math.floor(n);
   }
+  /* A LOCKED BLOCK: `at: {STAGE: "YYYY-MM-DD"}` — this stage starts on that
+     day and a re-plan never moves it. It is what dragging a block on the
+     Production plan board writes. The key is present only when something is
+     locked, so an order nobody has touched keeps the shape it always had. */
+  const at = {};
+  for(const [stage,iso] of Object.entries(raw.at||{}))
+    if(typeof iso === "string" && /^\d{4}-\d{2}-\d{2}$/.test(iso)) at[stage] = iso;
+  if(Object.keys(at).length) o.at = at;
   return o;
 }
 
 export const hasOverride = o => {
   const n = normalizeOverride(o);
   return n.seq != null || n.start_on != null
-    || Object.keys(n.machine).length > 0 || Object.keys(n.days).length > 0;
+    || Object.keys(n.machine).length > 0 || Object.keys(n.days).length > 0
+    || Object.keys(n.at||{}).length > 0;
 };
 
 /* The natural queue is priority, then order date, then order number. An
@@ -239,6 +269,69 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
   const forcedLoad={};   // wc -> day -> true, where capacity was overridden
   const warnings=[];
   const res={};
+
+  /* LOCKED BLOCKS ARE BOOKED FIRST, AND NOTHING MOVES THEM.
+     A stage the planner dragged onto the board carries `at[STAGE]` — the day
+     it starts. Those blocks take their machine-days here, before any unlocked
+     work is placed, so a re-plan flows everything else AROUND them: an
+     unlocked run on a moulding machine sees the locked block as the machine
+     being held, and a pooled line sees the capacity already gone.
+
+     Like every override, a lock is carried out rather than argued with. Two
+     locks that overbook a line make an amber (`forced_load`) day; two locks
+     for different articles on one moulding machine are reported as a
+     `locked_clash`; a lock that starts before the stage ahead of it has
+     finished is reported as `precedence_broken`. The board refuses to CREATE
+     those (shared/plan-board.js) — this is what happens when one arises
+     anyway, because an earlier stage slipped under a lock that was fine when
+     it was made. */
+  const pinned={};
+  for(const o of ordered){
+    const ov=normalizeOverride(overrides[o.order_no]);
+    if(!ov.at) continue;
+    const art=articles[o.article_code]; const qty=o.lines.reduce((s,l)=>s+l.qty,0);
+    const done=(progress||{})[o.order_no]||{};
+    for(const [stage,autoWc,kind] of route(art, o, wcs && wcs._lead_time_rules)){
+      const iso=ov.at[stage];
+      if(!iso||kind!=="normal") continue;
+      const record=done[stage];
+      const made=record?Math.max(0,Math.min(qty,Number(record.done)||0)):0;
+      if(record&&made>=qty-1e-9) continue;        // finished on the floor: nothing left to lock
+      const remaining=qty-made;
+      const wanted=ov.machine[stage];
+      const wcCode=wanted&&wcs[wanted]?wanted:autoWc;
+      const wc=wcs[wcCode], cap=wc.capacity_per_day;
+      const forcedDays=ov.days[stage]||null;
+      const asked=dayIndex(iso,origin);
+      const lastOn=record&&record.on?dayIndex(record.on,origin):null;
+      /* A lock on a Sunday or a holiday starts on the next working day, and
+         work already reported cannot be locked to happen again yesterday. */
+      const start=nextWorkingDay(lastOn==null?asked:Math.max(asked,lastOn+1),off);
+      const n=forcedDays||Math.max(1,Math.ceil(remaining/cap-1e-9));
+      const span=[]; for(let d=start; span.length<n && d<=start+horizon; d++) if(!off(d)) span.push(d);
+      if(!used[wcCode]) used[wcCode]={};
+      const alloc={}; let left=remaining;
+      span.forEach((d,i)=>{
+        /* More than a day's capacity SPLITS over consecutive working days;
+           a forced span spreads the pairs evenly across it instead. */
+        const take=i===span.length-1?left:forcedDays?remaining/n:Math.min(cap,left);
+        alloc[d]=take; left-=take;
+        used[wcCode][d]=(used[wcCode][d]||0)+take;
+        if(used[wcCode][d]>cap+1e-6) (forcedLoad[wcCode]=forcedLoad[wcCode]||{})[d]=true;
+      });
+      const block={start:span[0],end:span[span.length-1],order_no:o.order_no,article:o.article_code,locked:true};
+      if(wc.exclusive){
+        if(!busy[wcCode]) busy[wcCode]=[];
+        const clash=busy[wcCode].find(b=>b.locked&&b.article!==block.article&&b.start<=block.end&&block.start<=b.end);
+        if(clash) warnings.push({order_no:o.order_no,stage,kind:"locked_clash",
+          message:`${stage} is locked on ${wc.name||wcCode} over the same days as ${clash.order_no}, which is locked there too. `
+            +`One machine cannot run both — move or unlock one of them.`});
+        busy[wcCode].push(block);
+      }
+      (pinned[o.order_no]=pinned[o.order_no]||{})[stage]={wcCode,autoWc,start:block.start,end:block.end,alloc,asked,forcedDays,wanted};
+    }
+  }
+
   for(const o of ordered){
     const ov=normalizeOverride(overrides[o.order_no]);
     const art=articles[o.article_code]; const qty=o.lines.reduce((s,l)=>s+l.qty,0);
@@ -269,6 +362,27 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
         prevEnd=end; firstStage=false; continue;
       }
       const remaining=qty-madeSoFar;
+
+      /* A locked block was booked before anything else: it is placed exactly
+         where it was put, and only reported on. */
+      const pin=(pinned[o.order_no]||{})[stage];
+      if(pin){
+        const readyOn=firstStage?prevEnd:prevEnd+1;
+        const broken=!firstStage&&pin.start<readyOn;
+        const name=(wcs[pin.wcCode]||{}).name||pin.wcCode;
+        warnings.push({order_no:o.order_no,stage,kind:"stage_locked",
+          message:`${stage} is locked to start ${fromDay(pin.start,origin)} on ${name}`
+            +(pin.start!==pin.asked?` — the day asked for, ${fromDay(pin.asked,origin)}, is not a day it can run.`:"."),});
+        if(broken) warnings.push({order_no:o.order_no,stage,kind:"precedence_broken",
+          message:`${stage} is locked to start ${fromDay(pin.start,origin)}, but the stage before it does not finish until `
+            +`${fromDay(readyOn-1,origin)}. Move the lock later, or unlock it.`});
+        stages.push({stage,work_center:pin.wcCode,start:pin.start,end:pin.end,instant:false,alloc:pin.alloc,
+          locked:true,precedence_broken:broken||undefined,forced_days:pin.forcedDays||undefined,
+          forced_machine:pin.wanted&&wcs[pin.wanted]&&pin.wanted!==pin.autoWc?pin.wanted:undefined});
+        /* What follows a lock follows it — and never runs ahead of the stage
+           the lock itself is waiting for. */
+        prevEnd=firstStage?pin.end:Math.max(prevEnd,pin.end); firstStage=false; continue;
+      }
 
       /* A forced work centre that does not exist would crash the planner, so
          it falls back to the automatic one and says so. Everything else about
@@ -434,7 +548,10 @@ export function validateSchedule(result, wcs){
     for(const s of o.stages){
       if(!s.instant){ if(s.start===null) probs.push(`${o.order_no} ${s.stage}: unscheduled`);
         else if(s.end<s.start) probs.push(`${o.order_no} ${s.stage}: end<start`); }
-      if(prev!==null && s.start!==null && s.start<prev) probs.push(`${o.order_no} ${s.stage}: starts before prev ends`);
+      /* A locked block that now starts too early was put there by a person and
+         is reported as `precedence_broken` in plan_warnings, not as a fault of
+         the plan — the same rule as a deliberately overbooked day. */
+      if(prev!==null && s.start!==null && s.start<prev && !s.locked) probs.push(`${o.order_no} ${s.stage}: starts before prev ends`);
       prev=s.end;
     }
     if(o.stages.length && o.dispatch_day!==o.stages[o.stages.length-1].end) probs.push(`${o.order_no}: dispatch!=last end`);
@@ -562,10 +679,13 @@ export function overridesForUnits(units, overrides={}){
        unambiguous and belongs to that card. Only a multi-card order needs the
        planner to choose which card is being moved. */
     const single=countByParent[parent]===1;
-    if(machine||days||single&&(n.seq!=null||n.start_on!=null)) map[key]={
+    /* A locked block is, like a start date, a decision about one piece of
+       work: it follows the order onto its card only when there is one card. */
+    if(machine||days||single&&(n.seq!=null||n.start_on!=null||n.at)) map[key]={
       ...(machine?{machine}:{}), ...(days?{days}:{}),
       ...(single&&n.seq!=null?{seq:n.seq}:{}),
       ...(single&&n.start_on!=null?{start_on:n.start_on}:{}),
+      ...(single&&n.at?{at:n.at}:{}),
     };
     if(!single&&(n.seq!=null||n.start_on!=null)&&!told.has(parent)){
       told.add(parent);
@@ -578,6 +698,14 @@ export function overridesForUnits(units, overrides={}){
   }
   return {overrides:map,notes};
 }
+
+/* Pairs an order takes straight from finished goods (shared/stock-plan.js
+   writes the allocation; the engine only reads the total, and imports nothing). */
+const fromFinishedGoods = o => {
+  const a = o && o.stock_allocation;
+  if(!a || a.mode !== "use") return 0;
+  return Object.values(a.sizes || {}).reduce((n, u) => n + Math.max(0, Math.round(Number(u && u.fg) || 0)), 0);
+};
 
 /* One row of an order's own gantt, merged from the batches that make it up.
    An order that runs as one unit keeps exactly the row it had before. */
@@ -777,6 +905,8 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       ...(bomMissing ? { bom_missing:true } : {}),
       unit_key:sr.unit_key, unit_kind:sr.unit_kind,
       card_no:o.card_no||null, fabricator:o.fabricator||null, job_id:o.job_id||null,
+      /* Set when the work starts part-way down the route — uppers from stock. */
+      start_stage:o.start_stage||null,
       /* The day the card was WRITTEN, beside the day its work starts. */
       created_on:o.created_on||null,
       override:normalizeOverride(expanded.overrides[sr.unit_key]), overridden:!!sr.overridden,
@@ -802,10 +932,19 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
     pairs:(u.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0),
     lines:u.lines||[], order_date:u.order_date, priority:u.priority,
     pi:u.pi||{},
+    /* Pairs whose uppers are already in the store wait for a card that starts
+       at moulding — a different card from the rest of the order's. */
+    ...(u.start_stage?{start_stage:u.start_stage}:{}),
   })).filter(row=>row.pairs>0)
     .sort((a,z)=>a.order_date<z.order_date?-1:a.order_date>z.order_date?1:
-                 a.order_no<z.order_no?-1:1);
-  const pendingByOrder=new Map(pendingRelease.map(r=>[r.order_no,r]));
+                 a.order_no<z.order_no?-1:(a.order_no>z.order_no?1:(a.start_stage?1:-1)));
+  /* An order can now wait in TWO parts — the full-routing balance and the
+     pairs starting at moulding — so its row adds them up. */
+  const pendingByOrder=new Map();
+  for(const r of pendingRelease){
+    const cur=pendingByOrder.get(r.order_no);
+    pendingByOrder.set(r.order_no,cur?{...cur,pairs:cur.pairs+r.pairs,lines:[...cur.lines,...r.lines]}:r);
+  }
   const madeByOrder=new Map();
   for(const u of closedUnits){
     const no=u.source_order_no||u.order_no;
@@ -838,6 +977,11 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       pending_pairs: waiting?waiting.pairs:0,
       pending_lines: waiting?waiting.lines:[],
       made_pairs: made.pairs,
+      /* Pairs its stock decision supplies from finished goods: ordered, owed
+         to the customer, and never on a job card — so they are neither
+         released nor waiting, and are named rather than left as a gap. */
+      from_stock_pairs: fromFinishedGoods(o),
+      stock_status: o.stock_status||null,
     };
     /* A PI has been issued but production has not released a card. This is a
        valid Order Book row, not a schedule row: zero on cards, the complete
@@ -846,7 +990,10 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       const art=articles[o.article_code];
       /* Every card closed and nothing left to release: production is DONE.
          Not "waiting for a job card" — it is made and waiting for dispatch. */
-      const madeAll=made.pairs>0&&!waiting;
+      /* Covered ENTIRELY from finished goods: there is nothing to make, so it
+         is ready to dispatch without ever having had a job card. */
+      const stockOnly=!made.pairs&&!waiting&&fromFinishedGoods(o)>0;
+      const madeAll=(made.pairs>0&&!waiting)||stockOnly;
       return {
         order_no:o.order_no, party:o.party, article:o.article_code, article_code:o.article_code,
         ...(seenNoBom.has(o.article_code) ? { bom_missing:true } : {}),
@@ -861,6 +1008,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
         release_date:null, release_delay_days:null,
         dispatch_date:null, dispatch_day:null, lead_days:null, sla:madeAll?"on_track":null, stages:[],
         ...(madeAll?{production_complete:true}:{}),
+        ...(stockOnly?{ready_from_stock:true}:{}),
         batches:made.batches, batch_count:made.batches.length, ...waitingFields,
       };
     }
@@ -938,7 +1086,7 @@ export function compute(orders, articles, materials, wcs, origin, opts={}){
       last_dispatch:dispatchDays.length?fromDay(Math.max(...dispatchDays),origin):null,
       batches:unitViews.length,
       pending_pairs:pendingRelease.reduce((a,r)=>a+r.pairs,0),
-      pending_orders:pendingRelease.length,
+      pending_orders:pendingByOrder.size,
       unplanned:orphanViews.length,
       sla:{on_track:orderViews.filter(o=>o.sla==="on_track").length,at_risk:orderViews.filter(o=>o.sla==="at_risk").length,breach:orderViews.filter(o=>o.sla==="breach").length}}};
 }

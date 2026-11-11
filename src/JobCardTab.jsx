@@ -10,7 +10,9 @@ import { comboSizesForArticle } from "../shared/bridge.js";
 import { optionLabel, TYPES, TYPE_LABEL, TYPE_HELP, RULES, validateFabricator } from "../shared/fabricators.js";
 import { prefixOf } from "../shared/product-codes.js";
 import { jobOrderBalance, jobOrderQueue } from "../shared/job-orders.js";
-import { jobCardIssueRows, issuePatch } from "../shared/stock.js";
+import { cardBalance, usesStock, UPPER_START_STAGE } from "../shared/production-units.js";
+import { productionOrder, awaitingDecision, allocationSummary } from "../shared/stock-plan.js";
+import { materialTotals } from "../shared/bom-components.js";
 import StockAtHand from "./StockAtHand.jsx";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
@@ -58,6 +60,11 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
      ASKS. Losing a hundred pairs should be seen and decided about, not healed
      by arithmetic. */
   const [remake,setRemake]=useState(false);
+  /* STOCK FIRST. An order whose stock decision reserved UPPERS has two kinds of
+     card: the pairs to make through the whole routing, and the pairs whose
+     uppers are already in the store — those start at MOULDING, on a card of
+     their own. This says which of the two is being raised. */
+  const [fromUppers,setFromUppers]=useState(false);
 
   /* A REFRESH THAT FAILS MUST NOT DESTROY WHAT IS ALREADY ON SCREEN.
      This used to wipe both lists to [] and set an error that nothing ever
@@ -90,16 +97,22 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     return()=>clearInterval(timer);
   },[active]);
 
-  const queue=useMemo(()=>jobOrderQueue(orders,jobs||[]),[orders,jobs]);
+  /* What is left to put on cards is what is left to PRODUCE: pairs an order
+     takes from finished goods are never made, so they are not "left". */
+  const queue=useMemo(()=>jobOrderQueue(orders.map(productionOrder),jobs||[]),[orders,jobs]);
   const openOrders=queue.filter(row=>row.remaining>0);
   const order=orders.find(o=>o.order_no===orderNo)||null;
-  const balance=order?jobOrderBalance(order,jobs||[]):null;
+  const stockDecided=!!order&&usesStock(order);
+  const awaiting=awaitingDecision(order);
+  const balance=order?(stockDecided?cardBalance(order,jobs||[],fromUppers):jobOrderBalance(order,jobs||[])):null;
+  const upperBalance=stockDecided?cardBalance(order,jobs||[],true).remaining:0;
   const article=order?(INPUTS.articles||{})[order.article_code]:null;
   const who=(fabricators||[]).find(f=>f.name===fabricator)||null;
 
-  function chooseOrder(no){
-    setOrderNo(no); setCard(null); setStale(false); setErr(""); setMsg("");
-    const row=queue.find(x=>x.order.order_no===no);
+  function chooseOrder(no,uppers=false){
+    setOrderNo(no); setFromUppers(uppers); setCard(null); setStale(false); setErr(""); setMsg("");
+    const chosen=orders.find(o=>o.order_no===no);
+    const row=chosen&&usesStock(chosen)?cardBalance(chosen,jobs||[],uppers):queue.find(x=>x.order.order_no===no);
     if(!row){ setQty({}); setSizes({}); return; }
     const nextQty={},nextSizes={};
     for(const line of row.lines){
@@ -120,7 +133,10 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     combo, qty:Number(value),
     sizes:sizes[combo]&&Object.fromEntries(Object.entries(sizes[combo]).map(([s,n])=>[s,Number(n)||0])),
     size_order:order?comboSizesForArticle(order.article_code,combo):[],
-  })),[qty,sizes,order]);
+    /* Uppers from the store: the card, and the material booked out for it,
+       begin at moulding — no rexine or thread for uppers already stitched. */
+    ...(fromUppers?{from_stage:UPPER_START_STAGE}:{}),
+  })),[qty,sizes,order,fromUppers]);
   const totalPairs=lines.reduce((a,line)=>a+line.qty,0);
   /* Only meaningful while the card is still a DRAFT. Once it has been issued
      the balance has already been reduced by these very pairs, so comparing the
@@ -135,7 +151,9 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     ? balance.lines.filter(line=>Number(qty[line.combo]||0)>line.remaining+(remake?toRemake:0)) : [];
   const cap=balance?(remake?balance.remake_allowance:balance.remaining):0;
   const overTotal=!issued&&balance&&totalPairs>cap;
-  const ready=!!order&&!!who&&totalPairs>0&&!over.length&&!overTotal;
+  /* No card while the order still waits for its stock decision: until then
+     nobody knows how many pairs are to be made. The server refuses it too. */
+  const ready=!!order&&!!who&&totalPairs>0&&!over.length&&!overTotal&&!awaiting;
 
   function touched(){ if(card)setStale(true); }
   /* NO EVEN SPLIT HERE, DELIBERATELY. A line that carries a size breakdown
@@ -156,8 +174,11 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
   function generate(){
     if(!ready)return;
     setCard({article:order.article_code,order_no:order.order_no,fabricator:who.name,
-      slip:`JOB CARD — ${slipFor(who)}`,stage:"CUTTING & STITCHING",date,
+      slip:`JOB CARD — ${slipFor(who)}`,stage:fromUppers?"MOULDING — uppers from the upper store":"CUTTING & STITCHING",date,
       start_on:startOn||date,card_no:"",
+      /* The plan reads this: a card that starts at moulding books no cutting,
+         stitching or upper QC, and buys no material for them. */
+      ...(fromUppers?{start_stage:UPPER_START_STAGE}:{}),
       /* The SKU code is the article's own assigned product code (one colour,
          one closure); the series code is its family prefix. Both are blank
          until codes have been assigned on Data & BOM. */
@@ -182,22 +203,24 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
          touching the document — and stops the next render comparing a spent
          draft against a balance that has already absorbed it. */
       setQty({}); setSizes({}); setRemake(false);
-      /* The material has physically left the store, so the stock sheet is told.
-         Cumulative, against the register's own `issue` column. It is reported
-         separately from the job order: if the role may not write stock figures,
-         or the request fails, the job order still stands and the operator is
-         told what was NOT booked rather than seeing a red error over work that
-         succeeded. */
-      const issueRows=jobCardIssueRows(lines,article||{});
+      /* The material has physically left the store, and the SERVER booked it:
+         one logged issue per by-job-order material, worked out from the stored
+         card. This screen used to send the register a new running total built
+         from its own copy, so two cards raised at once overwrote each other.
+         It is reported separately from the job order: if the booking failed,
+         the job order still stands and the operator is told what was NOT
+         booked rather than seeing a red error over work that succeeded. */
+      const release=made.material_release;
       let stockNote="";
-      if(issueRows.length){
-        try{
-          await api.patchReference({stock_meta:issuePatch(issueRows,INPUTS.stock_meta||{})});
-          await reloadReference();
-          stockNote=` ${issueRows.length} material${issueRows.length===1?"":"s"} booked out on the stock sheet.`;
-        }catch(e){
-          stockNote=` The stock sheet was NOT updated (${e.message||e}) — book the issue on Stock yourself.`;
-        }
+      if(release&&release.ok){
+        if(release.released) stockNote=` ${release.released} material${release.released===1?"":"s"} booked out on the stock sheet.`;
+        if(release.on_demand) stockNote+=` ${release.on_demand} on-demand material${release.on_demand===1?" was":"s were"} `
+          + `not released — the store issues ${release.on_demand===1?"it":"them"} on Issue Material when the floor asks.`;
+        if(release.not_on_register&&release.not_on_register.length)
+          stockNote+=` NOT booked — not on the material register: ${release.not_on_register.join(", ")}.`;
+        if(release.released) await reloadReference().catch(()=>{});
+      }else if(release){
+        stockNote=` The stock sheet was NOT updated (${release.error||"unknown reason"}) — book the issue on Issue Material yourself.`;
       }
       setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs.${stockNote} `
         + `Print it below, or choose another order to raise the next one. `
@@ -283,6 +306,24 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         </label>
       </div>
       {order&&<div className="mt-2 text-xs text-slate-600">Article <b>{order.article_code}</b> · Party <b>{order.party||"—"}</b> · <b>{fmt(balance.remaining)}</b> pairs still available for job orders.</div>}
+      {/* STOCK FIRST. Said here, where the card is raised: an order still
+          waiting for its decision cannot have a card, and one that uses ready
+          stock is carded for the balance only. */}
+      {awaiting&&<div role="alert" className="mt-2 rounded-lg border-2 border-amber-400 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        <b>{order.order_no} is waiting for its stock decision.</b> Ready stock matches this order. Open it in the Order Book and choose
+        “Use selected stock” or “Ignore stock” first — until then it is not known how many pairs have to be made, so no job order can be raised.</div>}
+      {stockDecided&&(()=>{ const a=allocationSummary(order); return <div className="mt-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+        <b>This order uses ready stock.</b> Of {fmt(a.ordered)} pairs ordered, {fmt(a.fg)} come from finished goods and are not made,
+        {" "}{fmt(a.upper)} use uppers already in the upper store, and {fmt(a.produce)} are made in full.
+        {a.upper>0&&<div className="mt-1.5 flex gap-4 flex-wrap">
+          <label className="inline-flex items-center gap-1.5"><input type="radio" name="card-route" checked={!fromUppers}
+            onChange={()=>chooseOrder(order.order_no,false)} aria-label="Card for the full routing"/>Full routing — from cutting</label>
+          <label className="inline-flex items-center gap-1.5"><input type="radio" name="card-route" checked={fromUppers}
+            onChange={()=>chooseOrder(order.order_no,true)} aria-label="Card starting at moulding from upper stock"/>
+            From upper stock — starts at moulding ({fmt(upperBalance)} pairs left to card)</label>
+        </div>}
+        {fromUppers&&<div className="mt-1">Nothing is cut or stitched for this card. Issue the reserved uppers to moulding from the Upper store, against {order.order_no}.</div>}
+      </div>; })()}
       {/* Work that went out and never came back. Shown as its own decision,
           never folded into the balance: the customer is still owed these, but
           somebody has to choose to make them again. */}
@@ -321,7 +362,20 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
           Issuing already books the materials OUT of the register; until now
           nothing said beforehand whether they were there to book. Same check
           the PI screen makes, so the two cannot give different answers. */}
-      <StockAtHand article={order&&order.article_code} lines={lines} jobs={jobs||[]} finishedMoves={finishedMoves}/>
+      {/* An order whose stock has been DECIDED has already had its answer about
+          the shelf — and the pairs it sees there may be the very ones reserved
+          for it. Repeating "60 are in stock, supply from the shelf" under a
+          card for the balance told the clerk to take them twice. The raw
+          material check still runs. */}
+      {/* A moulding-start card takes nothing for cutting or stitching. Where the
+          BOM lists nothing from moulding on, that is an EMPTY list, not a
+          missing BOM — and "no BOM rates on file" would say the opposite. */}
+      {fromUppers&&article&&!Object.keys(materialTotals(lines,article)).length
+        ? <div className="mt-3 text-xs rounded-lg border border-slate-200 bg-slate-50 text-slate-700 px-3 py-2">
+            <b>No raw material is booked out for this card.</b> Its uppers are already made, and {order.article_code}'s BOM lists
+            no material for moulding or packing. If the sole compound should be on the BOM, add it under Data &amp; BOM.</div>
+        : <StockAtHand article={order&&order.article_code} lines={lines}
+            jobs={order&&order.stock_status?[]:(jobs||[])} finishedMoves={order&&order.stock_status?[]:finishedMoves}/>}
       <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 

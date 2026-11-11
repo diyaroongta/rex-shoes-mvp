@@ -40,7 +40,7 @@ const MATERIAL_KEYS = ["new_material"];
 const PLAN_KEYS = ["plan_override","priority"];
 
 const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","upper_store","repair","dispatch","gatepass","finished","formats","schedule",
-                   "production_input","plan","machines","stock_add","stock","procurement","material_new","parties","fabricators",
+                   "production_input","plan","machines","stock_add","stock_issue","stock","procurement","material_new","parties","fabricators",
                    "catalogue","rules","data","copilot"];
 
 export const ROLE_DEFS = {
@@ -91,7 +91,9 @@ export const ROLE_DEFS = {
     /* The upper store is READ here: an upper short for an order is a planning
        problem before it is a store problem. */
     tabs:["mis","orders","status","upper_store","schedule","production_input","plan","machines","formats"],
-    writes:[], orders:"plan", production_actuals:true, reference:null,
+    /* `stock_plan`: whether a new order uses ready stock is a planning
+       decision — it settles what is made and what is not. */
+    writes:[], orders:"plan", production_actuals:true, stock_plan:true, reference:null,
   },
   procurement: {
     label:"Procurement Officer",
@@ -105,7 +107,7 @@ export const ROLE_DEFS = {
   store: {
     label:"Store / Inventory Keeper",
     summary:"Stock in, stock out and physical counts. Nothing else.",
-    tabs:["stock_add","stock","procurement","material_new","upper_store","formats"],
+    tabs:["stock_add","stock_issue","stock","procurement","material_new","upper_store","formats"],
     writes:[], reference:"stock", purchase_orders:"receive", upper_store:"record",
   },
   /* "Stock adjustment needs store in-charge approval" — the client's own rule
@@ -114,7 +116,7 @@ export const ROLE_DEFS = {
   store_incharge: {
     label:"Store In-charge",
     summary:"Runs the stores: everything the store keeper does, and approves stock adjustments.",
-    tabs:["upper_store","stock_add","stock","procurement","material_new","formats"],
+    tabs:["upper_store","stock_add","stock_issue","stock","procurement","material_new","formats"],
     writes:[], reference:"stock", purchase_orders:"receive", upper_store:"approve",
   },
   data: {
@@ -210,6 +212,18 @@ export function can(role, method, url, body){
       : `${def.label} cannot change purchase orders.`};
   }
 
+  /* Material issues ride on /api/reference for the same twelve-function
+     reason. Handing material over against a job card is the store's daily
+     work, so it follows the stock grant — and nothing else: it is checked on
+     the body as well as the URL, so it cannot be reached through, or used to
+     reach, the BOM. Raising a job card books its own release on the server and
+     needs no grant here. */
+  if(endpoint === "reference" && (/(?:\?|&)resource=material_issues(?:&|$)/.test(String(url||""))
+     || (body && body.resource === "material_issues"))){
+    if(def.reference === "all" || def.reference === "stock") return {allowed:true};
+    return {allowed:false,reason:`${def.label} cannot issue or take back material. That is the Store's.`};
+  }
+
   if(endpoint === "reference"){
     if(def.reference === "all") return { allowed:true };
     const keys = Object.keys(body || {});
@@ -246,6 +260,24 @@ export function can(role, method, url, body){
     if(def.production_actuals) return {allowed:true};
     return {allowed:false,reason:`${def.label} cannot record production achievement.`};
   }
+
+  /* STOCK DECISIONS AND PARTY LOCKS — use ready stock for an order, or keep
+     stock for one party. They ride on /api/dispatches for the twelve-function
+     reason and are the planner's call, not the dispatch clerk's: checked here,
+     before the generic `dispatches` grant, on the URL and the body both. */
+  if(endpoint === "dispatches" && (/(?:\?|&)resource=stock_plan(?:&|$)/.test(String(url||""))
+     || (body && body.resource === "stock_plan"))){
+    if(def.stock_plan) return {allowed:true};
+    return {allowed:false,reason:`Only the Production Planner or an administrator can reserve, release or lock stock. ${def.label} cannot.`};
+  }
+
+  /* THE SCHEDULE IS THE PLANNER'S. Moving, locking and re-planning a block is
+     a `plan_override` PATCH on /api/orders, so a role with the whole endpoint
+     (Sales) could otherwise drag the production board about. The factory's
+     rule is Production Planner and Admin only. */
+  if(endpoint === "orders" && body && typeof body === "object" && "plan_override" in body && def.orders !== "plan")
+    return { allowed:false,
+      reason:"Only the Production Planner or an administrator can move, lock or re-plan the schedule." };
 
   /* Edit the plan, not the order. A production planner re-sequences work and
      pins machines; creating, re-pricing or deleting an order belongs to
@@ -295,6 +327,18 @@ export function isReadOnly(role){
 
 /* What this role may do in the upper store: "approve" (everything, including
    approving a count adjustment), "record", or null for read-only. */
+/* May this role move, lock and re-plan blocks on the production board? */
+export function canEditSchedule(role){
+  const def = defOf(role);
+  return !!def && (def.writes === "all" || def.orders === "plan");
+}
+
+/* May this role decide an order's stock, and lock stock to a party? */
+export function canDecideStock(role){
+  const def = defOf(role);
+  return !!def && (def.writes === "all" || !!def.stock_plan);
+}
+
 export function upperStoreAccess(role){
   const def = defOf(role);
   if(!def) return null;

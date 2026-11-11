@@ -27,6 +27,8 @@
  * function — the project is at its twelve-function limit.
  */
 
+import { releaseAllFor } from "./stock-plan.js";
+
 export async function orderImpact(client, orderNos){
   const nos = [...new Set((orderNos || []).map(String))];
   if(!nos.length) return { orders:[], job_cards_open:0, job_cards_closed:0, job_cards:[],
@@ -82,6 +84,9 @@ export async function cascadeCancel(client, orderNos, { confirmDispatched = fals
      unwind: the first leaves the shelf, the second returns to it. */
   await client.query("delete from finished_stock where order_no = any($1::text[])", [nos]);
   await client.query("delete from dispatches where order_no = any($1::text[])", [nos]);
+  /* Stock the order had RESERVED — finished goods and uppers — goes back to
+     free. Without this a cancelled order would keep pairs tied up for ever. */
+  await releaseAllFor(client, nos, "Order cancelled", user);
 
   if(hard) await client.query("delete from orders where order_no = any($1::text[])", [nos]);
   else await client.query(

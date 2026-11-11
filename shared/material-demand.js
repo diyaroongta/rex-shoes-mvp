@@ -61,7 +61,12 @@ export function materialDone(units = [], jobs = [], dispatches = []){
   const sent = {}, closed = new Set();
   for(const d of dispatches || []){
     const no = String(d.order_no || "");
-    for(const [combo, v] of Object.entries(d.dispatched || {})) (sent[no] = sent[no] || {})[combo] = ((sent[no] || {})[combo] || 0) + int(v);
+    /* Pairs shipped OUT OF FINISHED GOODS were never on a job card and are on
+       no unit, so they must not be taken off one: counting them here would
+       cancel the material for pairs that still have to be made. */
+    const offShelf = (d.from_stock && d.from_stock.combos) || {};
+    for(const [combo, v] of Object.entries(d.dispatched || {}))
+      (sent[no] = sent[no] || {})[combo] = ((sent[no] || {})[combo] || 0) + Math.max(0, int(v) - int(offShelf[combo]));
     if(d.closes_order) closed.add(no);
   }
   const byOrder = new Map();

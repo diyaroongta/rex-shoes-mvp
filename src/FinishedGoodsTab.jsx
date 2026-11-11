@@ -5,6 +5,7 @@ import * as api from "./lib/client.js";
 import { todayIso } from "./lib/today.js";
 import { comboSizesForArticle } from "../shared/bridge.js";
 import { finishedStock, mtoStock, MOVE_KINDS, validateMoves } from "../shared/finished-stock.js";
+import StockRegisterPanel from "./StockRegisterPanel.jsx";
 
 const fmt = n => (n==null||isNaN(n)) ? "—" : Number(n).toLocaleString("en-IN");
 
@@ -25,18 +26,21 @@ export function articleSizes(article){
    MTO stock: made and packed for a customer order, not yet shipped.
    Both used to sit on the raw-material Stock screen, where nobody packing a
    lorry would look. */
-export default function FinishedGoodsTab({ state, jobs = [], moves = [], actuals = [], dispatches = [], onChanged, readOnly = false }){
+export default function FinishedGoodsTab({ state, jobs = [], moves = [], actuals = [], dispatches = [], onChanged, readOnly = false, canLock = false }){
   const [view,setView]=useState("mts");
   const stock = useMemo(()=>finishedStock(moves, jobs), [moves, jobs]);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div role="tablist" aria-label="Finished goods" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4 flex-wrap">
-      {[["mts","MTS stock"],["mto","MTO stock"],...(readOnly?[]:[["enter","Enter stock"]]),["moves","Movements"]].map(([k,label])=>
+      {[["mts","MTS stock"],["reserved","Reserved & free"],["mto","MTO stock"],...(readOnly?[]:[["enter","Enter stock"]]),["moves","Movements"]].map(([k,label])=>
         <button key={k} role="tab" aria-selected={view===k} onClick={()=>setView(k)}
           className="text-sm font-semibold rounded-lg px-4 py-1.5"
           style={view===k?{background:"#fff",color:"#1e293b",boxShadow:"0 1px 2px rgba(15,23,42,.12)"}:{background:"transparent",color:"#64748b"}}>
           {label}</button>)}
     </div>
     {view==="mts" && <MtsStock stock={stock} />}
+    {/* What of the shelf is spoken for: reserved for an order, kept for a
+        party, or free to offer to the next one. */}
+    {view==="reserved" && <StockRegisterPanel store="FG" canLock={canLock} />}
     {view==="mto" && <MtoStock state={state} actuals={actuals} dispatches={dispatches} />}
     {view==="enter" && <EnterStock orders={state.orders||[]} onSaved={async()=>{ if(onChanged) await onChanged(); setView("mts"); }} />}
     {view==="moves" && <Movements moves={moves} readOnly={readOnly} onChanged={onChanged} />}

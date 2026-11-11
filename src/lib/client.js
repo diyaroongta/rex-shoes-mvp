@@ -199,6 +199,16 @@ export const updatePurchaseOrder = (po_no,patch) => j("/api/reference?resource=p
 export const cancelPurchaseOrder = po_no => j("/api/reference?resource=purchase_orders", {
   method:"PATCH",headers:{"Content-Type":"application/json"},
   body:JSON.stringify({resource:"purchase_orders",action:"cancel",po_no})});
+/* Which material went to which job card. Raising a job order releases its
+   by-job-order materials on the server; these are the store keeper's own
+   entries — an issue or a return against a card — and the log behind both.
+   Every write books the register in the same transaction. */
+const ISSUES = "/api/reference?resource=material_issues";
+export const listMaterialIssues = ({ job_id=null, material_key=null }={}) => j(ISSUES
+  + (job_id!=null?`&job_id=${encodeURIComponent(job_id)}`:"")
+  + (material_key!=null?`&material_key=${encodeURIComponent(material_key)}`:""));
+export const addMaterialIssue = movement => post(ISSUES, { ...movement, resource:"material_issues" });
+export const undoMaterialIssue = id => j(`${ISSUES}&id=${encodeURIComponent(id)}`, { method:"DELETE" });
 /* Bulk BOM removal. `selection` is {articles, ranges, materials} in any mix.
    Always preview first: the same pure function produces both answers, so the
    preview is exactly what the removal will do. `confirm_in_use` is the
@@ -262,3 +272,16 @@ export const deleteJobCardDoc = id => j(`/api/dispatches?resource=job_card_docs&
 export const orderImpact = no => j(`/api/orders/${encodeURIComponent(no)}?impact=1`);
 export const cancelOrder = (no, confirm_dispatched=false) =>
   j(`/api/orders/${encodeURIComponent(no)}?cascade=1${confirm_dispatched?"&confirm_dispatched=1":""}`, { method:"DELETE" });
+
+/* ---- stock first: ready stock checked before a job order is raised ----
+   On the dispatches endpoint for the twelve-function reason. The register is
+   on hand / reserved / free per SKU; the check is one order against it. */
+const STOCK_PLAN = "/api/dispatches?resource=stock_plan";
+export const getStockPlan    = ()       => j(STOCK_PLAN);
+export const getStockCheck   = order_no => j(`${STOCK_PLAN}&order_no=${encodeURIComponent(order_no)}`);
+/* `decision` is { sizes: { size: { fg, upper: { from_size: pairs } } } } to use
+   stock, or { ignore: true } to reserve nothing and make everything. */
+export const decideStock     = (order_no, decision) =>
+  post(STOCK_PLAN, { resource:"stock_plan", action:"decide", order_no, ...decision });
+/* Keep stock for one party; qty 0 removes the lock. */
+export const lockStockForParty = lock => post(STOCK_PLAN, { resource:"stock_plan", action:"lock", lock });

@@ -9,6 +9,7 @@ import { validateIssue, summarise, withFabricators, slipFor,
 import JobCard from "./JobCard.jsx";
 import StageJobCard from "./StageJobCard.jsx";
 import { CardSwitch, printJobCard } from "./JobCardTab.jsx";
+import { CardMaterials } from "./IssueMaterialTab.jsx";
 
 /* Issued-job-order database — work assigned to an internal line or outside fabricator.
  *
@@ -35,6 +36,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   const [gotBack, setGotBack] = useState("");
   const [slipFor_, setSlip] = useState(null);         // a job opened as a printable slip
   const [cardOf, setCardOf] = useState(null);         // a job reopened as its full job card
+  const [materialsOf, setMaterialsOf] = useState(null); // a job opened as its material account
   /* Archived rows are off the working list by default and one click away.
      They are still counted in every balance — archiving is housekeeping, not
      an undo. */
@@ -262,11 +264,13 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     <Register title={`Out now (${open.length})`} rows={open} empty="Nothing is out with anyone."
       onReceive={r=>{ setReceiving(r); setGotBack(String(r.outstanding)); }}
       onSlip={setSlip} onCard={setCardOf} onVerdict={verdict} busy={busy}
+      materialsOf={materialsOf} onMaterials={id=>setMaterialsOf(materialsOf===id?null:id)}
       receiving={receiving} gotBack={gotBack} setGotBack={setGotBack}
       onConfirm={takeBack} onCancel={()=>setReceiving(null)} />
 
     {(!!done.length || showArchived) && <Register title={`Completed (${done.length})`} rows={done}
       onSlip={setSlip} onCard={setCardOf} closed busy={busy}
+      materialsOf={materialsOf} onMaterials={id=>setMaterialsOf(materialsOf===id?null:id)}
       onArchive={archive} onDelete={id=>setConfirmDel(id)}
       confirmDel={confirmDel} onCancelDelete={()=>setConfirmDel(null)} onReallyDelete={remove} />}
     <div className="flex items-center gap-3 flex-wrap mt-2">
@@ -283,7 +287,8 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
 
 function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, busy,
                     receiving, gotBack, setGotBack, onConfirm, onCancel, closed,
-                    onArchive, onDelete, confirmDel, onCancelDelete, onReallyDelete }){
+                    onArchive, onDelete, confirmDel, onCancelDelete, onReallyDelete,
+                    materialsOf=null, onMaterials=null }){
   return <div className="mb-4">
     <div className="text-xs font-semibold text-slate-700 mb-1">{title}</div>
     <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
@@ -325,6 +330,12 @@ function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, bu
                 {r.card && onCard && <button onClick={()=>onCard(r)}
                   className="mr-2 font-semibold text-slate-800 hover:underline"
                   title="Open the job card exactly as it was issued, to check it or print it again.">Job card</button>}
+                {/* WHICH MATERIAL WENT TO THIS JOB: what its BOM calls for,
+                    what the store issued, what came back. Read-only here; the
+                    store records it on Issue Material. */}
+                {onMaterials && <button onClick={()=>onMaterials(r.id)} aria-expanded={materialsOf===r.id}
+                  className="mr-2 text-slate-600 hover:underline"
+                  title="What the store has issued to this job, against what its BOM calls for.">Materials</button>}
                 <button onClick={()=>onSlip(r)} className="text-slate-600 hover:underline">Slip</button>
                 {!closed && <button onClick={()=>onReceive(r)} disabled={busy}
                   className="ml-2 font-semibold text-indigo-700 hover:underline disabled:opacity-40">Receive</button>}
@@ -348,6 +359,9 @@ function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, bu
                   title="Only for a challan that should never have existed.">Delete</button>}
               </td>
             </tr>
+            {materialsOf === r.id && (
+              <tr className="bg-slate-50"><td colSpan={8} className="px-3 py-3">
+                <CardMaterials job={r} /></td></tr>)}
             {confirmDel === r.id && (
               <tr className="bg-rose-50"><td colSpan={8} className="px-3 py-2">
                 <div className="flex items-center gap-3 flex-wrap">

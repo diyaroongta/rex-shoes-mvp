@@ -34,7 +34,7 @@ dispatch all derive from it. Nothing else is visible to the planner.
 
 **The plan is automatic; the planner outranks it.** Each order carries a
 `plan_override` blob (`orders.plan_override`), fed into `compute()` as
-`opts.overrides`. Four things can be forced, all optional:
+`opts.overrides`. Five things can be forced, all optional:
 
 | Field | Means |
 |---|---|
@@ -42,6 +42,7 @@ dispatch all derive from it. Nothing else is visible to the planner.
 | `start_on` | pin the release date, in either direction |
 | `machine` | `{STAGE: WORK_CENTRE}` — which machine a stage runs on |
 | `days` | `{STAGE: n}` — finish that stage in exactly n days |
+| `at` | `{STAGE: date}` — a LOCKED BLOCK: this stage starts that day and no re-plan moves it |
 
 **Nothing here is ever refused.** A stage pinned to one day gets one day even
 when that needs 9,000 pairs from a 2,500-pair line; the engine carries it out
@@ -183,15 +184,94 @@ is blank until set. Damaged AT pasting or
 moulding was already issued, so it comes off that floor's balance, never the
 shelf a second time. A physical count becomes `adjust` rows that are PENDING
 and move nothing until the Store In-charge (`upper_store:"approve"`) approves;
-the keeper (`"record"`) cannot. It is ONE POOL per article/colour/size — the
-order number is a reference, not a reservation — because the client has not
-answered "reserve or pool?". Moving vs non-moving is automatic from the last
+the keeper (`"record"`) cannot. On the SHELF it is still one pool per
+article/colour/size — the order number on a movement is a reference. The
+client has since answered "reserve or pool?": RESERVE, and that lives beside
+the pool in `stock_reservations`, not inside it (see Stock first, below).
+Moving vs non-moving is automatic from the last
 issue (the client's 7 days, a setting); a manual tag overrides it and always
 carries a reason. Fabrication overdue and the rejection alert have NO default
 and stay silent until the factory sets them. Outside fabrication is read off
 job work, never entered twice. Lives in `api/dispatches.js` behind
 `?resource=upper_store`, checked in `can()` before the generic `dispatches`
 grant so a dispatch clerk cannot reach it.
+
+**Stock first: a new order is checked against ready stock before anything is
+put on a job card.** `shared/stock-plan.js` is the whole rule book. Finished
+goods are taken first (no production), then uppers (the job starts at
+MOULDING), and only the balance is made in full. It is built ON the two
+ledgers that already existed and rewrites neither: `finished_stock` and
+`upper_store` still say what is ON HAND; one new append-only ledger,
+`stock_reservations`, says who it is spoken for, so
+`free = on hand − reserved − kept for other parties`. Only FREE stock is ever
+offered. A reservation row adds to what an order holds (`reserve`) or takes
+from it (`release`, `issue`, `dispatch`); nothing updates or deletes one, and a
+shape test asserts that.
+
+- **FG has no colour column because the article IS the variant.** The live
+  master names closure and colourway in the article (`GOLA VELCRO BLACK`), so
+  "same article, variant, colour and size" is article + size. Uppers are
+  matched on article + COLOUR + size, strictly; other colours on the shelf are
+  named in the check (`upper_other_colours`) so "nothing offered" is never read
+  as "nothing there".
+- **One size larger, and only where the roll is certain** (`nextSizeUp`): a
+  size 5 upper makes a size 4 shoe. `13s → 1`; bare `8 → 9`. It answers null
+  for `5`, `5.5` and a bare `13` — 5.5 is a half size and a bare 6 may be the
+  kids run. The ledger draws the LARGER size (`size`) against the size ordered
+  (`for_size`); the job, the invoice and the dispatch stay in the size ordered.
+- **Uppers stitched for a live order are HELD, not free** (`heldUppers`),
+  derived from the store's own receipts and issues — otherwise the uppers
+  waiting for JO1's moulding would be offered to JO2. A hold stops an OFFER;
+  only a real reservation stops the store keeper issuing (`checkWithdrawals`).
+- **A decision is a diff, not a write** (`planReservations`): the target
+  allocation against what the order already holds becomes reserve / release
+  rows. That one function is the first decision, a changed decision, and an
+  edit that shrank the order. It runs inside a transaction behind ONE advisory
+  lock that every reservation writer takes first, on freshly read figures, so
+  two planners reaching for the last 40 pairs cannot both be told yes — the
+  second gets `stale` and the numbers as they now stand.
+- **`orders.stock_status`** is `awaiting` / `decided`, and NULL on every order
+  from before this existed — those are never held back. A new order is stamped
+  at creation: `awaiting` only if something on the shelf matches, otherwise
+  `decided` with `{mode:"none"}` — no needless click. While `awaiting`, no job
+  card can be raised (`jobCardStockGate`); procurement still counts the whole
+  order, because until the decision nobody knows how much is to be made.
+- **Job orders are still RAISED, not created automatically.** The spec said
+  "create job orders for the balance"; the factory's earlier answer — pairs
+  nobody has put on a card are not on the plan — and the fact that a card
+  needs a fabricator and a date nobody can invent, both stand. The decision
+  sets what CAN be carded: `releaseBalance` splits the balance into the pairs
+  for the full routing and the pairs that start at moulding
+  (`card.start_stage:"MOLDING"`, unit key `…#BALU` until carded). FG pairs are
+  on no unit at all. An order always has at least one unit, even an empty
+  one, or the engine plans it WHOLE.
+- **`start_stage` drops stages from the route AND from the material.**
+  `route()`, `orderReq()` and `materialTotals()` (per-line `from_stage`) all
+  honour it, so a moulding-start card books no rexine out of the store.
+- **Shelf stock that ships is not production.** A dispatch records
+  `from_stock:{sizes,combos}`; `materialDone` subtracts it, or 60 pairs shipped
+  off the shelf would cancel the material for 60 pairs still to be made.
+- Cancelling an order, closing it short, and reducing a size all release;
+  undoing a dispatch re-reserves what it cleared. Lives in
+  `api/_lib/stock-plan.js` behind `/api/dispatches?resource=stock_plan`
+  (twelve functions), allowed to `planner` (`stock_plan:true`) and admin only,
+  checked in `can()` before the generic `dispatches` grant.
+
+**The Production plan board locks; it does not store a second schedule.** The
+spec asked for a `schedule_entries` table. That would be a second source of
+truth beside the engine — exactly the "patched onto a stale schedule" this
+project avoids. A dragged block instead writes `at:{STAGE:date}` into the
+job's `plan_override`, and `schedule()` books every locked block FIRST, before
+any unlocked work, so a re-plan flows round it; it survives a reload because
+the override is on the order row. `shared/plan-board.js` is the board's rule
+book: `checkMove` REFUSES a drop that breaks stage order, lands on a locked
+block of another article on a moulding machine, targets a machine that cannot
+make the article, or falls on a closed day — while the ENGINE still refuses
+nothing: a lock that later becomes impossible (an earlier stage slipped under
+it) stays put and is reported as `precedence_broken` in `plan_warnings`, never
+in `schedule_problems`. Over capacity on a pooled line is allowed and amber.
+A `plan_override` PATCH is now planner/admin ONLY — Sales holds the whole
+orders endpoint and could otherwise drag the board.
 
 **Procurement answers WHEN, not just what.** A list sorted by shortfall answers
 "what is short"; the buyer asks "what is short and needed on Thursday", and a
@@ -218,6 +298,35 @@ material stays master data, and one disallowed key still sinks the whole request
 The colour folds into the NAME and the UOM is part of the KEY (`NAME||UOM`),
 following the BOM importer, so a material added by hand and one added by upload
 land on the same key instead of becoming two materials.
+
+**Material issues are an EVENT LOG against a job card.** The register kept ONE
+running Issued total per material, which could not say which job took a
+material, whether a card had been given what its BOM calls for, or what came
+back. `shared/material-issues.js` keeps one row per movement — job card,
+material, quantity, date, `issue` or `return` — and derives the rest; the
+register's Issued figure is kept in step (it is the same sum), so netting and
+the buying list read as before. **How a material leaves the store is set per
+material** (`stock_meta[key].issue_mode`): `job_order` releases the card's whole
+BOM quantity when the job order is raised, `on_demand` releases nothing and the
+keeper records each hand-over on **Issue Material**. UNSET means `job_order`,
+because that is what every card raised so far has done — it is shown as "not
+set", never as a third mode. The release is booked by the SERVER inside job
+creation (`releaseForJob`), from the stored card and the BOM; the job order
+stands if it fails and says what was not booked. **More than the BOM, and more
+than the book stock, are WARNED and saved** — a BOM is a rate, not a ration, and
+the register is mostly unfilled, so refusing either would stop the store. What
+is refused is the impossible: returning more than the card holds. A mis-keyed
+entry is UNDONE (row deleted, register reversed), not overtyped; deleting a
+mis-keyed job card takes its automatic release back with it and is refused
+while hand entries stand against it. `net` (issued less returned) is what the
+job KEPT — the app does not measure what the floor consumed, so it is never
+called consumption. **No `reference_data_history` snapshot is taken for an
+issue**: it is the store's most frequent write and a snapshot is the whole
+reference document, which is how the database hit its cap once already. A card
+with nothing logged may simply predate the log, and the screen says that rather
+than "nothing issued". Lives in `api/_lib/material-issues.js`, served behind
+`/api/reference?resource=material_issues` (twelve functions), and follows the
+stock grant in `can()` — checked on the body as well as the URL.
 
 **Repair is an EVENT LOG, not three counters.** The factory's ARMOUR 17004 card
 records each movement as a DATE, a SIZE and a QUANTITY — SEND FOR REPAIR,
@@ -395,6 +504,9 @@ shared/            imported by BOTH browser and server — pure, testable
   procurement-timing.js  WHEN a shortfall bites, from the stage that consumes it
   fabricators.js   internal lines and job workers in one list; what each type requires
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs
+  stock-plan.js    stock first: on hand / reserved / free, the stock check, reservations
+  plan-board.js    the production board: blocks, whether a drop is allowed, knock-on effects
+  material-issues.js which material went to which job card: release, issue, return, undo
   inputs.js        SEED reference data only — real data lives in Postgres
   catalogue-seed.js article photos + MRP bands from the catalogue PDF
 src/
@@ -406,6 +518,7 @@ src/
   JobCard.jsx          the printable document generated by a job order
   FabricatorsTab.jsx   the fabricator master: lines, job workers, sample makers
   JobWorkTab.jsx       Job Orders Database: issued, received, short and payable
+  IssueMaterialTab.jsx Issue Material: a job card's material account, issue, return, undo
   PackingList.jsx      the dispatch document, in the factory's own layout
   lib/refdata.js   hydrates live reference data over the seed at startup
   lib/client.js    the only thing the browser calls — never a provider directly
@@ -414,7 +527,8 @@ api/
   _lib/db.js       pooled Postgres
   orders/          create, list, edit, delete
   pis.js           PI master, release into production, and PI number allocation
-  reference.js     BOM upload, stock, MRP, sole type, molding machine, bulk removal
+  reference.js     BOM upload, stock, MRP, sole type, molding machine, bulk removal,
+                   purchase orders, AND material issues (?resource=material_issues)
   dispatches.js    packing reports, AND job work (?resource=job_work)
   parties.js       customers, AND fabricators (?resource=fabricators) — see below
 public/brand/      the factory's own artwork — rex-logo.jpg, rex-banner.jpg
@@ -617,7 +731,13 @@ Each of these was a real bug found in production. Most have a regression test no
 | A bulk-upload article matched on its cell alone | The Order Book upload matched `GOLA PLUS` with its article cell only, ignoring the row's own Closure and Colour columns, so every row went to whichever Gola Plus came first; and a row that left those columns blank got no closure or colour at all, even when the article's name says `VELCRO` and the master carries its colours. The row's columns now choose the variant, a tie is refused NAMING the candidates, a closure the row contradicts is refused, and blanks are filled from the article — said once in a warning. |
 | A control on the slip but not on the PI | "Add a specific size" was on the photographed slip and not on an uploaded PI's review, so a PI needing one more size could only take a whole range — read by the client as the feature having been removed. It writes to `piCards`, like every other PI control. |
 | A job card that could not be printed twice | A PDF that failed half-way meant raising the card again. The Job Orders Database reopens any issued card from its stored snapshot (`SavedJobCard`) with its own number. Printing looks inside its own box, because Create Job Order stays mounted behind other screens and a page-wide `querySelector(".job-card")` could print a hidden draft. |
+| A stock total sent by the browser | Raising a job card booked its material by sending the register a new running `issue` total computed from the BROWSER's copy of it — the fault `rec_add` had already fixed for receipts. Two cards raised from two screens each sent "what I saw + mine" and the second erased the first. The server now derives the release from the stored card and ADDS it inside the reference row lock (`releaseForJob`); `tests/api/postgres.test.js` raises two cards at once and checks both land. `issuePatch` in `shared/stock.js` is no longer called by any screen. |
 | A line moved by its position | Changing a card's product remapped every line onto the new article's range at the SAME INDEX in its range list, so an unmatched "8X10" became "11X12" and was invoiced as 11s/12s at ₹899. Re-picking a line's rate basis cleared its exact sizes, so "11 over 3" printed as 18 each of 11s/12s/13s. `remapLine` / `rekeySizes` in `shared/intake.js` follow the WRITTEN sizes: keep them, move only to a range that holds them, otherwise leave the line unmatched for the clerk. |
+| A card's override the server threw away | `PATCH /api/orders` normalised `plan_override` with `normalizeOverride`, which keeps the order's own fields and drops every other key — `units` among them, which is where a JOB CARD's override lives. The plan runs job cards, so every Adjust (and every block locked on the board) was stored as an empty override: it showed for as long as the browser's own copy lasted and was gone on the next refresh. Found by reloading the page, not by any test — the mocked test asserted the order-level shape only. Each `units[key]` is normalised and kept now; an empty one is dropped. |
+| An undo that re-reserved | Undoing a dispatch that shipped from finished goods wrote a fresh `reserve` row. The pairs were back, but the ledger then read "granted 120, consumed 60", so an edit that later shrank the order could never release them. An undo NEGATES the row it undoes (same kind, opposite sign). Only a real Postgres run showed it. |
+| An order total that forgot the shelf | Everything that totals an order added pairs on cards + pairs waiting. Pairs supplied from finished goods are neither, so a 300-pair order read 240 on the Order Book and in MIS. `from_stock_pairs` is the third term, in `pairsOf`, `orderQuantity` and the Order Book. |
+| A hint that contradicted the decision | The old "already in finished stock — supply from the shelf" hint on Create Job Order read raw on-hand, so under a card for the BALANCE it offered the very pairs already reserved for that order. An order with a stock decision gets no shelf hint there; the decision was the answer. |
+| A missing BOM that was an empty list | A moulding-start card for an article whose BOM lists nothing from moulding on takes no material — and the screen said "no BOM rates on file", the opposite of the truth. An empty requirement and a missing BOM are different states and are worded differently. |
 
 ---
 

@@ -36,6 +36,7 @@ import UpperStoreTab from "./UpperStoreTab.jsx";
 import JobWorkTab from "./JobWorkTab.jsx";
 import ProductionInputTab from "./ProductionInputTab.jsx";
 import PurchaseOrders from "./PurchaseOrders.jsx";
+import IssueMaterialTab from "./IssueMaterialTab.jsx";
 import ProfilesTab from "./ProfilesTab.jsx";
 import ChangePassword from "./ChangePassword.jsx";
 import { articlePhoto } from "../shared/catalogue-seed.js";
@@ -43,7 +44,9 @@ import { productionUnits } from "../shared/production-units.js";
 import { materialDone } from "../shared/material-demand.js";
 import { progressFrom } from "../shared/production-progress.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
-import { canSeeTab, defaultTab, isReadOnly, ROLE_LABEL } from "../shared/permissions.js";
+import { can, canSeeTab, defaultTab, isReadOnly, ROLE_LABEL, canEditSchedule, canDecideStock } from "../shared/permissions.js";
+import StockDecisions from "./StockDecisions.jsx";
+import PlanBoard from "./PlanBoard.jsx";
 import { productionActualKey } from "../shared/production-actuals.js";
 import { DEFAULT_CALENDAR, isOffDay, holidayName } from "../shared/holidays.js";
 
@@ -127,6 +130,8 @@ export default function App({ user=null, onSignOut=null }={}){
   const tab = canSeeTab(role, rawTab) ? rawTab : defaultTab(role);
   const [upperSeen, setUpperSeen] = useState(false);
   useEffect(()=>{ if(tab==="upper_store") setUpperSeen(true); },[tab]);
+  const [issueSeen,setIssueSeen]=useState(false);
+  useEffect(()=>{ if(tab==="stock_issue") setIssueSeen(true); },[tab]);
   const [intakeMode, setIntakeMode] = useState("slip");   // "slip" | "sheet", inside PI generation
   const [selected, setSelected] = useState(null);
   const [aiQ, setAiQ] = useState(""); const [aiA, setAiA] = useState(""); const [aiBusy, setAiBusy] = useState(false);
@@ -461,11 +466,12 @@ export default function App({ user=null, onSignOut=null }={}){
     ]],
     ...FLOW.map(({group, tabs}) => [group, tabs.map(([k,label]) =>
       k==="orders" ? [k,label,{n:lateCount, tone:"#BE123C"}] : [k,label])]),
-    /* Four pages, in the order the store works: goods come IN, the register
-       is CHECKED, what is short is BOUGHT, and a material nobody has stocked
-       before is CREATED. They were tabs inside one Stock screen. */
+    /* Five pages, in the order the store works: goods come IN, material goes
+       OUT against a job card, the register is CHECKED, what is short is
+       BOUGHT, and a material nobody has stocked before is CREATED. */
     ["Materials", [
       ["stock_add","Add Stock"],
+      ["stock_issue","Issue Material"],
       ["stock","Check Stock"],
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
       ["material_new","Add New Material"],
@@ -673,6 +679,9 @@ export default function App({ user=null, onSignOut=null }={}){
                             onGoToJobs={()=>setTab("jobs")}
           onScheduled={syncAll} onChanged={syncAll} />}
         {tab==="orders" && <>
+          {/* STOCK FIRST. Orders that ready stock matches wait here for the
+              planner's decision before any job order is raised for them. */}
+          <StockDecisions orders={orders||[]} canDecide={canDecideStock(role)} onChanged={syncAll} />
           <OrdersTab state={state} ledger={ledger} onBump={bump} onSelect={setSelected} selected={selected} onRemove={removeOrder} onEdit={editOrder} />
           <div className="flex gap-2 mt-3">
             <button onClick={()=>{
@@ -705,7 +714,14 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
         {tab==="production_input" && <ProductionInputTab state={state} actuals={productionActuals} jobs={jobs} calendar={calendar}
           replan={replan} onChanged={refreshProductionActuals} />}
-        {tab==="plan" && <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={setPlanOverride} />}
+        {/* The board is where the plan is CHANGED — drag, lock, re-plan — and
+            the day-by-day list under it is the same plan, printable. Only the
+            Production Planner and the administrator are handed the means to
+            change it; the server refuses everyone else regardless. */}
+        {tab==="plan" && state && <>
+          <PlanBoard state={state} caps={caps} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} onReplan={syncAll} />
+          <PlanTab state={state} caps={caps} actuals={productionActuals} setPlanOverride={canEditSchedule(role)?setPlanOverride:null} />
+        </>}
         {tab==="procurement" && <ProcurementTab state={state} role={role}
           onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
@@ -714,8 +730,16 @@ export default function App({ user=null, onSignOut=null }={}){
           onOpenGatePass={canSeeTab(role,"gatepass")?(id=>{setGateFocus(id);setTab("gatepass");}):null} />}
         {tab==="gatepass" && <GatePassTab dispatches={dispatches} orders={orders||[]} onChanged={syncAll}
           focusId={gateFocus} />}
-        {tab==="finished" && <FinishedGoodsTab state={state} jobs={jobs} moves={finishedMoves} actuals={productionActuals} dispatches={dispatches} onChanged={syncAll} readOnly={readOnly||role==="sales"} />}
+        {tab==="finished" && <FinishedGoodsTab state={state} jobs={jobs} moves={finishedMoves} actuals={productionActuals} dispatches={dispatches} onChanged={syncAll} readOnly={readOnly||role==="sales"} canLock={canDecideStock(role)} />}
         {tab==="formats" && <FormatsTab state={state} orders={orders||[]} jobs={jobs} moves={finishedMoves} actuals={productionActuals} calendar={calendar} dispatches={dispatches} />}
+        {/* Mounted once opened, like the upper store: quantities typed against
+            a job card are unsaved work and a tab click must not discard them. */}
+        {(tab==="stock_issue"||issueSeen) && canSeeTab(role,"stock_issue") &&
+          <div style={{display:tab==="stock_issue"?"block":"none"}}>
+            <IssueMaterialTab active={tab==="stock_issue"}
+              canWrite={can(role,"POST","/api/reference?resource=material_issues",{}).allowed}
+              onChanged={()=>setRefTick(t=>t+1)} />
+          </div>}
         {tab==="stock_add" && <StockTab mode="add" state={state} onChanged={()=>setRefTick(t=>t+1)} onViewAll={()=>setTab("stock")} />}
         {tab==="stock" && <StockTab mode="view" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="material_new" && <StockTab mode="material" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
@@ -2342,6 +2366,7 @@ const VIEWS = {
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
   procurement: {title:"Procurement",        sub:"What to buy, purchase orders, and what is still to arrive"},
   stock_add:   {title:"Add Stock",          sub:"Goods received into the store"},
+  stock_issue: {title:"Issue Material",     sub:"Hand material to the floor against a job card, take it back, and see what each card has had"},
   stock:       {title:"Check Stock",        sub:"What is in the store, counted against the register"},
   material_new:{title:"Add New Material",   sub:"A material the store has not stocked before — with its supplier"},
   finished:    {title:"Finished goods",     sub:"MTS and MTO stock — made shoes waiting to ship"},
@@ -2633,7 +2658,7 @@ function CancelOrderPanel({o,onKeep,onConfirm}){
   const shipped=(i.dispatches||0)>0;
   return <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
     <div className="text-sm text-rose-900">
-      Cancel <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty+(o.pending_pairs||0))} pairs for {o.party}?</div>
+      Cancel <b className="mono">{o.order_no}</b> — {o.article}, {fmt(o.qty+(o.pending_pairs||0)+(o.from_stock_pairs||0))} pairs for {o.party}?</div>
     {!impact && !err && <div className="text-xs text-rose-700 mt-1">Checking what was raised against it…</div>}
     {err && <div className="text-xs text-rose-700 mt-1">Could not check: {err}</div>}
     {impact && <ul className="text-xs text-rose-800 mt-1 ml-4 list-disc">
@@ -2671,7 +2696,7 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
     const body=[...(state.orders||[])].map(o=>{
       const rec=ledger[o.order_no]||{};
       return [o.order_no,(o.pi&&o.pi.pi_no)||"",o.party,o.article,o.sole_type,o.order_date,
-        (Number(o.qty)||0)+(Number(o.pending_pairs)||0), Number(o.qty)||0, Number(o.pending_pairs)||0,
+        (Number(o.qty)||0)+(Number(o.pending_pairs)||0)+(Number(o.from_stock_pairs)||0), Number(o.qty)||0, Number(o.pending_pairs)||0,
         rec.total_dispatched??0, rec.total_pending??"", rec.shortfall??0,
         rec.dispatch_count??0, rec.last_dispatched_on||"",
         o.dispatch_date||"", o.lead_days??"", rec.status||"not started"];
@@ -2755,12 +2780,17 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
               exactly that here, rather than the order book quietly showing
               only the half in production. */}
           <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>
-            {fmt(o.qty+(o.pending_pairs||0))}</td>
+            {fmt(o.qty+(o.pending_pairs||0)+(o.from_stock_pairs||0))}</td>
           <td className="py-2 px-2 text-right mono" style={{borderTop:"1px solid #eef0f4"}}>
             {o.pending_pairs>0
               ? <>{fmt(o.qty)}
                   <div className="text-[11px] text-amber-700">{fmt(o.pending_pairs)} waiting for a card</div></>
-              : <span className="text-slate-400">all of it</span>}</td>
+              : o.from_stock_pairs>0&&!o.qty ? <span className="text-slate-400">none needed</span>
+              : <span className="text-slate-400">all of it</span>}
+            {/* Pairs its stock decision takes from finished goods: ordered, owed,
+                and never made — so they are on no card and are said separately. */}
+            {o.from_stock_pairs>0&&<div className="text-[11px] text-emerald-700">{fmt(o.from_stock_pairs)} from finished goods</div>}
+            {o.stock_status==="awaiting"&&<div className="text-[11px] font-semibold text-amber-700">stock decision needed</div>}</td>
           {/* WHAT HAS ACTUALLY LEFT. The ledger was already computed and handed
               to this screen, and used only to decide which rows to hide — so
               the order book could say 1,000 ordered and 500 on job cards while

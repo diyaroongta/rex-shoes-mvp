@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
 import { stockSheetRows, stockPatchFromRows } from "../shared/stock-upload.js";
+import { ISSUE_MODES, ISSUE_MODE_LABEL, ISSUE_MODE_HELP, materialTrail } from "../shared/material-issues.js";
 
 /* Stock register in the factory's own STOCK MASTER layout:
    S.N · Category · Item Description · Size · UOM · Opening · Rec. · Issue ·
@@ -104,6 +105,9 @@ export function stockRows(){
       name: m.name, size: md.size ?? "", uom: m.uom, notes: m.notes,
       opening, rec, issue, stock, min, rate, value: stock * rate, counted,
       supplier: md.supplier || "", supplier_rate: md.supplier_rate ?? null, dispatch_location: md.dispatch_location || "",
+      /* How it leaves the store. Blank is NOT a third mode: nobody has chosen,
+         and the material goes on being released with the job order. */
+      issue_mode: ISSUE_MODES.includes(md.issue_mode) ? md.issue_mode : "",
       low: min > 0 && stock < min,
       alert: min > 0 && stock < min,
       order_qty: min > 0 && stock < min ? min-stock : 0,
@@ -305,12 +309,24 @@ function StockDetail({ row, onSaved }){
   const [edit,setEdit]=useState(null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
+  /* Where this material went, job card by job card. Fetched only when asked
+     for: the register has hundreds of rows and most are never opened. */
+  const [trail,setTrail]=useState(null);
+  const [trailErr,setTrailErr]=useState("");
+  async function loadTrail(){
+    setTrailErr("");
+    try{ setTrail(materialTrail(await api.listMaterialIssues({material_key:row.key}),row.key)); }
+    catch(e){ setTrailErr(String(e.message||e)); }
+  }
   const FIELDS=[["opening","Opening"],["rec","Received"],["issue","Issued"],["min","Minimum"],["rate","Rate ₹"],["supplier_rate","Supplier rate ₹"]];
   const TEXT=["category","size","supplier","dispatch_location"];
 
   async function save(){
     const clean={};
     for(const [f,v] of Object.entries(edit)){
+      /* The one field where blank is an answer: it hands the material back to
+         "released with the job order". */
+      if(f==="issue_mode"){ if(String(v||"")!==String(row.issue_mode||"")) clean.issue_mode=String(v||""); continue; }
       if(v===""||v==null) continue;
       if(TEXT.includes(f)){ if(String(v)!==String(row[f]||"")) clean[f]=String(v); continue; }
       const n=Number(v);
@@ -344,13 +360,37 @@ function StockDetail({ row, onSaved }){
         {row.supplier_rate!=null&&<> · ₹{fmt(row.supplier_rate)}/{row.uom}</>}{row.dispatch_location&&<> · from {row.dispatch_location}</>}</span>
       <button onClick={()=>setEdit({category:row.category||"",size:row.size||"",opening:row.opening,
           rec:row.rec,issue:row.issue,min:row.min,rate:row.rate,supplier:row.supplier||"",
-          supplier_rate:row.supplier_rate??"",dispatch_location:row.dispatch_location||""})}
+          supplier_rate:row.supplier_rate??"",dispatch_location:row.dispatch_location||"",
+          issue_mode:row.issue_mode||""})}
         className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Correct figures</button>
     </div>
     {row.notes&&Object.keys(row.notes).length>0&&<div className="text-[11px] text-slate-500 mt-2">
       {Object.entries(row.notes).map(([label,value])=>`${label}: ${value}`).join(" · ")}</div>}
     {!row.min && <div className="text-[11px] text-slate-500 mt-2">
       No minimum set, so this material can never raise a below-minimum alert.</div>}
+    <div className="text-[11px] text-slate-500 mt-2">
+      Issued <b className="text-slate-700">{row.issue_mode?ISSUE_MODE_LABEL[row.issue_mode].toLowerCase():"by job order"}</b>
+      {row.issue_mode ? <> — {ISSUE_MODE_HELP[row.issue_mode]}</>
+        : <> — not set, so it is released with the job order, as it always has been.</>}
+      {trail===null && <button onClick={loadTrail} className="ml-2 font-semibold text-indigo-700 hover:underline">Where it went</button>}
+    </div>
+    {trailErr && <div role="alert" className="text-xs text-rose-700 mt-1">{trailErr}</div>}
+    {trail && (trail.length
+      ? <table className="text-xs mt-2 bg-white rounded-lg border border-slate-200" aria-label={`Where ${row.name} went`}>
+          <thead><tr className="text-[11px] text-slate-500">
+            <th className="text-left px-3 py-1.5">Job card</th><th className="text-left px-2">Sent to</th>
+            <th className="text-left px-2">Article</th><th className="text-right px-2">Issued</th>
+            <th className="text-right px-2">Returned</th><th className="text-right px-3">Kept</th></tr></thead>
+          <tbody>{trail.map(t=><tr key={t.job_id} className="border-t border-slate-100">
+            <td className="px-3 py-1 mono">{t.job_id}{t.order_no&&<span className="text-slate-400"> · {t.order_no}</span>}</td>
+            <td className="px-2">{t.fabricator||"—"}</td><td className="px-2">{t.article||"—"}</td>
+            <td className="px-2 text-right mono">{fmt(t.issued)}</td>
+            <td className="px-2 text-right mono">{t.returned?fmt(t.returned):"—"}</td>
+            <td className="px-3 text-right mono font-semibold">{fmt(t.net)} {row.uom}</td></tr>)}</tbody>
+        </table>
+      : <div className="text-[11px] text-slate-500 mt-1">
+          Nothing is logged against a job card for this material. Issues booked before the issue log existed
+          are in the Issued total above but were never itemised by card.</div>)}
   </div>;
 
   return <div className="pt-2">
@@ -368,6 +408,12 @@ function StockDetail({ row, onSaved }){
       <label className="text-xs text-slate-600">Dispatch location
         <input value={edit.dispatch_location} aria-label={`Dispatch location for ${row.name}`} onChange={e=>setEdit(d=>({...d,dispatch_location:e.target.value}))}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-36"/></label>
+      <label className="text-xs text-slate-600">How it is issued
+        <select value={edit.issue_mode} aria-label={`How ${row.name} is issued`}
+          onChange={e=>setEdit(d=>({...d,issue_mode:e.target.value}))}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm">
+          <option value="">Not set (by job order)</option>
+          {ISSUE_MODES.map(m=><option key={m} value={m}>{ISSUE_MODE_LABEL[m]}</option>)}</select></label>
       {FIELDS.map(([f,label])=>
         <label key={f} className="text-xs text-slate-600">{label}
           <input type="number" min="0" value={edit[f]} aria-label={`${label} for ${row.name}`}

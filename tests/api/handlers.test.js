@@ -1669,3 +1669,208 @@ describe("upper store",()=>{
     expect(bad.statusCode).toBe(400);
   });
 });
+
+/* WHICH MATERIAL WENT TO WHICH JOB CARD. The register kept one running Issued
+   total that the BROWSER sent, so two cards raised from two screens overwrote
+   each other and no card could be asked what it had been given. Every write
+   here books the register and the log in one transaction, on the locked row.
+   (The SQL itself is run for real in tests/api/postgres.test.js.) */
+describe("material issues",()=>{
+  const URL="/api/reference?resource=material_issues";
+  const THREAD="THREAD||SPOOL", REXINE="REXINE||MTR";
+  const reference=()=>({
+    articles:{SPIKE:{combos:{"2X5":{rates:{CUTTING:{[REXINE]:0.05},STITCHING:{[THREAD]:0.01}}}}}},
+    materials:{[THREAD]:{name:"THREAD",uom:"SPOOL",stock:40},[REXINE]:{name:"REXINE",uom:"MTR",stock:100}},
+    stock_meta:{[THREAD]:{opening:40,rec:0,issue:3,issue_mode:"on_demand"}}});
+  const JOB={id:12,article:"SPIKE",order_no:"JO1",fabricator:"Rex Internal",cancelled:false,
+    card:{lines:[{combo:"2X5",qty:200}]}};
+  function lockedClient({prior=[],job=JOB,movement=null,ref=reference()}={}){
+    const client={query:vi.fn(async(sql,params=[])=>{
+      const t=String(sql);
+      if(t.includes("from job_work where id")) return {rows:job?[job]:[]};
+      if(t.includes("from material_issues where id")) return {rows:movement?[movement]:[]};
+      if(t.includes("from material_issues where job_id")) return {rows:prior};
+      if(t.includes("from reference_data where id = 1 for update")) return {rows:[{value:ref}]};
+      if(t.includes("insert into material_issues")) return {rows:JSON.parse(params[6]).map((l,i)=>({id:100+i,
+        job_id:params[0],...l,type:params[1],basis:params[2],moved_on:params[3],note:params[4],moved_by:params[5]}))};
+      if(t.startsWith("delete from material_issues where job_id")) return {rows:prior.filter(p=>p.basis==="job_order")};
+      return {rows:[]};
+    }),release:vi.fn()};
+    dbMocks.connect.mockResolvedValue(client);
+    return client;
+  }
+  const stored=client=>JSON.parse(client.query.mock.calls.find(([s])=>String(s).includes("insert into reference_data (id, value)"))[1][0]);
+  const said=(client,text)=>client.query.mock.calls.some(([s])=>String(s).includes(text));
+  const as=role=>({cookie:`${COOKIE}=${signSession({username:"keeper",role})}`});
+  const post=(body,headers=AUTH)=>{const res=response();
+    return referenceHandler({headers,method:"POST",url:URL,query:{resource:"material_issues"},
+      body:{resource:"material_issues",...body}},res).then(()=>res);};
+
+  it("books an on-demand issue on the locked register and logs it against the job card",async()=>{
+    const client=lockedClient();
+    const res=await post({job_id:12,type:"issue",moved_on:"2026-11-10",note:"line asked",
+      lines:[{material_key:THREAD,qty:1.5,name:"made up",uom:"KG"}]},as("store"));
+    expect(res.statusCode).toBe(201);
+    expect(res.body.movements[0]).toMatchObject({job_id:12,material_key:THREAD,name:"THREAD",uom:"SPOOL",
+      qty:1.5,type:"issue",basis:"on_demand",moved_on:"2026-11-10",moved_by:"keeper"});
+    /* ADDED to the figure the transaction locked — 3 already issued, now 4.5. */
+    expect(stored(client).stock_meta[THREAD].issue).toBe(4.5);
+    expect(stored(client).materials[THREAD].stock).toBe(35.5);
+    expect(said(client,"for update")).toBe(true);
+    expect(client.query).toHaveBeenCalledWith("commit");
+    /* The store's most frequent write must not copy the reference document. */
+    expect(said(client,"reference_data_history")).toBe(false);
+  });
+
+  it("says, without refusing, that an issue is past the BOM and past the book stock",async()=>{
+    lockedClient();
+    const res=await post({job_id:12,type:"issue",moved_on:"2026-11-10",lines:[{material_key:THREAD,qty:60}]});
+    expect(res.statusCode).toBe(201);
+    /* BOM: 200 pairs x 0.01 = 2 spools. Register: 40 opening - 3 issued = 37. */
+    expect(res.body.warnings.join(" ")).toMatch(/takes the card to 60 SPOOL against a BOM requirement of 2/);
+    expect(res.body.warnings.join(" ")).toMatch(/register shows 37 SPOOL in stock, and 60 is being issued/);
+  });
+
+  it("refuses a return of more than the card holds, and writes nothing",async()=>{
+    const client=lockedClient({prior:[{id:1,material_key:THREAD,type:"issue",qty:"2"}]});
+    const res=await post({job_id:12,type:"return",moved_on:"2026-11-10",lines:[{material_key:THREAD,qty:2.5}]});
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/only 2 SPOOL is out against job card 12/);
+    expect(said(client,"insert into reference_data")).toBe(false);
+    expect(said(client,"insert into material_issues")).toBe(false);
+    expect(client.query).toHaveBeenCalledWith("rollback");
+  });
+
+  it("a return within what the card holds comes off the register's Issued total",async()=>{
+    const client=lockedClient({prior:[{id:1,material_key:THREAD,type:"issue",qty:"2"}]});
+    const res=await post({job_id:12,type:"return",moved_on:"2026-11-10",lines:[{material_key:THREAD,qty:0.5}]});
+    expect(res.statusCode).toBe(201);
+    expect(stored(client).stock_meta[THREAD].issue).toBe(2.5);
+  });
+
+  it("answers a job card that is gone as stale, not as a server error",async()=>{
+    lockedClient({job:null});
+    const res=await post({job_id:99,moved_on:"2026-11-10",lines:[{material_key:THREAD,qty:1}]});
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error).toMatch(/may have been deleted/);
+  });
+
+  it("is the Store's: a dispatch clerk and a planner are refused before any query",async()=>{
+    for(const role of ["dispatch","planner","sales","viewer"]){
+      const client=lockedClient();
+      const res=await post({job_id:12,moved_on:"2026-11-10",lines:[{material_key:THREAD,qty:1}]},as(role));
+      expect([role,res.statusCode]).toEqual([role,403]);
+      expect(client.query).not.toHaveBeenCalled();
+    }
+  });
+
+  it("undoes a mis-keyed issue and gives the quantity back to the register",async()=>{
+    const movement={id:7,job_id:12,material_key:THREAD,name:"THREAD",uom:"SPOOL",type:"issue",qty:"3"};
+    const client=lockedClient({movement,prior:[movement]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"DELETE",url:`${URL}&id=7`,query:{resource:"material_issues",id:"7"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.note).toMatch(/3 SPOOL of THREAD is back on the register/);
+    expect(stored(client).stock_meta[THREAD].issue).toBe(0);
+    expect(said(client,"delete from material_issues where id")).toBe(true);
+  });
+
+  it("will not undo an issue that a return was made against",async()=>{
+    const movement={id:7,job_id:12,material_key:THREAD,name:"THREAD",uom:"SPOOL",type:"issue",qty:"3"};
+    const client=lockedClient({movement,prior:[movement,{id:8,material_key:THREAD,type:"return",qty:"1"}]});
+    const res=response();
+    await referenceHandler({headers:AUTH,method:"DELETE",url:`${URL}&id=7`,query:{resource:"material_issues",id:"7"}},res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/Undo the return first/);
+    expect(said(client,"delete from material_issues where id")).toBe(false);
+  });
+
+  it("lists the log with the job it belongs to",async()=>{
+    dbMocks.q.mockImplementation(async sql=>String(sql).includes("from material_issues m")
+      ?{rows:[{id:"5",job_id:"12",material_key:THREAD,name:"THREAD",uom:"SPOOL",type:"issue",basis:"on_demand",
+          qty:"1.5",moved_on:"2026-11-10",fabricator:"Rex Internal",article:"SPIKE",order_no:"JO1"}]}:{rows:[]});
+    const res=response();
+    await referenceHandler({headers:as("viewer"),method:"GET",url:`${URL}&job_id=12`,query:{resource:"material_issues",job_id:"12"}},res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body[0]).toMatchObject({id:5,job_id:12,qty:1.5,fabricator:"Rex Internal"});
+  });
+
+  it("stores how a material is issued, and refuses a mode that does not exist",async()=>{
+    const set=async mode=>{
+      const client=lockedClient();
+      client.query.mockImplementation(async sql=>String(sql).includes("from reference_data where id = 1 for update")
+        ?{rows:[{value:reference()}]}:{rows:[]});
+      const res=response();
+      await referenceHandler({headers:as("store"),method:"PATCH",url:"/api/reference",
+        body:{stock_meta:{[REXINE]:{issue_mode:mode}}}},res);
+      return {res,client};
+    };
+    const good=await set("on_demand");
+    expect(good.res.statusCode).toBe(200);
+    const write=good.client.query.mock.calls.find(([s])=>String(s).includes("insert into reference_data (id, value)"));
+    expect(JSON.parse(write[1][0]).stock_meta[REXINE].issue_mode).toBe("on_demand");
+    const bad=await set("sometimes");
+    expect(bad.res.statusCode).toBe(400);
+    expect(bad.res.body.error).toMatch(/issue mode for REXINE\|\|MTR must be one of: job_order, on_demand/);
+  });
+
+  /* The job-order endpoint books the release itself, from the stored card. */
+  const jobQueries=({hand=[]}={})=>dbMocks.q.mockImplementation(async sql=>{
+    const t=String(sql);
+    if(t.includes("from fabricators")) return {rows:[{name:"Rex Internal",type:"internal_line",rate:0,payable:false,active:true}]};
+    if(t.includes("from orders where order_no")) return {rows:[{order_no:"JO1",article_code:"SPIKE",lines:[{combo:"2X5",qty:500}]}]};
+    if(t.startsWith("insert into job_work")) return {rows:[{id:"12",article:"SPIKE",order_no:"JO1",qty:200,received:0,rate:0,
+      card:{lines:[{combo:"2X5",qty:200}]}}]};
+    if(t.includes("from material_issues where job_id")) return {rows:hand};
+    if(t.includes("from job_work where id")) return {rows:[{id:12,status:"closed",received:0,qty:200,order_no:"JO1",archived:false}]};
+    return {rows:[]};
+  });
+  const raise=()=>{const res=response();
+    return dispatchHandler({headers:AUTH,method:"POST",url:"/api/dispatches?resource=job_work",
+      body:{resource:"job_work",fabricator:"Rex Internal",article:"SPIKE",order_no:"JO1",qty:200,stage:"STITCHING",
+        issued_on:"2026-11-10",card:{lines:[{combo:"2X5",qty:200}]}}},res).then(()=>res);};
+
+  it("raising a job card releases its by-job-order materials and leaves the on-demand ones",async()=>{
+    jobQueries(); const client=lockedClient();
+    const res=await raise();
+    expect(res.statusCode).toBe(201);
+    expect(res.body.material_release).toEqual({ok:true,released:1,on_demand:1,on_demand_materials:["THREAD"]});
+    const insert=client.query.mock.calls.find(([s])=>String(s).includes("insert into material_issues"));
+    expect(insert[1].slice(0,4)).toEqual(["12","issue","job_order","2026-11-10"]);
+    /* Rexine only: 200 pairs x 0.05. Thread is on demand and is not booked. */
+    expect(JSON.parse(insert[1][6])).toEqual([{material_key:REXINE,name:"REXINE",uom:"MTR",qty:10}]);
+    expect(stored(client).stock_meta[REXINE]).toEqual({opening:100,issue:10});
+    expect(stored(client).stock_meta[THREAD].issue).toBe(3);
+  });
+
+  it("a job order still stands when its material release fails, and says what was not booked",async()=>{
+    jobQueries(); dbMocks.connect.mockRejectedValue(new Error("connection refused"));
+    const res=await raise();
+    expect(res.statusCode).toBe(201);
+    expect(res.body.id).toBe("12");
+    expect(res.body.material_release).toEqual({ok:false,error:"connection refused"});
+  });
+
+  const removeJob=()=>{const res=response();
+    return dispatchHandler({headers:AUTH,method:"DELETE",url:"/api/dispatches?resource=job_work&id=12&mode=delete",
+      query:{resource:"job_work",id:"12",mode:"delete"}},res).then(()=>res);};
+
+  it("will not delete a job card that material was issued to by hand",async()=>{
+    jobQueries({hand:[{id:1,basis:"job_order"},{id:2,basis:"on_demand"}]});
+    const res=await removeJob();
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/1 material issue was recorded by hand against job card 12/);
+    expect(dbMocks.q.mock.calls.some(([s])=>String(s).startsWith("delete from job_work"))).toBe(false);
+  });
+
+  it("deleting a mis-keyed job card takes its automatic release back to the store",async()=>{
+    jobQueries({hand:[{id:1,basis:"job_order"}]});
+    const ref=reference(); ref.stock_meta[REXINE]={opening:100,issue:10};
+    const client=lockedClient({ref,prior:[{basis:"job_order",material_key:REXINE,qty:"10"}]});
+    const res=await removeJob();
+    expect(res.statusCode).toBe(200);
+    expect(res.body.note).toMatch(/1 material went back on the stock register/);
+    expect(stored(client).stock_meta[REXINE].issue).toBe(0);
+    expect(dbMocks.q.mock.calls.some(([s])=>String(s).startsWith("delete from job_work"))).toBe(true);
+  });
+});

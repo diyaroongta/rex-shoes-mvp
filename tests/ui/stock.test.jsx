@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const apiMocks=vi.hoisted(()=>({patchReference:vi.fn(),addMaterial:vi.fn()}));
+const apiMocks=vi.hoisted(()=>({patchReference:vi.fn(),addMaterial:vi.fn(),listMaterialIssues:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>apiMocks);
 const ref=vi.hoisted(()=>({REF:{
   materials:{
@@ -111,4 +111,34 @@ it("adds a new material with its supplier, supplier rate and dispatch location",
   await user.click(screen.getByRole("button",{name:"Add material"}));
   expect(apiMocks.addMaterial).toHaveBeenCalledWith(expect.objectContaining({
     name:"EVA SHEET",uom:"PCS",supplier:"Shree Polymers",supplier_rate:42.5,dispatch_location:"Bahadurgarh"}));
+});
+
+/* How a material leaves the store is set per material. Unset is not a third
+   mode: it is released with the job order, as it always has been. */
+it("sets how a material is issued, and says what an unset one does",async()=>{
+  const user=userEvent.setup();
+  render(<StockTab/>);
+  await user.click(screen.getByText("REXINE 54\" BLACK"));
+  expect(screen.getByText(/not set, so it is released with the job order/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button",{name:"Correct figures"}));
+  await user.selectOptions(screen.getByLabelText("How REXINE 54\" BLACK is issued"),"on_demand");
+  await user.click(screen.getByRole("button",{name:"Save"}));
+  expect(apiMocks.patchReference).toHaveBeenCalledWith({stock_meta:{"REXINE 54\" BLACK||MTR":{issue_mode:"on_demand"}}});
+});
+
+it("shows which job cards a material went to, when asked",async()=>{
+  const key="REXINE 54\" BLACK||MTR";
+  apiMocks.listMaterialIssues.mockResolvedValue([
+    {id:1,job_id:12,material_key:key,type:"issue",qty:16,moved_on:"2026-11-01",fabricator:"Rex Internal",article:"SPIKE",order_no:"JO1"},
+    {id:2,job_id:12,material_key:key,type:"return",qty:2,moved_on:"2026-11-04",fabricator:"Rex Internal",article:"SPIKE",order_no:"JO1"},
+  ]);
+  const user=userEvent.setup();
+  render(<StockTab/>);
+  await user.click(screen.getByText("REXINE 54\" BLACK"));
+  expect(apiMocks.listMaterialIssues).not.toHaveBeenCalled();       // only when asked for
+  await user.click(screen.getByRole("button",{name:"Where it went"}));
+  const trail=await screen.findByRole("table",{name:"Where REXINE 54\" BLACK went"});
+  expect(apiMocks.listMaterialIssues).toHaveBeenCalledWith({material_key:key});
+  expect(within(trail).getByText("Rex Internal")).toBeInTheDocument();
+  expect(within(trail).getByText("14 MTR")).toBeInTheDocument();    // 16 issued, 2 back
 });

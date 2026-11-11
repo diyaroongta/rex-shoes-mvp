@@ -123,3 +123,38 @@ it("prints an order's calendar date as that day in any time zone", () => {
     }
   } finally { if(was===undefined) delete process.env.TZ; else process.env.TZ = was; }
 });
+
+/* The stock sheet is booked by the SERVER when the card is raised. This screen
+   used to send the register a new running Issued total built from its own copy
+   of it, so two cards raised from two screens overwrote each other. It now
+   only reports what the server did — including what it did NOT release. */
+it("reports the server's material release and sends no stock total of its own",async()=>{
+  mocks.issueJobWork.mockImplementation(async payload=>({ id:81, fabricator:"Rex Internal", order_no:"JO1",
+    qty:payload.qty, received:0, status:"issued", card:payload.card,
+    material_release:{ ok:true, released:6, on_demand:2, on_demand_materials:["THREAD","VELCRO"] } }));
+  const user=userEvent.setup();
+  render(<JobCardTab orders={[ORDER]} />);
+  await user.selectOptions(await screen.findByLabelText("Send to"), "Rex Internal");
+  await user.selectOptions(await screen.findByLabelText("Current Order"), "JO1");
+  await user.click(await screen.findByRole("button",{name:/Preview Job Order/i}));
+  await user.click(await screen.findByRole("button",{name:/Confirm & Create Job Order/i}));
+  const note=await screen.findByText(/Job order 81 created/i);
+  expect(note).toHaveTextContent("6 materials booked out on the stock sheet");
+  expect(note).toHaveTextContent("2 on-demand materials were not released");
+  /* Only the job order itself was sent. */
+  expect(Object.keys(mocks.issueJobWork.mock.calls[0][0])).not.toContain("stock_meta");
+});
+
+it("says so when the job order stands but its materials were not booked",async()=>{
+  mocks.issueJobWork.mockImplementation(async payload=>({ id:82, fabricator:"Rex Internal", order_no:"JO1",
+    qty:payload.qty, received:0, status:"issued", card:payload.card,
+    material_release:{ ok:false, error:"connection refused" } }));
+  const user=userEvent.setup();
+  render(<JobCardTab orders={[ORDER]} />);
+  await user.selectOptions(await screen.findByLabelText("Send to"), "Rex Internal");
+  await user.selectOptions(await screen.findByLabelText("Current Order"), "JO1");
+  await user.click(await screen.findByRole("button",{name:/Preview Job Order/i}));
+  await user.click(await screen.findByRole("button",{name:/Confirm & Create Job Order/i}));
+  expect(await screen.findByText(/Job order 82 created/i))
+    .toHaveTextContent("The stock sheet was NOT updated (connection refused)");
+});
