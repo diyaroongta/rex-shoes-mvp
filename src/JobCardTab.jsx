@@ -14,6 +14,10 @@ import { cardBalance, usesStock, UPPER_START_STAGE } from "../shared/production-
 import { productionOrder, awaitingDecision, allocationSummary } from "../shared/stock-plan.js";
 import { materialTotals } from "../shared/bom-components.js";
 import StockAtHand from "./StockAtHand.jsx";
+import { materialCheck } from "../shared/can-we-make-it.js";
+import { onHandBySize } from "../shared/upper-store.js";
+import { orderColour } from "../shared/stock-plan.js";
+import { upperShortage } from "../shared/store-register.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const today = () => todayIso();
@@ -138,6 +142,27 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
     ...(fromUppers?{from_stage:UPPER_START_STAGE}:{}),
   })),[qty,sizes,order,fromUppers]);
   const totalPairs=lines.reduce((a,line)=>a+line.qty,0);
+  /* IS IT IN STOCK? Checked as the card is built, so the answer comes before
+     Issue, not after. A moulding card needs its UPPERS from the upper store,
+     size by size; every card needs its raw material. Short is WARNED — the
+     job order still issues — and raw material short for an open card is then
+     listed on Stores → Raw Material Store until the delivery is booked. */
+  const [upperMoves,setUpperMoves]=useState(null);
+  useEffect(()=>{
+    if(!active||!fromUppers||!order) return;
+    let live=true;
+    /* Through a resolved promise: a failed or missing answer must leave the
+       card buildable, never take the screen down with it. */
+    Promise.resolve().then(()=>api.listUpperStore())
+      .then(d=>live&&setUpperMoves((d&&d.moves)||[])).catch(()=>live&&setUpperMoves([]));
+    return ()=>{live=false;};
+  },[active,fromUppers,order&&order.order_no]);
+  const upperColour=order?orderColour(order,(INPUTS.articles||{})[order.article_code]):"";
+  const uppersShort=useMemo(()=>fromUppers&&order&&upperMoves
+    ? upperShortage(lines,onHandBySize(upperMoves,order.article_code,upperColour)) : [],
+    [fromUppers,order,upperMoves,lines,upperColour]);
+  const rmShort=useMemo(()=>order?materialCheck(lines,(INPUTS.articles||{})[order.article_code],
+    INPUTS.materials||{},INPUTS.stock_meta||{}).short:[],[order,lines]);
   /* Only meaningful while the card is still a DRAFT. Once it has been issued
      the balance has already been reduced by these very pairs, so comparing the
      draft against the new remaining accuses the clerk of over-assigning the
@@ -222,6 +247,9 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       }else if(release){
         stockNote=` The stock sheet was NOT updated (${release.error||"unknown reason"}) — book the issue on Issue Material yourself.`;
       }
+      if(rmShort.length) stockNote+=` ⚠ ${rmShort.length} material${rmShort.length===1?" was":"s were"} short when it was raised `
+        + `(${rmShort.slice(0,4).map(r=>r.name).join(", ")}${rmShort.length>4?"…":""}) — listed on Stores → Raw Material Store until the delivery is booked.`;
+      if(uppersShort.length) stockNote+=` ⚠ Uppers short in the upper store: ${uppersShort.map(r=>`size ${r.size} ${fmt(r.short)}`).join(", ")}.`;
       setMsg(`Job order ${made.id} created for ${made.fabricator}: ${fmt(made.qty)} pairs.${stockNote} `
         + `Print it below, or choose another order to raise the next one. `
         + `If the PDF does not come through, reopen it any time from Job Orders Database → Job card.`);
@@ -370,6 +398,15 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       {/* A moulding-start card takes nothing for cutting or stitching. Where the
           BOM lists nothing from moulding on, that is an EMPTY list, not a
           missing BOM — and "no BOM rates on file" would say the opposite. */}
+      {fromUppers&&lines.length>0&&(upperMoves===null
+        ? <div className="mt-3 text-[11px] text-slate-500">Checking the upper store…</div>
+        : uppersShort.length
+          ? <div role="alert" className="mt-3 text-xs rounded-lg border-2 border-rose-300 bg-rose-50 text-rose-900 px-3 py-2">
+              <b>Uppers are short in the upper store</b>{upperColour&&<> ({order.article_code} · {upperColour})</>}:{" "}
+              {uppersShort.map(r=>`size ${r.size} — ${fmt(r.wanted)} wanted, ${fmt(Math.max(0,r.on_hand))} on the shelf`).join("; ")}.
+              {" "}The job order can still be created; moulding cannot start on those pairs until the uppers are received.</div>
+          : <div className="mt-3 text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2">
+              Uppers for every size on this card are in the upper store{upperColour&&<> ({upperColour})</>}.</div>)}
       {fromUppers&&article&&!Object.keys(materialTotals(lines,article)).length
         ? <div className="mt-3 text-xs rounded-lg border border-slate-200 bg-slate-50 text-slate-700 px-3 py-2">
             <b>No raw material is booked out for this card.</b> Its uppers are already made, and {order.article_code}'s BOM lists

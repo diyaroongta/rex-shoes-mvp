@@ -22,7 +22,8 @@ import StatusTab from "./StatusTab.jsx";
 import CatalogueTab from "./CatalogueTab.jsx";
 import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
-import StockTab from "./StockTab.jsx";
+import StockTab, { stockRows } from "./StockTab.jsx";
+import { StoreStrip, StoreAlerts, RmStockSheet, IssueRegister } from "./RawMaterialStore.jsx";
 import DispatchTab from "./DispatchTab.jsx";
 import GatePassTab from "./GatePassTab.jsx";
 import PartiesTab from "./PartiesTab.jsx";
@@ -131,6 +132,9 @@ export default function App({ user=null, onSignOut=null }={}){
   const tab = canSeeTab(role, rawTab) ? rawTab : defaultTab(role);
   const [upperSeen, setUpperSeen] = useState(false);
   useEffect(()=>{ if(tab==="upper_store") setUpperSeen(true); },[tab]);
+  /* Item Register and RM Stock are both the Raw Material Store's "stock"
+     screen; which of the two is showing. */
+  const [rmView, setRmView] = useState("sheet");
   const [issueSeen,setIssueSeen]=useState(false);
   useEffect(()=>{ if(tab==="stock_issue") setIssueSeen(true); },[tab]);
   const [intakeMode, setIntakeMode] = useState("slip");   // "slip" | "sheet", inside PI generation
@@ -485,21 +489,30 @@ export default function App({ user=null, onSignOut=null }={}){
      going Orders → Production → back to Orders. The four numbered groups are
      that walk, one step each; `FLOW` is the single definition, shared with
      the step strip under the header. */
+  const rmKeys = ["stock","material_new","stock_add","procurement"];
+  const rmBelowMin = stockRows().filter(r=>r.alert).length;
   const nav = [
     ["Overview", [
       ["mis","Executive MIS", {n:state.totals.sla.breach, tone:"#BE123C"}],
     ]],
     ...FLOW.map(({group, tabs}) => [group, tabs.map(([k,label]) =>
       k==="orders" ? [k,label,{n:lateCount, tone:"#BE123C"}] : [k,label])]),
-    /* Five pages, in the order the store works: goods come IN, material goes
-       OUT against a job card, the register is CHECKED, what is short is
-       BOUGHT, and a material nobody has stocked before is CREATED. */
-    ["Materials", [
-      ["stock_add","Add Stock"],
+    /* THE STORES. Three stores, each one screen with its own sub-pages (the
+       client's list: add item, item register, store stock — and for raw
+       material, the issue register and purchase orders too). The Raw Material
+       Store entry opens on the first of its pages the role may see, and stays
+       lit on all of them. */
+    ["Stores", [
+      [rmKeys.find(k=>canSeeTab(role,k))||null,"Raw Material Store",
+        {n:rmBelowMin, tone:"#BE123C"}, rmKeys],
+      ["upper_store","Upper Store"],
+      ["finished","FG Store"],
+    ]],
+    /* What used to be "Materials": material going to a job card, and the
+       buying list. Adding, counting and receiving moved into the store. */
+    ["Raw Materials", [
       ["stock_issue","Issue Material"],
-      ["stock","Check Stock"],
       ["procurement","Procurement", {n:state.procurement.length, tone:"#B45309"}],
-      ["material_new","Add New Material"],
     ]],
     /* The factory's own sheets, downloadable: planning sheet, MTS/MTO stock,
        packing report, raw-material count, purchase orders, job cards. */
@@ -513,7 +526,7 @@ export default function App({ user=null, onSignOut=null }={}){
       ["data","Data & BOM"],
       ["profiles","Profiles & access"],
     ]],
-  ].map(([group, items]) => [group, items.filter(([key]) => canSeeTab(role, key))])
+  ].map(([group, items]) => [group, items.filter(([key]) => key && canSeeTab(role, key))])
    .filter(([, items]) => items.length);
 
   const errBanner = loadErr ? (
@@ -749,6 +762,13 @@ export default function App({ user=null, onSignOut=null }={}){
           <PlanBoard state={state} caps={caps} actuals={productionActuals}
             setPlanOverride={canEditSchedule(role)?setPlanOverride:null} onReplan={syncAll}
             planWith={planWith} onApplySheet={canEditSchedule(role)?setPlanOverrides:null} />}
+        {rmKeys.includes(tab) && <StoreStrip title="Raw Material Store" items={[
+            ["material_new","add","Add Item"],["stock","items","Item Register"],["stock","sheet","RM Stock"],
+            ["stock_add","register","Issue Register"],["procurement","po","Create Purchase Order"],
+          ].filter(([k])=>canSeeTab(role,k)).map(([k,v,label])=>({label,
+            on: tab===k && (k!=="stock" || rmView===v),
+            onClick: ()=>{ if(k==="stock") setRmView(v); setTab(k); }}))} />}
+        {rmKeys.includes(tab) && tab!=="material_new" && <StoreAlerts jobs={jobs} version={refTick} />}
         {tab==="procurement" && <ProcurementTab state={state} role={role}
           onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
@@ -767,8 +787,12 @@ export default function App({ user=null, onSignOut=null }={}){
               canWrite={can(role,"POST","/api/reference?resource=material_issues",{}).allowed}
               onChanged={()=>setRefTick(t=>t+1)} />
           </div>}
-        {tab==="stock_add" && <StockTab mode="add" state={state} onChanged={()=>setRefTick(t=>t+1)} onViewAll={()=>setTab("stock")} />}
-        {tab==="stock" && <StockTab mode="view" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="stock_add" && <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+          <IssueRegister canWrite={can(role,"POST","/api/reference?resource=store_register",{resource:"store_register"}).allowed}
+            onChanged={()=>setRefTick(t=>t+1)} /></div>}
+        {tab==="stock" && rmView==="items" && <StockTab mode="view" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
+        {tab==="stock" && rmView!=="items" && <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+          <RmStockSheet version={refTick} /></div>}
         {tab==="material_new" && <StockTab mode="material" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
         {tab==="parties" && <PartiesTab />}
         {tab==="fabricators" && <FabricatorsTab />}
@@ -2338,9 +2362,10 @@ const FLOW = [
   { step:1, group:"Orders",     tabs:[["intake","PI generation"],["pis","PI database"],["orders","Order Book"]] },
   { step:2, group:"Job orders", tabs:[["jobs","Create Job Order"],["jobwork","Job Orders Database"]] },
   { step:3, group:"Production", tabs:[["schedule","Schedule"],["production_input","Daily plan vs achievement"],
-                                      ["status","Production status"],["upper_store","Upper store"],
+                                      ["status","Production status"],
                                       ["plan","Production plan"],["machines","Machine load"]] },
-  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["finished","Finished goods"],["repair","Repair"]] },
+  /* The upper store and finished goods are on the Stores menu now. */
+  { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["repair","Repair"]] },
 ];
 const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
 
@@ -2392,18 +2417,18 @@ const VIEWS = {
   plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
   machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
   procurement: {title:"Procurement",        sub:"What to buy, purchase orders, and what is still to arrive"},
-  stock_add:   {title:"Add Stock",          sub:"Goods received into the store"},
+  stock_add:   {title:"Raw Material Store", sub:"Issue Register — what the store received and issued, day by day"},
   stock_issue: {title:"Issue Material",     sub:"Hand material to the floor against a job card, take it back, and see what each card has had"},
-  stock:       {title:"Check Stock",        sub:"What is in the store, counted against the register"},
-  material_new:{title:"Add New Material",   sub:"A material the store has not stocked before — with its supplier"},
-  finished:    {title:"Finished goods",     sub:"MTS and MTO stock — made shoes waiting to ship"},
+  stock:       {title:"Raw Material Store", sub:"The item register and the stock sheet, month by month"},
+  material_new:{title:"Raw Material Store", sub:"Add an item the store has not stocked before — with its code, supplier and terms"},
+  finished:    {title:"FG Store",           sub:"Finished goods: MTS and MTO stock — made shoes waiting to ship"},
   formats:     {title:"Formats & sheets",   sub:"The factory's own sheets, filled from the system"},
   parties:     {title:"Parties & terms",    sub:"Customers and their agreed commercial terms"},
   fabricators: {title:"Fabricators & lines",sub:"Internal stitching lines and outside job workers, in one list"},
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
-  upper_store: {title:"Upper store",       sub:"Stitched uppers in from the line or a fabricator, out to pasting and moulding"},
+  upper_store: {title:"Upper Store",       sub:"Stitched uppers in from the line or a fabricator, out to pasting and moulding"},
   repair:      {title:"Repair",            sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
 };
@@ -2961,7 +2986,10 @@ function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
   },[open]);
 
   const go = k => { setTab(k); setOpen(null); };
-  const groupHasTab = items => items.some(([k]) => k === tab);
+  /* An entry may stand for several screens (the Raw Material Store's
+     sub-pages): its fourth element lists them, and it stays lit on each. */
+  const isOn = ([k,,,also]) => k === tab || (also || []).includes(tab);
+  const groupHasTab = items => items.some(isOn);
 
   return <div data-noprint ref={wrap} style={{position:"relative"}}>
     {open !== null && <div className="menuscrim" onClick={()=>setOpen(null)} />}
@@ -2990,8 +3018,8 @@ function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
                 {items.reduce((n,[,,b])=>n+((b&&b.n)||0),0)}</span>}
           </button>
           {open===gi && <div className="menupanel" role="menu">
-            {items.map(([k,label,badge])=>(
-              <button key={k} className="menuitem" role="menuitem" data-on={tab===k?"1":"0"}
+            {items.map(([k,label,badge,also])=>(
+              <button key={k} className="menuitem" role="menuitem" data-on={isOn([k,label,badge,also])?"1":"0"}
                 onClick={()=>go(k)}>
                 <span>{label}</span>
                 {badge && badge.n>0 &&

@@ -361,6 +361,27 @@ create table if not exists material_issues (
 create index if not exists material_issues_job_idx on material_issues (job_id, id);
 create index if not exists material_issues_material_idx on material_issues (material_key, id);
 
+-- The Raw Material Store's DAY REGISTER: received and issued, by date, not
+-- against a job card — the REC. / ISSUE pair the client's stock sheet keeps
+-- for every day of the month. Each row books the same quantity onto the
+-- register (reference_data.stock_meta) in the same transaction
+-- (api/_lib/store-register.js). No reference_data_history snapshot is taken:
+-- the row is the history. Created on first use by the API as well.
+create table if not exists store_movements (
+  id           bigserial primary key,
+  material_key text        not null,
+  name         text        not null,
+  uom          text        not null,
+  type         text        not null check (type in ('rec','issue')),
+  qty          numeric     not null check (qty > 0),
+  moved_on     date        not null,
+  note         text        not null default '',
+  moved_by     text,
+  created_at   timestamptz not null default now()
+);
+create index if not exists store_movements_day_idx on store_movements (moved_on, id);
+create index if not exists store_movements_material_idx on store_movements (material_key, id);
+
 -- Hiding a dispatch is NOT undoing it. The goods really did ship, so the pairs
 -- must keep counting against the order — the row is only taken off the history
 -- list. Undoing (see dispatches_removed) is the other thing entirely: it says

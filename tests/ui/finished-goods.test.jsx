@@ -40,7 +40,7 @@ it("enters an opening count size by size",async()=>{
   const user=userEvent.setup();
   const onChanged=vi.fn();
   render(<FinishedGoodsTab state={state} moves={[]} jobs={[]} onChanged={onChanged}/>);
-  await user.click(screen.getByRole("tab",{name:"Enter stock"}));
+  await user.click(screen.getByRole("tab",{name:"Add item"}));
   await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
   await user.type(screen.getByLabelText("Pairs of size 3"),"36");
   await user.click(screen.getByRole("button",{name:/Record 36 pairs/}));
@@ -51,7 +51,7 @@ it("enters an opening count size by size",async()=>{
 it("refuses an issue that does not name the order",async()=>{
   const user=userEvent.setup();
   render(<FinishedGoodsTab state={state} moves={[]} jobs={[]}/>);
-  await user.click(screen.getByRole("tab",{name:"Enter stock"}));
+  await user.click(screen.getByRole("tab",{name:"Add item"}));
   await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
   await user.selectOptions(screen.getByLabelText("Movement kind"),"issued");
   await user.type(screen.getByLabelText("Pairs of size 2"),"5");
@@ -62,5 +62,5 @@ it("refuses an issue that does not name the order",async()=>{
 
 it("hides entry from a read-only role",()=>{
   render(<FinishedGoodsTab state={state} moves={[]} jobs={[]} readOnly/>);
-  expect(screen.queryByRole("tab",{name:"Enter stock"})).toBeNull();
+  expect(screen.queryByRole("tab",{name:"Add item"})).toBeNull();
 });

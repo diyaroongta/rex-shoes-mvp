@@ -12,6 +12,8 @@ import { validatePurchaseOrder, validatePurchaseReceipt,
          purchaseOrderProgress } from "../shared/purchase-orders.js";
 import { materialIssues } from "./_lib/material-issues.js";
 import { ISSUE_MODES } from "../shared/material-issues.js";
+import { storeRegister } from "./_lib/store-register.js";
+import { storeItemName, cleanSize } from "../shared/store-register.js";
 
 /* Reference data lives in the database so a BOM upload never needs a deploy.
    The bundled inputs.js is the seed used on first run. */
@@ -52,6 +54,60 @@ async function mutateReference(changeType, article, mutation, { catalogue=false 
     try{await client.query("rollback");}catch(_){ }
     throw e;
   }finally{client.release();}
+}
+
+/* One new item for the register. The colour AND the size are folded into the
+   NAME — black and blue rexine are bought and stocked apart, and so is a sole
+   in 5C and in 6C — so every key stays the flat NAME||UOM that netting and the
+   BOM import read, and an item added by hand lands on the same key as one
+   added by upload. Throws a sentence the caller answers as a 400. */
+function prepareMaterial(m, label = ""){
+  const name = String(m.name || "").replace(/\s+/g," ").trim().toUpperCase();
+  const uom  = String(m.uom  || "").replace(/\s+/g," ").trim().toUpperCase();
+  if(!name) throw new Error(`${label}A material name is required`);
+  if(!uom)  throw new Error(`${label}A unit of measure is required — it is part of the material's identity`);
+  if(name.length > 200) throw new Error(`${label}Material name must be 200 characters or fewer`);
+  const num = (v,what) => {
+    if(v == null || v === "") return 0;
+    const n = Number(v);
+    if(!Number.isFinite(n) || n < 0) throw new Error(`${label}${what} must be 0 or more`);
+    return n;
+  };
+  const opening = num(m.opening,"Opening stock"), min = num(m.min,"Minimum"), rate = num(m.rate,"Rate");
+  const supplierRate = num(m.supplier_rate,"Supplier rate");
+  const words = v => String(v || "").replace(/\s+/g," ").trim().slice(0,120);
+  const size = cleanSize(m.size);
+  const full = storeItemName(colouredMaterialName(name, m.colour), size);
+  const key = `${full}||${uom}`;
+  const meta = { opening, rec:0, issue:0,
+    ...(min ? { min_stock:min } : {}), ...(rate ? { rate } : {}),
+    ...(words(m.category) ? { category:words(m.category).toUpperCase() } : {}),
+    ...(size ? { size } : {}),
+    ...(words(m.sku) ? { sku:words(m.sku).toUpperCase() } : {}),
+    ...(words(m.supplier) ? { supplier:words(m.supplier) } : {}),
+    ...(words(m.terms) ? { terms:words(m.terms) } : {}),
+    ...(supplierRate ? { supplier_rate:supplierRate } : {}),
+    ...(words(m.dispatch_location) ? { dispatch_location:words(m.dispatch_location) } : {}) };
+  const material = { name: full, uom, stock: opening,
+    ...(String(m.colour||"").trim() ? { colour: String(m.colour).trim().toUpperCase() } : {}) };
+  return { key, material, meta };
+}
+
+/* AN ITEM CODE MEANS ONE ITEM. A purchase order and the issue register name
+   items by it, so two items sharing one is refused rather than left for the
+   supplier to guess. `incoming` is [{key, meta:{sku}}]. */
+function skuProblem(ref, incoming){
+  const owner = new Map();
+  for(const [key, meta] of Object.entries((ref && ref.stock_meta) || {}))
+    if(meta && meta.sku) owner.set(String(meta.sku).toUpperCase(), key);
+  for(const p of incoming){
+    const sku = p.meta && p.meta.sku;
+    if(!sku) continue;
+    const held = owner.get(sku);
+    if(held && held !== p.key) return `Item code ${sku} is already used by ${held.split("||")[0]}. An item code has to mean one item.`;
+    owner.set(sku, p.key);
+  }
+  return null;
 }
 
 /* Optional standard colours for an article. Free text, so the only rules are
@@ -369,6 +425,10 @@ export default wrap(async (req, res) => {
   if(String((req.query||{}).resource||"")==="material_issues"
      || String((req.body||{}).resource||"")==="material_issues")
     return materialIssues(req,res);
+  /* The Raw Material Store's day register: received and issued, by date. */
+  if(String((req.query||{}).resource||"")==="store_register"
+     || String((req.body||{}).resource||"")==="store_register")
+    return storeRegister(req,res);
   if(req.method === "GET"){
     /* The revision log, so a wrong upload can actually be undone. Snapshots
        nobody can restore are not a safety net. Values are omitted here — the
@@ -627,61 +687,55 @@ export default wrap(async (req, res) => {
        BOM upload, and the Stock register refuses a figure against a material it
        does not know — so a delivery of something new cannot be recorded at all
        until somebody edits a workbook. */
-    if(body.new_material && typeof body.new_material === "object"){
-      const m = body.new_material;
-      const name = String(m.name || "").replace(/\s+/g," ").trim().toUpperCase();
-      const uom  = String(m.uom  || "").replace(/\s+/g," ").trim().toUpperCase();
-      if(!name) return fail(res, 400, "A material name is required");
-      if(!uom)  return fail(res, 400, "A unit of measure is required — it is part of the material's identity");
-      if(name.length > 200) return fail(res, 400, "Material name must be 200 characters or fewer");
-
-      const num = (v,label) => {
-        if(v == null || v === "") return 0;
-        const n = Number(v);
-        if(!Number.isFinite(n) || n < 0) throw new Error(`${label} must be 0 or more`);
-        return n;
-      };
-      let opening, min, rate, supplierRate;
-      try{ opening = num(m.opening,"Opening stock"); min = num(m.min,"Minimum"); rate = num(m.rate,"Rate");
-           supplierRate = num(m.supplier_rate,"Supplier rate"); }
+    /* ONE item, from Add Item, or MANY from the stock-sheet import — the same
+       rules either way, and a batch is ONE transaction and ONE history
+       snapshot: six hundred single adds would have written the whole reference
+       document into history six hundred times, on a database with a cap. */
+    const single = body.new_material && typeof body.new_material === "object";
+    if(single || Array.isArray(body.new_materials)){
+      const list = single ? [body.new_material] : body.new_materials;
+      if(!list.length) return fail(res, 400, "No items to add");
+      if(list.length > 2000) return fail(res, 400, "At most 2000 items can be added at once");
+      let prepared;
+      try{ prepared = list.map((m, i) => prepareMaterial(m || {}, single ? "" : `Item ${i + 1}: `)); }
       catch(e){ return fail(res, 400, e.message); }
-      const supplier = String(m.supplier || "").replace(/\s+/g," ").trim().slice(0,120);
-      const dispatchLocation = String(m.dispatch_location || "").replace(/\s+/g," ").trim().slice(0,120);
+      const keys = new Set();
+      for(const p of prepared){
+        if(keys.has(p.key)) return fail(res, 400, `${p.key} appears more than once in this upload`);
+        keys.add(p.key);
+      }
 
       /* Checked BEFORE the transaction so the answer is a sentence rather than
          a 500. The in-transaction check below stays as the real guard — two
          people adding the same material at once would both pass this one. */
       const existing = await current();
-      const preview = `${colouredMaterialName(name, m.colour)}||${uom}`;
-      if((existing.materials || {})[preview])
-        return fail(res, 409, `${preview} is already on the material list. `
-          + `Search for it on the Stock register and set its figures there.`);
+      const taken = prepared.filter(p => (existing.materials || {})[p.key]).map(p => p.key);
+      if(taken.length)
+        return fail(res, 409, `${taken.slice(0, 5).join(", ")}${taken.length > 5 ? ` and ${taken.length - 5} more` : ""} `
+          + `${taken.length === 1 ? "is" : "are"} already on the material list. Find ${taken.length === 1 ? "it" : "them"} on the Item Register and set the figures there.`);
+      const skuClash = skuProblem(existing, prepared);
+      if(skuClash) return fail(res, 409, skuClash);
 
-      let created = null, key = "";
+      const created = [];
       try{
-      await mutateReference("material-add", null, async ref => {
-        /* The colour is folded into the NAME, because black and blue rexine are
-           bought, stocked and netted separately — the same rule the BOM import
-           follows, so a material added here and one added by upload land on the
-           same key rather than becoming two materials. */
-        const full = colouredMaterialName(name, m.colour);
-        key = `${full}||${uom}`;
-        if(ref.materials[key]) throw Object.assign(new Error(`${key} is already on the material list`), {status:409});
-        ref.materials[key] = { name: full, uom, stock: opening,
-          ...(String(m.colour||"").trim() ? { colour: String(m.colour).trim().toUpperCase() } : {}) };
+      await mutateReference(single ? "material-add" : "material-import", null, async ref => {
         ref.stock_meta = ref.stock_meta || {};
-        ref.stock_meta[key] = { opening, rec:0, issue:0,
-          ...(min ? { min_stock:min } : {}), ...(rate ? { rate } : {}),
-          ...(supplier ? { supplier } : {}), ...(supplierRate ? { supplier_rate:supplierRate } : {}),
-          ...(dispatchLocation ? { dispatch_location:dispatchLocation } : {}) };
-        created = ref.materials[key];
+        const clash = skuProblem(ref, prepared);
+        if(clash) throw Object.assign(new Error(clash), {status:409});
+        for(const p of prepared){
+          if(ref.materials[p.key]) throw Object.assign(new Error(`${p.key} is already on the material list`), {status:409});
+          ref.materials[p.key] = p.material;
+          ref.stock_meta[p.key] = p.meta;
+          created.push({ material_key:p.key, material:p.material });
+        }
       });
       }catch(e){
         if(e && e.status === 409) return fail(res, 409, e.message);
         throw e;
       }
 
-      return res.status(201).json({ ok:true, material_key:key, material:created });
+      if(single) return res.status(201).json({ ok:true, material_key:created[0].material_key, material:created[0].material });
+      return res.status(201).json({ ok:true, created:created.length });
     }
 
     if(body.bom_removal && typeof body.bom_removal === "object"){
@@ -805,7 +859,14 @@ export default wrap(async (req, res) => {
               reject(`issue mode for ${key} must be one of: ${ISSUE_MODES.join(", ")}`);
             cur.issue_mode = mode; continue;
           }
-          if(["category","size","supplier","dispatch_location"].includes(f)){ cur[f] = String(v).slice(0,120); continue; }
+          if(["category","size","supplier","dispatch_location","terms"].includes(f)){ cur[f] = String(v).slice(0,120); continue; }
+          if(f === "sku"){
+            const sku = String(v == null ? "" : v).replace(/\s+/g," ").trim().toUpperCase().slice(0,60);
+            if(!sku){ delete cur.sku; continue; }
+            const clash = skuProblem(ref, [{ key, meta:{ sku } }]);
+            if(clash) reject(clash);
+            cur.sku = sku; continue;
+          }
           if(!["opening","rec","issue","min_stock","min","rate","supplier_rate"].includes(f))
             reject(`unknown stock field: ${f}`);
           const n = Number(v);

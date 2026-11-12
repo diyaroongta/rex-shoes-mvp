@@ -78,11 +78,16 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
   const pending = moves.filter(m=>m.kind==="adjust"&&m.status==="pending");
   const qcWaiting = useMemo(()=>qcQueue(moves).length,[moves]);
 
-  const tabs = [["stock","Live stock"],["reserved","Reserved & free"],
-    ...(access?[["in","Stock in & QC"],["out","Issue"],["back","Return / damage"]]:[]),
+  /* The client's three store pages lead — Add item (stock in, with QC at
+     receipt), Item register (the in/out ledger) and Upper store stock — and
+     the store's other work follows: issuing to pasting/moulding still has to
+     happen somewhere. */
+  const tabs = [...(access?[["in","Add item"]]:[]),["ledger","Item register"],["stock","Upper store stock"],
+    ["reserved","Reserved & free"],
+    ...(access?[["out","Issue"],["back","Return / damage"]]:[]),
     ["qc",`QC & rework${qcWaiting?` (${qcWaiting})`:""}`],
     ["count",`Physical count${pending.length?` (${pending.length})`:""}`],
-    ["ledger","Ledger"],["reports","Reports"]];
+    ["reports","Reports"]];
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div role="tablist" aria-label="Upper store" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4 flex-wrap">

@@ -4,6 +4,8 @@ import { REF as INPUTS, reload as reloadReference } from "./lib/refdata.js";
 import * as api from "./lib/client.js";
 import { stockSheetRows, stockPatchFromRows } from "../shared/stock-upload.js";
 import { ISSUE_MODES, ISSUE_MODE_LABEL, ISSUE_MODE_HELP, materialTrail } from "../shared/material-issues.js";
+import { storeItemName, STORE_CATEGORIES } from "../shared/store-register.js";
+import StockSheetImport from "./StockSheetImport.jsx";
 
 /* Stock register in the factory's own STOCK MASTER layout:
    S.N · Category · Item Description · Size · UOM · Opening · Rec. · Issue ·
@@ -14,9 +16,10 @@ import { ISSUE_MODES, ISSUE_MODE_LABEL, ISSUE_MODE_HELP, materialTrail } from ".
    and that identity is what makes the register auditable rather than a
    free-floating number. */
 
-const CATEGORIES = ["SOLE","INSOLE","CHEMICAL","INNER","TOUNG LABEL","OUTER","VELCRO","LACE",
-  "BUCKLE","EYELET","FABRIC","GRINDERY","BINDING","M PARTS","PVC COMPOUND","PVC INK",
-  "STATIONERY","HOUSE KEEPING"];
+/* The stock sheet's own eight categories first (its DASHBOARD order), then the
+   finer ones the register used before the sheet arrived. */
+export const CATEGORIES = [...new Set([...STORE_CATEGORIES, "INNER","TOUNG LABEL","OUTER","VELCRO","LACE",
+  "BUCKLE","EYELET","BINDING","M PARTS","PVC INK","STATIONERY","HOUSE KEEPING"])];
 
 const fmt = n => (n==null||isNaN(n)) ? "" : Number(n).toLocaleString("en-IN",{maximumFractionDigits:2});
 
@@ -71,10 +74,10 @@ export default function StockTab({ state, onChanged, jobs=null, mode:fixedMode=n
     {mode==="view" ? <ViewStock version={version} onSaved={refreshed} />
       : mode==="add" ? <AddStock version={version} onSaved={refreshed} onViewAll={onViewAll||(()=>setMode("view"))} />
       : <div>
-          <div className="text-sm font-semibold text-slate-800 mb-1">Add New Material</div>
-          <div className="text-xs text-slate-500 mb-3">Use this only when the material is not already in the BOM material master.</div>
+          <div className="text-sm font-semibold text-slate-800 mb-1">Add Item</div>
+          <div className="text-xs text-slate-500 mb-3">A raw material the store has not stocked before. Check the Item Register first — a material already in a BOM is already there.</div>
           <NewMaterial draft={material} setDraft={setMaterial} existing={INPUTS.materials}
-            onSaved={async()=>{setMaterial({name:"",uom:"",colour:"",opening:"",min:"",rate:""});setMaterialMsg("Material added. It can now be stocked and used by BOMs.");setMaterialErr("");await refreshed();}}
+            onSaved={async()=>{setMaterial({name:"",uom:"",colour:"",opening:"",min:"",rate:""});setMaterialMsg("Item added. It is on the Item Register, can be stocked, and can go on a purchase order.");setMaterialErr("");await refreshed();}}
             onError={setMaterialErr}/>
           {materialMsg&&<div className="text-xs text-emerald-700">{materialMsg}</div>}
           {materialErr&&<div role="alert" className="text-xs text-rose-700">{materialErr}</div>}
@@ -103,6 +106,9 @@ export function stockRows(){
     return {
       key, sn:i+1, category: md.category ?? guessCategory(m.name),
       name: m.name, size: md.size ?? "", uom: m.uom, notes: m.notes,
+      /* The sheet's ITEM DESCRIPTION is the name without the size folded in. */
+      description: md.size && String(m.name||"").endsWith(" "+md.size) ? String(m.name).slice(0,-(String(md.size).length+1)) : m.name,
+      sku: md.sku || "", terms: md.terms || "",
       opening, rec, issue, stock, min, rate, value: stock * rate, counted,
       supplier: md.supplier || "", supplier_rate: md.supplier_rate ?? null, dispatch_location: md.dispatch_location || "",
       /* How it leaves the store. Blank is NOT a third mode: nobody has chosen,
@@ -147,7 +153,7 @@ function ViewStock({ version, onSaved }){
   const test = { all:()=>true, value:()=>true, low:r=>r.low, uncounted:r=>!r.counted }[show] || (()=>true);
   const needle = q.trim().toLowerCase();
   const shown = rows.filter(r => test(r)
-    && (!needle || (r.name+" "+r.key+" "+r.category).toLowerCase().includes(needle))
+    && (!needle || (r.name+" "+r.key+" "+r.category+" "+r.sku+" "+r.supplier).toLowerCase().includes(needle))
     && (!cat || r.category===cat));
 
   function exportSheet(){
@@ -235,6 +241,7 @@ function ViewStock({ version, onSaved }){
         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Export to Excel</button>
       <button onClick={downloadInput}
         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Download stock input</button>
+      <StockSheetImport rows={rows} onLoaded={onSaved} />
       <label className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white cursor-pointer">
         Upload completed sheet
         <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e=>e.target.files[0]&&readUpload(e.target.files[0])}/>
@@ -268,7 +275,7 @@ function ViewStock({ version, onSaved }){
                 style={{background:isOpen?"#f8fafc":undefined}}>
                 <td className="px-3 py-2">
                   <div className="font-medium text-slate-800">{r.name}</div>
-                  <div className="text-[11px] text-slate-400">{r.category||"No category"}{r.size?` · ${r.size}`:""}</div>
+                  <div className="text-[11px] text-slate-400">{r.sku&&<span className="mono text-slate-500">{r.sku} · </span>}{r.category||"No category"}{r.size?` · ${r.size}`:""}{r.supplier?` · ${r.supplier}`:""}</div>
                   {/* On a phone the status sits under the name. As its own
                       column it was the first thing to scroll off the right
                       edge — and it is the one signal the screen exists for. */}
@@ -319,7 +326,7 @@ function StockDetail({ row, onSaved }){
     catch(e){ setTrailErr(String(e.message||e)); }
   }
   const FIELDS=[["opening","Opening"],["rec","Received"],["issue","Issued"],["min","Minimum"],["rate","Rate ₹"],["supplier_rate","Supplier rate ₹"]];
-  const TEXT=["category","size","supplier","dispatch_location"];
+  const TEXT=["category","size","sku","supplier","terms","dispatch_location"];
 
   async function save(){
     const clean={};
@@ -358,7 +365,9 @@ function StockDetail({ row, onSaved }){
       <span className="text-xs text-slate-500 ml-2">Rate {row.rate?`₹${fmt(row.rate)} / ${row.uom}`:"not set"}</span>
       <span className="text-xs text-slate-500 ml-2">Supplier <b className="text-slate-700">{row.supplier||"not set"}</b>
         {row.supplier_rate!=null&&<> · ₹{fmt(row.supplier_rate)}/{row.uom}</>}{row.dispatch_location&&<> · from {row.dispatch_location}</>}</span>
-      <button onClick={()=>setEdit({category:row.category||"",size:row.size||"",opening:row.opening,
+      <span className="text-xs text-slate-500 ml-2">Item code <b className="mono text-slate-700">{row.sku||"not set"}</b>
+        {row.terms&&<> · terms {row.terms}</>}</span>
+      <button onClick={()=>setEdit({category:row.category||"",size:row.size||"",sku:row.sku||"",terms:row.terms||"",opening:row.opening,
           rec:row.rec,issue:row.issue,min:row.min,rate:row.rate,supplier:row.supplier||"",
           supplier_rate:row.supplier_rate??"",dispatch_location:row.dispatch_location||"",
           issue_mode:row.issue_mode||""})}
@@ -402,6 +411,12 @@ function StockDetail({ row, onSaved }){
       <label className="text-xs text-slate-600">Size
         <input value={edit.size} onChange={e=>setEdit(d=>({...d,size:e.target.value}))}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-24"/></label>
+      <label className="text-xs text-slate-600">Item code
+        <input value={edit.sku} aria-label={`Item code for ${row.name}`} onChange={e=>setEdit(d=>({...d,sku:e.target.value}))}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-32 mono"/></label>
+      <label className="text-xs text-slate-600">Terms
+        <input value={edit.terms} aria-label={`Terms for ${row.name}`} onChange={e=>setEdit(d=>({...d,terms:e.target.value}))}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-40"/></label>
       <label className="text-xs text-slate-600">Supplier
         <input value={edit.supplier} aria-label={`Supplier for ${row.name}`} onChange={e=>setEdit(d=>({...d,supplier:e.target.value}))}
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-40"/></label>
@@ -426,7 +441,7 @@ function StockDetail({ row, onSaved }){
         className="text-xs font-semibold rounded-lg px-3 py-2 border border-slate-300 bg-white">Cancel</button>
     </div>
     <div className="text-[11px] text-slate-500 mt-2">
-      For correcting a mistake. A delivery that just arrived goes in through <b>Add stock</b>, so it is added to what is
+      For correcting a mistake. A delivery that just arrived goes in through the <b>Issue Register</b>, so it is added to what is
       already received rather than typed over it.</div>
     {err && <div role="alert" className="text-xs text-rose-700 mt-2">{err}</div>}
   </div>;
@@ -568,7 +583,10 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
   const name=String(draft.name||"").trim().toUpperCase();
   const uom=String(draft.uom||"").trim().toUpperCase();
   const colour=String(draft.colour||"").trim().toUpperCase();
-  const full=colour && !name.split(/[^A-Z0-9.]+/).filter(Boolean).includes(colour) ? `${name} ${colour}` : name;
+  const size=String(draft.size||"").trim().toUpperCase();
+  const full=storeItemName(colour && !name.split(/[^A-Z0-9.]+/).filter(Boolean).includes(colour) ? `${name} ${colour}` : name, size);
+  const sku=String(draft.sku||"").trim().toUpperCase();
+  const skuTaken=sku && Object.entries(INPUTS.stock_meta||{}).find(([,md])=>String((md||{}).sku||"").toUpperCase()===sku);
   const key=name&&uom ? `${full}||${uom}` : "";
   const clash=!!key && !!existing[key];
 
@@ -576,6 +594,7 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
   if(!name) problems.push("A material name is required");
   if(!uom) problems.push("A unit of measure is required — it is part of the material's identity");
   if(clash) problems.push(`${key} is already on the material list`);
+  if(skuTaken) problems.push(`Item code ${sku} is already used by ${skuTaken[0].split("||")[0]}`);
   for(const [f,label] of [["opening","Opening stock"],["min","Minimum"],["rate","Rate"],["supplier_rate","Supplier rate"]]){
     const v=draft[f];
     if(v!=="" && v!=null && (!Number.isFinite(Number(v)) || Number(v)<0)) problems.push(`${label} must be 0 or more`);
@@ -584,7 +603,9 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
   async function save(){
     setSaving(true);
     try{
-      await api.addMaterial({ name, uom, colour: colour||null,
+      await api.addMaterial({ name, uom, colour: colour||null, size: size||null,
+        category: String(draft.category||"").trim()||null, sku: sku||null,
+        terms: String(draft.terms||"").trim()||null,
         opening: draft.opening===""?0:Number(draft.opening),
         min: draft.min===""?0:Number(draft.min),
         rate: draft.rate===""?0:Number(draft.rate),
@@ -599,8 +620,24 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
   }
 
   return <div className="mb-3 rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
-    <div className="text-xs font-semibold text-slate-800 mb-2">New material</div>
+    <div className="text-xs font-semibold text-slate-800 mb-2">New item</div>
     <div className="flex gap-3 flex-wrap items-end">
+      <label className="text-xs text-slate-600">Item code (SKU)
+        <input value={draft.sku||""} aria-label="Item code" onChange={e=>set("sku",e.target.value)}
+          placeholder="Blank until the code list is agreed"
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-48 mono"/></label>
+      <label className="text-xs text-slate-600">Category
+        <select value={draft.category||""} aria-label="Category" onChange={e=>set("category",e.target.value)}
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm">
+          <option value="">— choose —</option>
+          {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+        </select></label>
+      <label className="text-xs text-slate-600">Size (optional)
+        <input value={draft.size||""} aria-label="Item size" onChange={e=>set("size",e.target.value)}
+          placeholder="5C, 8X10…"
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-24"/></label>
+    </div>
+    <div className="flex gap-3 flex-wrap items-end mt-3">
       <label className="text-xs text-slate-600">Name
         <input value={draft.name} aria-label="Material name" onChange={e=>set("name",e.target.value)}
           placeholder='e.g. REXINE 54"'
@@ -639,13 +676,18 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
         <input value={draft.dispatch_location||""} aria-label="Dispatch location" onChange={e=>set("dispatch_location",e.target.value)}
           placeholder="Where the supplier ships from"
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-48"/></label>
+      <label className="text-xs text-slate-600">Terms
+        <input value={draft.terms||""} aria-label="Supplier terms" onChange={e=>set("terms",e.target.value)}
+          placeholder="e.g. 30 days credit, ex-works"
+          className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56"/></label>
       <button onClick={save} disabled={saving||problems.length>0}
         className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-50">
-        {saving?"Adding…":"Add material"}</button>
+        {saving?"Adding…":"Add item"}</button>
     </div>
     {/* Show the key that will be created, because the colour folding surprises
         people the first time — "REXINE 54\" BLACK||MTR", not two fields. */}
-    {key && <div className="text-[11px] text-slate-500 mt-2">Will be stored as <span className="mono">{key}</span></div>}
+    {key && <div className="text-[11px] text-slate-500 mt-2">Will be stored as <span className="mono">{key}</span>
+      {size && <> — one item per size, as on the stock sheet</>}</div>}
     {!!problems.length && (name||uom) && <ul className="text-[11px] text-rose-700 mt-2 list-disc pl-4">
       {problems.map(p=><li key={p}>{p}</li>)}</ul>}
     <div className="text-[11px] text-slate-500 mt-1">

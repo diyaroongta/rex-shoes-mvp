@@ -119,7 +119,8 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
     const out = checkMove(state, { unit_key:block.unit_key, stage:block.stage, date, work_center }, ctx);
     if(!out.ok){ setRefusal(out.reason); setEffects(null); setNote(""); setUndo(null); return; }
     apply(block, out.override, `${nameOf(block)} ${block.stage} moved to ${nice(out.start_date)}`
-      + (work_center && work_center !== block.work_center ? ` on ${wcs[work_center].name}` : "") + " and locked there.");
+      + (work_center && work_center !== block.work_center ? ` on ${wcs[work_center].name}` : "") + " and locked there."
+      + (out.warning ? ` ⚠ ${out.warning}` : ""));
   }
   function setDays(block){
     const unit = units.get(block.unit_key); if(!unit) return;

@@ -115,7 +115,10 @@ export function checkMove(state, move, { wcs, articles, origin, calendar } = {})
 
   const { off } = workCalendar(calendar || (state && state.calendar) || null, origin);
   const day = dayIndex(move.date, origin);
-  if(off(day)) return { ok:false, reason:`The factory is closed on ${move.date}. Drop the block on a working day.` };
+  /* A closed day is ALLOWED: that is how a Sunday shift is planned. The
+     block runs that day and continues on working days, and the drop says so —
+     the engine reports it again as `off_day_worked`. */
+  const closed = off(day);
 
   /* STAGE ORDER. Moulding cannot start before upper QC has finished, whoever
      drags it. The stage ahead may itself be unlocked — it is still where it
@@ -131,7 +134,7 @@ export function checkMove(state, move, { wcs, articles, origin, calendar } = {})
   const wc = wcs[target];
   const pairs = pairsOf(st);
   const n = ov.days[st.stage] || Math.max(1, Math.ceil(pairs / wc.capacity_per_day - 1e-9));
-  const span = workingSpan(day, n, off);
+  const span = closed ? [day, ...workingSpan(day + 1, n - 1, off)].slice(0, n) : workingSpan(day, n, off);
   const start = span[0], end = span[span.length - 1];
 
   /* MACHINE CLASH. A moulding machine runs one article at a time. Unlocked
@@ -154,6 +157,8 @@ export function checkMove(state, move, { wcs, articles, origin, calendar } = {})
   const daily = { ...(ov.daily || {}) };
   delete daily[st.stage];
   return { ok:true, start, end, start_date:fromDay(start, origin), end_date:fromDay(end, origin),
+    ...(closed ? { warning:`${move.date} is normally a closed day (Sunday or holiday). `
+      + `${st.stage} will run on it — make sure the line is staffed.` } : {}),
     override:cleanOverride({ ...ov, machine, daily, at:{ ...(ov.at || {}), [st.stage]:move.date } }) };
 }
 

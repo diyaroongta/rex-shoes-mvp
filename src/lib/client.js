@@ -209,6 +209,12 @@ export const listMaterialIssues = ({ job_id=null, material_key=null }={}) => j(I
   + (material_key!=null?`&material_key=${encodeURIComponent(material_key)}`:""));
 export const addMaterialIssue = movement => post(ISSUES, { ...movement, resource:"material_issues" });
 export const undoMaterialIssue = id => j(`${ISSUES}&id=${encodeURIComponent(id)}`, { method:"DELETE" });
+/* The Raw Material Store's day register: received / issued, by date. */
+const STORE_REG = "/api/reference?resource=store_register";
+export const storeMonth = month => j(`${STORE_REG}&month=${encodeURIComponent(month)}`);
+export const addStoreEntry = entry => post(STORE_REG, { ...entry, resource:"store_register" });
+export const undoStoreEntry = id => j(`${STORE_REG}&id=${encodeURIComponent(id)}`, { method:"DELETE" });
+export const addMaterials = list => patchReference({ new_materials:list });
 /* Bulk BOM removal. `selection` is {articles, ranges, materials} in any mix.
    Always preview first: the same pure function produces both answers, so the
    preview is exactly what the removal will do. `confirm_in_use` is the

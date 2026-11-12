@@ -97,8 +97,9 @@ it("no longer carries finished goods — they are shoes, not raw material",()=>{
   expect(screen.queryByRole("tab",{name:"MTO Stock"})).toBeNull();
 });
 
-/* Add New Material is its own page now, and records who supplies it. */
-it("adds a new material with its supplier, supplier rate and dispatch location",async()=>{
+/* Add Item is its own page, and records who supplies it — plus, from the
+   client's store notes, the item code, category, size and supplier terms. */
+it("adds a new item with its code, category, size, supplier, rate and terms",async()=>{
   const user=userEvent.setup();
   apiMocks.addMaterial.mockResolvedValue({ok:true});
   render(<StockTab mode="material"/>);
@@ -108,9 +109,16 @@ it("adds a new material with its supplier, supplier rate and dispatch location",
   await user.type(screen.getByLabelText("Supplier name"),"Shree Polymers");
   await user.type(screen.getByLabelText("Supplier rate"),"42.5");
   await user.type(screen.getByLabelText("Dispatch location"),"Bahadurgarh");
-  await user.click(screen.getByRole("button",{name:"Add material"}));
+  await user.type(screen.getByLabelText("Item code"),"rm-sol-001");
+  await user.selectOptions(screen.getByLabelText("Category"),"SOLE");
+  await user.type(screen.getByLabelText("Item size"),"5c");
+  await user.type(screen.getByLabelText("Supplier terms"),"30 days credit");
+  /* The size is folded into the name, as the stock sheet keeps one row per size. */
+  expect(screen.getByText("EVA SHEET 5C||PCS")).toBeInTheDocument();
+  await user.click(screen.getByRole("button",{name:"Add item"}));
   expect(apiMocks.addMaterial).toHaveBeenCalledWith(expect.objectContaining({
-    name:"EVA SHEET",uom:"PCS",supplier:"Shree Polymers",supplier_rate:42.5,dispatch_location:"Bahadurgarh"}));
+    name:"EVA SHEET",uom:"PCS",supplier:"Shree Polymers",supplier_rate:42.5,dispatch_location:"Bahadurgarh",
+    sku:"RM-SOL-001",category:"SOLE",size:"5C",terms:"30 days credit"}));
 });
 
 /* How a material leaves the store is set per material. Unset is not a third

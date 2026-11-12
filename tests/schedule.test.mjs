@@ -83,12 +83,24 @@ test("the stages after a locked block are re-planned behind it", () => {
   for(let i = 1; i < stages.length; i++) assert.ok(stages[i].start > stages[i - 1].end, `${names[i]} ran ahead of ${names[i - 1]}`);
   assert.ok(state.units[0].dispatch_day > auto.units[0].dispatch_day);
 });
-test("a lock on a Sunday starts on the next working day and says so", () => {
+test("a lock on a Sunday RUNS on that Sunday and is flagged, not moved", () => {
+  /* The client: "I should be able to add Sunday to the schedule if I want,
+     and the system should let me, but give a warning". It used to slide the
+     block to Monday, so a Sunday shift could not be planned on the board. */
   const sunday = "2026-08-02";
   assert.equal(new Date(sunday + "T00:00:00Z").getUTCDay(), 0);
   const state = plan([A], { JO1:{ at:{ PACKING:sunday } } });
-  assert.equal(stageOf(state, "JO1", "PACKING").start_date, "2026-08-03");
-  assert.ok(state.plan_warnings.some(w => w.kind === "stage_locked" && /is not a day it can run/.test(w.message)));
+  const st = stageOf(state, "JO1", "PACKING");
+  assert.equal(st.start_date, sunday);
+  assert.ok(state.plan_warnings.some(w => w.kind === "off_day_worked" && w.message.includes(sunday)));
+  /* A person asked for it: a warning on the job, never the red banner. */
+  assert.ok(!state.schedule_problems.some(p => String(p).includes(sunday)));
+  /* Only the asked Sunday opens: a block longer than a day continues on
+     Monday, and a following Sunday is still stepped over. */
+  const long = plan([A], { JO1:{ at:{ PACKING:sunday }, days:{ PACKING:8 } } });
+  const days = Object.keys(stageOf(long, "JO1", "PACKING").alloc || {}).map(Number);
+  const sundays = days.filter(d => new Date(fromDay(d, origin) + "T00:00:00Z").getUTCDay() === 0);
+  assert.deepEqual(sundays.map(d => fromDay(d, origin)), [sunday]);
 });
 test("a locked downstream block that became impossible stays put and is flagged, not moved", () => {
   const auto = plan([A]);
@@ -210,9 +222,18 @@ test("a drop on another valid machine pins the machine as well as the day", () =
   assert.equal(stageOf(plan([A], { JO1:move.override }), "JO1", "MOLDING").work_center, other);
   assert.equal(checkMove(state, { unit_key:"JO1", stage:"MOLDING", date:st.start_date, work_center:"MOLDING_EVA" }, ctx).ok, false);
 });
-test("a drop on a closed day, or for a job that has gone, is refused", () => {
+test("a drop on a closed day is allowed with a warning", () => {
   const state = plan([A]);
-  assert.match(checkMove(state, { unit_key:"JO1", stage:"PACKING", date:"2026-08-02" }, ctx).reason, /closed on 2026-08-02/);
+  const out = checkMove(state, { unit_key:"JO1", stage:"PACKING", date:"2026-08-02" }, ctx);
+  assert.equal(out.ok, true);
+  assert.equal(out.start_date, "2026-08-02");
+  assert.match(out.warning, /2026-08-02 is normally a closed day/);
+  assert.equal(stageOf(plan([A], { JO1:out.override }), "JO1", "PACKING").start_date, "2026-08-02");
+  /* An ordinary working day carries no warning. */
+  assert.equal(checkMove(state, { unit_key:"JO1", stage:"PACKING", date:"2026-08-03" }, ctx).warning, undefined);
+});
+test("a drop for a job that has gone, or on no day, is refused", () => {
+  const state = plan([A]);
   assert.match(checkMove(state, { unit_key:"JO9", stage:"PACKING", date:"2026-08-03" }, ctx).reason, /no longer on the plan/);
   assert.match(checkMove(state, { unit_key:"JO1", stage:"ASSEMBLY", date:"2026-08-03" }, ctx).reason, /no ASSEMBLY block/);
   assert.match(checkMove(state, { unit_key:"JO1", stage:"PACKING", date:"" }, ctx).reason, /on a day/);

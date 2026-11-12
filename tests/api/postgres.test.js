@@ -291,6 +291,46 @@ run("against a real Postgres", () => {
     });
   });
 
+  /* The Raw Material Store: items loaded from the stock sheet in one go, and
+     the day register booking onto the locked register — the jsonb insert,
+     the date cast and the month query, on a real server. */
+  describe("the raw material store", () => {
+    const URL = "/api/reference?resource=store_register";
+    const KEY = "1231 BLACK 5C||PAIR";
+    const meta = async key => (await call("reference", "GET", "/api/reference")).body.stock_meta[key];
+    it("adds the sheet's items, then receives and issues by date, and the month answers both", async () => {
+      const add = await call("reference", "PATCH", "/api/reference", { new_materials:[
+        { name:"1231 BLACK", size:"5C", uom:"PAIR", category:"SOLE", opening:40, min:100, rate:48.5, sku:"SO-1231-5C" }] });
+      expect(add.statusCode).toBe(201);
+      const rec = await call("reference", "POST", URL, { resource:"store_register", type:"rec", moved_on:"2026-10-01",
+        note:"bill 44", lines:[{ material_key:KEY, qty:100 }] });
+      expect(rec.statusCode).toBe(201);
+      const iss = await call("reference", "POST", URL, { resource:"store_register", type:"issue", moved_on:"2026-11-02",
+        lines:[{ material_key:KEY, qty:80 }] });
+      expect(iss.statusCode).toBe(201);
+      expect(iss.body.entries[0]).toMatchObject({ material_key:KEY, type:"issue", qty:80, moved_on:"2026-11-02" });
+      expect(iss.body.reorder[0]).toMatchObject({ balance:60, min:100, order_qty:40 });
+      expect(await meta(KEY)).toMatchObject({ opening:40, rec:100, issue:80 });
+
+      const oct = await call("reference", "GET", `${URL}&month=2026-10`);
+      expect(oct.statusCode).toBe(200);
+      expect(oct.body.movements.filter(m => m.material_key === KEY).map(m => [m.type, m.qty, m.moved_on]))
+        .toEqual([["rec", 100, "2026-10-01"], ["issue", 80, "2026-11-02"]]);
+      const nov = await call("reference", "GET", `${URL}&month=2026-11`);
+      expect(nov.body.entries.map(e => e.moved_on)).toEqual(["2026-11-02"]);
+
+      expect((await call("reference", "DELETE", `${URL}&id=${iss.body.entries[0].id}`)).statusCode).toBe(200);
+      expect((await meta(KEY)).issue).toBe(0);
+      const twice = await call("reference", "DELETE", `${URL}&id=${iss.body.entries[0].id}`);
+      expect(twice.statusCode).toBe(404);
+    });
+    it("refuses a second item with the same item code", async () => {
+      const dup = await call("reference", "PATCH", "/api/reference", { new_material:{ name:"1231 BLACK", size:"6C", uom:"PAIR", sku:"so-1231-5c" } });
+      expect(dup.statusCode).toBe(409);
+      expect(dup.body.error).toMatch(/already used by 1231 BLACK 5C/);
+    });
+  });
+
   it("answers every list the app loads at start-up with 200", async () => {
     for(const [name, url] of [
       ["orders", "/api/orders"], ["settings", "/api/settings"], ["parties", "/api/parties"],
@@ -301,6 +341,7 @@ run("against a real Postgres", () => {
       ["dispatches", "/api/dispatches?resource=job_card_docs"], ["dispatches", "/api/dispatches?resource=repairs"],
       ["dispatches", "/api/dispatches?resource=upper_store"], ["reference", "/api/reference?resource=purchase_orders"],
       ["reference", "/api/reference?resource=material_issues"],
+      ["reference", "/api/reference?resource=store_register&month=2026-11"],
     ]){
       const r = await call(name, "GET", url);
       expect([url, r.statusCode]).toEqual([url, 200]);

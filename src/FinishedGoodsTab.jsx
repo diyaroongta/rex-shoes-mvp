@@ -31,7 +31,8 @@ export default function FinishedGoodsTab({ state, jobs = [], moves = [], actuals
   const stock = useMemo(()=>finishedStock(moves, jobs), [moves, jobs]);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div role="tablist" aria-label="Finished goods" className="inline-flex rounded-xl bg-slate-100 p-1 mb-4 flex-wrap">
-      {[["mts","MTS stock"],["reserved","Reserved & free"],["mto","MTO stock"],...(readOnly?[]:[["enter","Enter stock"]]),["moves","Movements"]].map(([k,label])=>
+      {/* The client's three store pages first: Add item, Item register, FG stock. */}
+      {[...(readOnly?[]:[["enter","Add item"]]),["moves","Item register"],["mts","FG stock (MTS)"],["mto","MTO stock"],["reserved","Reserved & free"]].map(([k,label])=>
         <button key={k} role="tab" aria-selected={view===k} onClick={()=>setView(k)}
           className="text-sm font-semibold rounded-lg px-4 py-1.5"
           style={view===k?{background:"#fff",color:"#1e293b",boxShadow:"0 1px 2px rgba(15,23,42,.12)"}:{background:"transparent",color:"#64748b"}}>

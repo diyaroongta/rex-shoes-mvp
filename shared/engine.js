@@ -361,9 +361,21 @@ export function schedule(orders, articles, wcs, origin, horizon=1500, overrides=
             message:`${stage} is planned on ${offDays.join(", ")}, when the factory is normally closed.`});
         if(!span.length) continue;                     // nothing left that the sheet could place
       }else{
-        const start=nextWorkingDay(lastOn==null?asked:Math.max(asked,lastOn+1),off);
+        /* SUNDAY WORKING, BY HAND. A block the planner put on a Sunday or a
+           holiday runs THAT day — the client's "let me add Sunday to the
+           schedule, just warn me". The rest of the block continues on working
+           days. Only the asked day itself is opened: a block reaching into the
+           next Sunday still steps over it. Said, never refused. */
+        const from=lastOn==null?asked:Math.max(asked,lastOn+1);
+        const openAsked=from===asked&&off(asked);
+        const start=openAsked?asked:nextWorkingDay(from,off);
         const n=forcedDays||Math.max(1,Math.ceil(remaining/cap-1e-9));
-        for(let d=start; span.length<n && d<=start+horizon; d++) if(!off(d)) span.push(d);
+        if(openAsked){
+          span.push(asked);
+          warnings.push({order_no:o.order_no,stage,kind:"off_day_worked",
+            message:`${stage} is planned on ${fromDay(asked,origin)}, when the factory is normally closed.`});
+        }
+        for(let d=openAsked?start+1:start; span.length<n && d<=start+horizon; d++) if(!off(d)) span.push(d);
         span.forEach((d,i)=>{
           /* More than a day's capacity SPLITS over consecutive working days;
              a forced span spreads the pairs evenly across it instead. */

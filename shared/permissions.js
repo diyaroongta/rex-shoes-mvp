@@ -34,7 +34,7 @@ const STOCK_KEYS = ["stock","stock_meta"];
    unpacking a delivery, not the data manager. Refusing them makes the feature
    useless to the only people who need it. So it is allowed alongside stock, and
    ONLY as a creation: editing or deleting a material stays master data. */
-const MATERIAL_KEYS = ["new_material"];
+const MATERIAL_KEYS = ["new_material","new_materials"];
 /* The PLAN, as opposed to the order. Both are single-key PATCHes from the
    scheduling screens: the queue position and the manual override blob. */
 const PLAN_KEYS = ["plan_override","priority"];
@@ -222,6 +222,15 @@ export function can(role, method, url, body){
      || (body && body.resource === "material_issues"))){
     if(def.reference === "all" || def.reference === "stock") return {allowed:true};
     return {allowed:false,reason:`${def.label} cannot issue or take back material. That is the Store's.`};
+  }
+
+  /* The Raw Material Store's day register — received and issued, by date.
+     The store's daily work, so it follows the stock grant exactly as material
+     issues do, checked on the body as well as the URL. */
+  if(endpoint === "reference" && (/(?:\?|&)resource=store_register(?:&|$)/.test(String(url||""))
+     || (body && body.resource === "store_register"))){
+    if(def.reference === "all" || def.reference === "stock") return {allowed:true};
+    return {allowed:false,reason:`${def.label} cannot record receipts or issues in the store.`};
   }
 
   if(endpoint === "reference"){

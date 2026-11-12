@@ -89,7 +89,7 @@ it("records a receipt as passed and failed, against MTS",async()=>{
   const user=userEvent.setup();
   render(<UpperStoreTab role="store" orders={[]} jobs={[]} dispatches={[]} />);
   await screen.findByText("SPIKE");
-  await user.click(screen.getByRole("tab",{name:"Stock in & QC"}));
+  await user.click(screen.getByRole("tab",{name:"Add item"}));
   await user.selectOptions(screen.getByLabelText("Article"),"SPIKE");
   await user.type(screen.getByLabelText("Colour"),"BLUE");
   await user.type(screen.getByLabelText("Source"),"New Durga Line");
