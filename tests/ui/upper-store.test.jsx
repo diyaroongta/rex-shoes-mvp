@@ -32,7 +32,7 @@ it("shows live stock by article, colour and size",async()=>{
 });
 
 it("a read-only role sees the stock but no entry screens",async()=>{
-  render(<UpperStoreTab role="planner" orders={[]} jobs={[]} dispatches={[]} />);
+  render(<UpperStoreTab role="auditor" orders={[]} jobs={[]} dispatches={[]} />);
   await screen.findByText("SPIKE");
   expect(screen.queryByRole("tab",{name:"Issue"})).toBeNull();
   expect(screen.getByRole("tab",{name:"Reports"})).toBeInTheDocument();

@@ -184,6 +184,10 @@ describe("the weekly production plan",()=>{
     render(<PlanBoard state={plan()} setPlanOverride={vi.fn()}/>);
     const week=screen.getByRole("grid",{name:"Plan for the week of 2026-07-06"});
     expect(within(week).getByRole("columnheader",{name:"Cutting hall"})).toHaveTextContent("2,500 a day");
+    /* Its stage is headed over it, as on the downloaded sheet — and a stage
+       with several machines is headed once, across all of them. */
+    expect(within(week).getByRole("columnheader",{name:"CUTTING stage"})).toBeInTheDocument();
+    expect(within(week).getAllByRole("columnheader",{name:"MOLDING stage"})).toHaveLength(1);
     const cell=within(week).getByRole("gridcell",{name:"Cutting hall 2026-07-06"});
     expect(cell).toHaveTextContent("JO1");
     expect(cell).toHaveTextContent("1,500");

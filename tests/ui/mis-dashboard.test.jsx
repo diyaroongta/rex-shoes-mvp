@@ -31,6 +31,8 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getByTestId("kpi-production-days")).toHaveTextContent("15");
     expect(screen.getByTestId("kpi-utilisation")).toHaveTextContent("75");
     expect(screen.getByTestId("kpi-order-dispatch-pct")).toHaveTextContent("41.7%");
+    /* Ordered, dispatched and the gap are said once, beside the percentage. */
+    expect(screen.getByTestId("kpi-order-dispatch-pct")).toHaveTextContent("250 dispatched of 600 ordered · 350 short");
     expect(screen.getByTestId("kpi-dispatch-shortage-pct")).toHaveTextContent("16.7%");
     expect(screen.getByTestId("kpi-average-dispatch-days")).toHaveTextContent("12.5");
     expect(screen.getByText("Cutting hall")).toBeInTheDocument();
@@ -61,6 +63,44 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getByTestId("kpi-total-orders")).toHaveTextContent("3");
   });
 
+  /* The status counts used to be on the screen three times: as tiles, as
+     filter chips over the table, and as an "orders needing attention" list
+     under it. The tile IS the filter now, and the table is the only list. */
+  it("counts each status once, and the count is the filter",async()=>{
+    const user=userEvent.setup();
+    render(<MISDashboard state={state} dispatches={dispatches} today="2026-08-26"/>);
+    const tiles=within(screen.getByRole("region",{name:"Orders by status"})).getAllByRole("button");
+    expect(tiles.map(t=>t.getAttribute("aria-label"))).toEqual(["All orders · 3","Waiting · 0","On time · 1","At risk · 1","Delayed · 1"]);
+    expect(screen.getAllByRole("button",{name:"Delayed · 1"})).toHaveLength(1);
+    expect(screen.getByTestId("kpi-delayed")).toBe(tiles[4]);
+    expect(tiles[0]).toHaveAttribute("aria-pressed","true");
+    await user.click(tiles[3]);
+    expect(tiles[3]).toHaveAttribute("aria-pressed","true");
+    expect(tiles[0]).toHaveAttribute("aria-pressed","false");
+    expect(screen.getAllByText("O-RISK")).toHaveLength(1);          // one list, not two
+    expect(screen.queryByText("O-LATE")).toBeNull();
+    expect(screen.queryByText("Orders needing attention")).toBeNull();
+    /* What the attention list added — how far it has slipped, and where — is on the row. */
+    expect(screen.getByText("MOLDING · 2d slip")).toBeInTheDocument();
+    /* A zero is grey: a red nought says "look here" about nothing. */
+    expect(tiles[1].querySelector(".mono")).toHaveStyle({color:"rgb(148, 163, 184)"});
+    expect(tiles[4].querySelector(".mono")).toHaveStyle({color:"rgb(190, 18, 60)"});
+  });
+
+  it("opens the orders behind a figure, with the arithmetic",async()=>{
+    const user=userEvent.setup();
+    render(<MISDashboard state={state} dispatches={dispatches} today="2026-08-26"/>);
+    const pending=screen.getByTestId("kpi-pending");
+    expect(pending).toHaveTextContent("Still to ship");
+    expect(pending).toHaveAttribute("aria-expanded","false");
+    await user.click(pending);
+    expect(pending).toHaveAttribute("aria-expanded","true");
+    expect(screen.getByText("Still to ship — ordered pairs not yet dispatched")).toBeInTheDocument();
+    expect(screen.getByText(/pairs outstanding across \d+ order\(s\)/)).toBeInTheDocument();
+    await user.click(pending);
+    expect(screen.queryByText("Still to ship — ordered pairs not yet dispatched")).toBeNull();
+  });
+
   it("shows a PI without a job card as waiting, not on time or delayed",async()=>{
     const user=userEvent.setup();
     const waiting={orders:[{order_no:"JO2171",party:"K.P. Gurgaon",article:"SPIKE",
@@ -72,6 +112,9 @@ describe("Executive MIS dashboard",()=>{
     await user.click(screen.getByRole("button",{name:"Waiting · 1"}));
     expect(screen.getAllByText("JO2171").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Waiting for job card").length).toBeGreaterThan(0);
+    /* It has no production days yet — a dash, not a nought nobody measured. */
+    const row=screen.getByText("JO2171").closest("tr");
+    expect(within(row).getAllByRole("cell")[7]).toHaveTextContent(/^—$/);
   });
 });
 
@@ -95,8 +138,7 @@ describe("the dashboard answers by customer, and says why",()=>{
     render(<MISDashboard state={withReasons} dispatches={[]} today="2026-08-26"/>);
     expect(screen.getByText("O-ON")).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Customer"),"Beta");
-    // O-RISK appears in both the attention list and the order table.
-    expect(screen.getAllByText("O-RISK").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("O-RISK")).toHaveLength(1);
     expect(screen.queryByText("O-ON")).not.toBeInTheDocument();
     // …and the whole board follows the customer, not just the bottom table.
     expect(screen.queryByText("O-LATE")).not.toBeInTheDocument();
@@ -107,7 +149,6 @@ describe("the dashboard answers by customer, and says why",()=>{
   it("opens an order and gives the reasons, worst first",async()=>{
     const user=userEvent.setup();
     render(<MISDashboard state={withReasons} dispatches={[]} today="2026-08-26"/>);
-    // Click the row in the full order table (now the first section), not the attention summary.
     const table=screen.getByText("Complete order health").closest("section");
     await user.click(within(table).getByText("O-RISK"));
 

@@ -6,8 +6,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /* Navigation is a MENU BAR now, not a sidebar: a screen's button lives inside
    its group's dropdown, so it has to be opened first. One helper, so a future
    nav change is one edit here rather than sixty. */
-const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Schedule":"Production","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Machine load":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Gate passes":"Dispatch","FG Store":"Stores","Upper Store":"Stores","Raw Material Store":"Stores","Formats & sheets":"Formats","Procurement":"Raw Materials","Issue Material":"Raw Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
+const NAV_GROUP = {"Executive MIS":"Overview","PI generation":"Orders","PI database":"Orders","Order Book":"Orders","Create Job Order":"Job orders","Job Orders Database":"Job orders","Daily plan vs achievement":"Production","Production status":"Production","Production plan":"Production","Repair":"Dispatch","Dispatch Book":"Dispatch","Gate passes":"Dispatch","FG Store":"Stores","Upper Store":"Stores","Raw Material Store":"Stores","Formats & sheets":"Formats","Procurement":"Raw Materials","Issue Material":"Raw Materials","Data & BOM":"Setup","Parties & terms":"Setup","Fabricators & lines":"Setup","Catalogue":"Setup","Packing & BOM rules":"Setup","Profiles & access":"Setup"};
+/* Schedule and Machine load are VIEWS of Production plan now, behind the
+   switch at the top of that screen, not menu entries of their own. */
+const PLAN_VIEW = {"Schedule":"By order","Machine load":"Capacity"};
 async function goTo(user, screen){
+  if(PLAN_VIEW[screen]){
+    await goTo(user, "Production plan");
+    return user.click(await screen_.findByRole("tab",{name:PLAN_VIEW[screen]}));
+  }
   const group = NAV_GROUP[screen];
   if(group){
     /* Clicking a group TOGGLES it, so a helper that always clicks would close a
@@ -278,7 +285,9 @@ describe("critical UI contracts",()=>{
     /* Releasing work to the floor is the step straight after the Order Book. */
     expect(itemsOf("Orders")).toEqual(["PI generation","PI database","Order Book"]);
     expect(itemsOf("Job orders")).toEqual(["Create Job Order","Job Orders Database"]);
-    expect(itemsOf("Production")[0]).toBe("Schedule");
+    /* ONE entry for the plan. Schedule and Machine load were two more menu
+       entries for the same plan and are views of it now. */
+    expect(itemsOf("Production")).toEqual(["Production plan","Daily plan vs achievement","Production status"]);
     /* Repair is the last thing that can happen to a shoe before the lorry,
        so it sits under Dispatch — after the book, being the exception path. */
     expect(itemsOf("Dispatch")).toEqual(["Dispatch Book","Gate passes","Repair"]);
@@ -304,6 +313,29 @@ describe("critical UI contracts",()=>{
      at 24 to a carton and size 1 at 18. So a line's pairs can never be
      cartons x the LINE rate — that figure is wrong the moment two sizes in the
      range differ. Small figures here, so they read as cartons. */
+
+  it("the plan is one screen with three views, and a role sees only the views it is granted",async()=>{
+    const user=userEvent.setup();
+    const { unmount }=render(<App user={{username:"a",role:"admin"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalled());
+    await goTo(user,"Production plan");
+    const views=within(await screen.findByRole("tablist",{name:"Production plan views"})).getAllByRole("tab");
+    expect(views.map(v=>v.textContent)).toEqual(["Weekly sheet","By order","Capacity"]);
+    expect(views[0]).toHaveAttribute("aria-selected","true");
+    await user.click(views[1]);
+    /* Still the same screen, by its heading and by the menu. */
+    expect(screen.getByRole("heading",{level:1})).toHaveTextContent("Production plan");
+    expect(screen.getByRole("tab",{name:"By order"})).toHaveAttribute("aria-selected","true");
+    unmount();
+
+    /* The buyer is granted the plan by order and nothing else: the menu entry
+       opens that view, and there is no switch to views that would be refused. */
+    render(<App user={{username:"b",role:"procurement"}} />);
+    await waitFor(()=>expect(mocks.listOrders).toHaveBeenCalledTimes(2));
+    await goTo(user,"Production plan");
+    expect(await screen.findByRole("heading",{level:1})).toHaveTextContent("Production plan");
+    expect(screen.queryByRole("tablist",{name:"Production plan views"})).toBeNull();
+  });
   it("totals a line from its own sizes, not cartons x the line rate",async()=>{
     const { buildPhotoCards } = await import("../../shared/intake.js");
     const { INPUTS } = await import("../../shared/inputs.js");
@@ -1527,6 +1559,36 @@ describe("the schedule opens on the floor",()=>{
     expect(screen.getAllByText(/Marked urgent \(P1\)/).length).toBeGreaterThan(0);
     // A machine with nothing on it says so rather than showing a blank card.
     expect(screen.getAllByText(/Nothing scheduled today/).length).toBeGreaterThan(0);
+  });
+
+  /* Eleven cards of which nine said "Nothing scheduled today" was a wall to
+     find the two that mattered: an idle machine is a name on one line. */
+  it("gives a card to a machine that is running and one line to the rest",async()=>{
+    mocks.listOrders.mockResolvedValue([order]);
+    mocks.listJobWork.mockResolvedValue([issuedJob(order,800)]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Schedule");
+    const idle=await screen.findByText("Nothing scheduled today on:");
+    expect(screen.getAllByText(/Nothing scheduled today/)).toHaveLength(1);
+    expect(idle.parentElement).toHaveTextContent(/Packing/);
+  });
+
+  /* The capacity strips used to start at the planner's day zero, months back,
+     leaving the booked days a sliver at the far right of an empty bar. */
+  it("draws each line's load from where the work starts",async()=>{
+    mocks.listOrders.mockResolvedValue([order]);
+    mocks.listJobWork.mockResolvedValue([issuedJob(order,800)]);
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Machine load");
+    const line=(await screen.findAllByLabelText(/pairs per day/i))[0].closest(".mb-4");
+    const days=line.querySelectorAll("[title]").length;
+    expect(days).toBeGreaterThan(0);
+    expect(days).toBeLessThan(45);
+    /* The load is what the view is for; its settings come after it. */
+    const settings=screen.getByText("Settings behind the plan");
+    expect(line.compareDocumentPosition(settings)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   /* A Sunday is not an empty factory: the panel says it is shut and shows the

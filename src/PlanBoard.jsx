@@ -5,6 +5,7 @@ import { dayIndex, fromDay, workCalendar, normalizeOverride } from "../shared/en
 import { boardRows, boardSpan, checkMove, lockAsIs, unlockStage, unlockAll, cleanOverride, moveEffects,
          dropTargets, weeklySheets } from "../shared/plan-board.js";
 import { productionActualKey } from "../shared/production-actuals.js";
+import { STAGE_TINTS } from "../shared/plan-sheet.js";
 import PlanSheet from "./PlanSheet.jsx";
 
 const fmt = n => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
@@ -54,6 +55,19 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
   }, [caps]);
   const ctx = { wcs, articles:INPUTS.articles, origin, calendar:state.calendar };
   const rows = useMemo(() => boardRows(state, wcs).filter(r => r.blocks.length), [state, wcs]);
+  /* Which stage each column belongs to, and its colour. The colour follows the
+     stage's place among ALL the factory's stages, so it does not change when a
+     stage happens to have no work — and matches the downloaded sheet. */
+  const { stageBands, tintOf } = useMemo(() => {
+    const order = [...new Set(boardRows(null, wcs).map(r => r.stage))];
+    const tint = stage => STAGE_TINTS[Math.max(0, order.indexOf(stage)) % STAGE_TINTS.length];
+    const bands = [];
+    for(const r of rows){
+      const last = bands[bands.length - 1];
+      if(last && last.stage === r.stage) last.span++; else bands.push({ stage:r.stage, span:1, tint:tint(r.stage) });
+    }
+    return { stageBands:bands, tintOf:rows.map(r => tint(r.stage)) };
+  }, [rows, wcs]);
   const span = useMemo(() => boardSpan(rows), [rows]);
   const { off } = useMemo(() => workCalendar(state.calendar, origin), [state.calendar, origin]);
   const today = dayIndex(todayIso(), origin);
@@ -216,10 +230,17 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
       </div>
       <div className="overflow-x-auto" style={{ border:`1px solid ${LINE}` }}>
         <table role="grid" aria-label={`Plan for the week of ${week.from}`} style={{ borderCollapse:"collapse", width:"100%", fontSize:12 }}>
-          <thead><tr>
-            <th style={{ ...TH, position:"sticky", left:0, zIndex:2, minWidth:92 }}>Date</th>
-            {rows.map(r => <th key={r.work_center} scope="col" aria-label={r.name}
-                style={{ ...TH, opacity:valid && !valid.has(r.work_center) ? 0.35 : 1 }}>
+          <thead>
+          {/* The stage over its machines, in the colours of the downloaded
+              sheet — the screen and the workbook are the same sheet. */}
+          <tr>
+            <th rowSpan={2} style={{ ...TH, position:"sticky", left:0, zIndex:2, minWidth:92 }}>Date</th>
+            {stageBands.map(b => <th key={b.stage} colSpan={b.span} scope="colgroup" aria-label={`${b.stage.replace(/_/g, " ")} stage`}
+              style={{ ...TH, textAlign:"center", letterSpacing:".04em", background:`#${b.tint[0]}` }}>{b.stage.replace(/_/g, " ")}</th>)}
+          </tr>
+          <tr>
+            {rows.map((r, i) => <th key={r.work_center} scope="col" aria-label={r.name}
+                style={{ ...TH, background:`#${tintOf[i][1]}`, opacity:valid && !valid.has(r.work_center) ? 0.35 : 1 }}>
               <div>{r.name}</div>
               <div style={{ fontWeight:400, color:"#64748b" }} className="mono">{fmt(r.capacity_per_day)} a day{r.exclusive ? " · one mould" : ""}</div></th>)}
           </tr></thead>

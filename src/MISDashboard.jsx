@@ -24,22 +24,50 @@ const shortDate = value => value
 const dateRange = group => !group || !group.from ? "No orders" : group.from===group.to
   ? niceDate(group.from) : `${shortDate(group.from)} – ${niceDate(group.to)}`;
 
-/* A figure nobody can take apart is a figure nobody can trust. Giving `drill`
-   turns the tile into a button that opens the orders behind the number, so
-   "19% shortage" can be checked against the orders that produced it. */
-function Kpi({label,value,detail,tone="#0F2233",pale="#F6F8FA",testId,drill,onDrill,open}){
-  const body=<>
+/* THE DASHBOARD SAID EVERYTHING THREE TIMES. Thirteen large tiles, each a
+   label, a number, a tinted box and a line of link text; the status counts
+   again as filter chips over the table; and again as an "orders needing
+   attention" list under it. One figure now has one home:
+
+     StatusTile   how many orders are in each state — and clicking it filters
+                  the table underneath, so the count and the list are one thing
+     Fig          a figure in a band of four: label, number, the arithmetic   */
+function StatusTile({label,count,detail,tone,pale,active,onClick,testId}){
+  return <button type="button" onClick={onClick} aria-pressed={active} aria-label={`${label} · ${count}`} data-testid={testId}
+    className="text-left rounded-xl border px-3.5 py-2.5 transition-colors hover:border-slate-400"
+    style={{background:active?pale:"#fff",borderColor:active?tone:"#E2E8F0",boxShadow:active?`inset 0 -3px 0 ${tone}`:"none"}}>
     <div className="sign text-slate-500" style={{fontSize:10,fontWeight:600}}>{label}</div>
-    <div className="mono mt-2" style={{fontSize:27,lineHeight:1,fontWeight:600,color:tone}}>{value}</div>
-    <div className="mt-3 rounded-md px-2 py-1.5" style={{fontSize:11.5,color:tone,background:pale,minHeight:31}}>{detail}</div>
-    {drill && <div className="mt-2 text-indigo-700" style={{fontSize:10.5,fontWeight:600}}>
-      {open?"Hide the orders behind this ▲":"Show the orders behind this ▼"}</div>}
+    <div className="flex items-baseline gap-2 mt-1.5">
+      {/* A colour only when there is something to act on: a red zero says
+          "look here" about nothing. */}
+      <span className="mono" style={{fontSize:26,lineHeight:1,fontWeight:600,color:count==="0"?"#94A3B8":tone}}>{count}</span>
+      <span className="text-slate-500 truncate" style={{fontSize:11}}>{detail}</span>
+    </div>
+  </button>;
+}
+
+/* A figure nobody can take apart is a figure nobody can trust. Giving `drill`
+   turns the figure into a button that opens the orders behind the number, so
+   "19% shortage" can be checked against the orders that produced it. */
+function Fig({label,value,detail,tone="#0F2233",testId,drill,onDrill,open}){
+  const body=<>
+    <div className="text-[11px] text-slate-500">{label}</div>
+    <div className="mono font-semibold mt-0.5" style={{fontSize:21,lineHeight:1.15,color:tone}}>{value}</div>
+    {detail && <div className="text-[10.5px] text-slate-500 mt-0.5">{detail}</div>}
+    {drill && <div className="text-[10.5px] font-semibold text-indigo-700 mt-1">{open?"Hide the orders ▲":"Which orders ▼"}</div>}
   </>;
-  if(!drill) return <div className="bg-white border border-slate-200 rounded-xl p-4" data-testid={testId}>{body}</div>;
-  return <button type="button" onClick={()=>onDrill(open?null:drill)} data-testid={testId}
-    aria-expanded={!!open}
-    className="text-left bg-white border rounded-xl p-4 hover:border-indigo-400 transition-colors"
-    style={{borderColor:open?"#0B6BCB":"#E2E8F0"}}>{body}</button>;
+  if(!drill) return <div className="min-w-0" data-testid={testId}>{body}</div>;
+  return <button type="button" onClick={()=>onDrill(open?null:drill)} data-testid={testId} aria-expanded={!!open}
+    className="text-left min-w-0 rounded-lg hover:bg-slate-50" style={{margin:-6,padding:6,background:open?"#EEF2FF":undefined}}>{body}</button>;
+}
+function Band({title,note,children}){
+  return <div className="bg-white border border-slate-200 rounded-xl p-4">
+    <div className="flex items-baseline gap-2 flex-wrap mb-3">
+      <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
+      {note && <span className="text-[11px] text-slate-400">{note}</span>}
+    </div>
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-5 gap-y-4">{children}</div>
+  </div>;
 }
 
 /* The orders that produce one figure, with the arithmetic spelled out. Every
@@ -70,16 +98,6 @@ function Drill({metric,snapshot,fmt,pct,niceDate}){
       empty:"No orders or dispatches in the last 30 days.",
       cols:["Ordered","Dispatched","Pending"], cell:o=>[o.qty,o.dispatched,o.pending],
     },
-    breach:{ title:"Delayed orders", rows:all.filter(o=>o.status==="breach"),
-      sum:`${all.filter(o=>o.status==="breach").length} order(s) past their target date`,
-      empty:"Nothing delayed.", cols:["Pairs","Slips","Bottleneck"], cell:o=>[o.qty,`${o.slip_days}d`,o.bottleneck||"—"] },
-    at_risk:{ title:"Orders at risk", rows:all.filter(o=>o.status==="at_risk"),
-      sum:`${all.filter(o=>o.status==="at_risk").length} order(s) within days of missing their target`,
-      empty:"Nothing at risk.", cols:["Pairs","Slips","Bottleneck"], cell:o=>[o.qty,`${o.slip_days}d`,o.bottleneck||"—"] },
-    waiting:{ title:"Orders waiting for a job card", rows:all.filter(o=>o.status==="waiting"),
-      sum:`${all.filter(o=>o.status==="waiting").length} order(s) have not been released into production`,
-      empty:"Every live order has a job card.", cols:["Pairs","Status","Planned dispatch"],
-      cell:o=>[o.qty,"Not released",o.dispatch_date?niceDate(o.dispatch_date):"—"] },
   };
   const v=VIEWS[metric];
   if(!v) return null;
@@ -225,37 +243,41 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
        "PVC rotary". */
     return full?delayReasons(full,{workcenters:INPUTS.workcenters||{}}):null;
   },[openOrder,state]);
-  /* The whole board answers for the chosen customer, not just the table at the
-     bottom — filtering the order list while "needs attention" went on showing
-     everybody would have the screen answering two different questions at once. */
-  const attention=snapshot.orders.filter(order=>order.status!=="on_track"
-    && (!customer || String(order.party||"")===customer)).slice(0,6);
-  const barMax=Math.max(1,snapshot.ordered_last_30_days,snapshot.dispatched_last_30_days,snapshot.shortfall_last_30_days);
 
   return <div className="space-y-4" aria-label="Executive MIS dashboard">
-    <section className="rounded-xl border border-slate-200 bg-white px-4 py-3 flex flex-wrap gap-3 items-center">
-      <div className="min-w-0 flex-1">
-        <div className="sign text-slate-700" style={{fontSize:12,fontWeight:700}}>Management control view</div>
-        <p className="text-xs text-slate-500 mt-1">Order health, delivery outlook, dispatch performance and planned machine loading in one screen.</p>
-      </div>
-      <div className="ml-auto flex flex-wrap gap-2 text-xs">
-        <span className="rounded-full px-2.5 py-1" style={{background:"#ECFDF5",color:"#047857"}}>Dispatch: recorded actual</span>
-        <span className="rounded-full px-2.5 py-1" style={{background:production.recorded_rows?"#ECFDF5":"#EFF6FF",color:production.recorded_rows?"#047857":"#1D4ED8"}}>
-          Production: {production.recorded_rows?"recorded actual":"current schedule"}</span>
-        <span className="mono rounded-full bg-slate-100 text-slate-600 px-2.5 py-1">As of {niceDate(snapshot.as_of)}</span>
-        {onRefresh && <button onClick={onRefresh} disabled={dispatchLoading} className="rounded-full border border-slate-300 bg-white text-slate-700 px-2.5 py-1 font-semibold disabled:opacity-50">
-          {dispatchLoading?"Refreshing…":"Refresh live data"}
-        </button>}
-      </div>
-    </section>
+    {/* One quiet line: when this is as of, and which figures are measured
+        and which are still the plan. The screen's own heading already says
+        what it is. */}
+    <div className="flex flex-wrap gap-2 items-center text-xs">
+      <span className="mono text-slate-600">As of {niceDate(snapshot.as_of)}</span>
+      <span className="rounded-full px-2.5 py-1" style={{background:"#ECFDF5",color:"#047857"}}>Dispatch: recorded actual</span>
+      <span className="rounded-full px-2.5 py-1" style={{background:production.recorded_rows?"#ECFDF5":"#EFF6FF",color:production.recorded_rows?"#047857":"#1D4ED8"}}>
+        Production: {production.recorded_rows?"recorded actual":"current schedule"}</span>
+      {onRefresh && <button onClick={onRefresh} disabled={dispatchLoading} className="ml-auto rounded-lg border border-slate-300 bg-white text-slate-700 px-3 py-1 font-semibold disabled:opacity-50">
+        {dispatchLoading?"Refreshing…":"Refresh live data"}
+      </button>}
+    </div>
 
     {dispatchError && <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
       Dispatch history could not be loaded. Order health is visible, but last-30-day dispatch KPIs are incomplete: {String(dispatchError).slice(0,160)}
     </div>}
+    {/* WHERE EVERY ORDER STANDS, and the same five figures are the filter for
+        the table under them — the count and the list cannot disagree, and
+        there is no second copy of either. */}
+    <section className="grid grid-cols-2 md:grid-cols-5 gap-3" aria-label="Orders by status">
+      {[["all","All orders",snapshot.total_orders,`${fmt(snapshot.total_pairs)} pairs`,"#0F2233","#F1F5F9","kpi-total-orders"],
+        ["waiting","Waiting",snapshot.status.waiting.count,"for a job card",STATUS.waiting.color,STATUS.waiting.pale,"kpi-waiting"],
+        ["on_track","On time",snapshot.status.on_track.count,snapshot.status.on_track.count?`ships ${dateRange(snapshot.status.on_track)}`:"",STATUS.on_track.color,STATUS.on_track.pale,"kpi-on-time"],
+        ["at_risk","At risk",snapshot.status.at_risk.count,snapshot.status.at_risk.count?`ships ${dateRange(snapshot.status.at_risk)}`:"",STATUS.at_risk.color,STATUS.at_risk.pale,"kpi-at-risk"],
+        ["breach","Delayed",snapshot.status.breach.count,snapshot.status.breach.count?`ships ${dateRange(snapshot.status.breach)}`:"",STATUS.breach.color,STATUS.breach.pale,"kpi-delayed"],
+      ].map(([key,label,count,detail,tone,pale,testId])=><StatusTile key={key} label={label} count={fmt(count)} detail={detail}
+        tone={tone} pale={pale} testId={testId} active={filter===key} onClick={()=>setFilter(key)} />)}
+    </section>
+
     {/* Order health leads the dashboard: the one table management reads first. */}
     <section className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
-      <div className="flex items-start gap-3 flex-wrap mb-3">
-        <div><h2 className="serif text-lg font-semibold">Complete order health</h2><p className="text-xs text-slate-500 mt-1">One management row per order with delivery outlook and dispatch completion.</p></div>
+      <div className="flex items-center gap-3 flex-wrap mb-3">
+        <h2 className="serif text-lg font-semibold">Complete order health</h2>
         <div className="ml-auto flex gap-2 flex-wrap items-center">
           <input aria-label="Search executive orders" value={search} onChange={event=>setSearch(event.target.value)} placeholder="Order, PI, customer, article…" className="border border-slate-300 rounded-lg px-3 py-1.5 text-xs" style={{width:220}} />
           <select aria-label="Customer" value={customer} onChange={e=>{setCustomer(e.target.value);setOpenOrder(null);}}
@@ -266,21 +288,20 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
           </select>
           {customer && <button onClick={()=>{setCustomer("");setOpenOrder(null);}}
             className="text-xs font-semibold text-indigo-700">Clear</button>}
-          {[["all","All",snapshot.total_orders],["waiting","Waiting",snapshot.status.waiting.count],["on_track","On time",snapshot.status.on_track.count],["at_risk","At risk",snapshot.status.at_risk.count],["breach","Delayed",snapshot.status.breach.count]].map(([key,label,count])=><button key={key} onClick={()=>setFilter(key)} aria-pressed={filter===key} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold" style={{background:filter===key?"#0F2233":"#fff",color:filter===key?"#fff":"#52606D",borderColor:filter===key?"#0F2233":"#D7DEE6"}}>{label} · {count}</button>)}
         </div>
       </div>
       <table className="w-full text-xs" style={{minWidth:1000}}>
         <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
-          <th className="text-left py-2">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th><th className="text-right">Pairs</th><th className="text-left">Health</th><th className="text-left">Order date</th><th className="text-left">Planned dispatch</th><th className="text-right">Production days</th><th className="text-left">Dispatch completion</th><th className="text-right">Pending / shortage</th>
+          <th className="text-left py-2">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th><th className="text-right pr-5">Pairs</th><th className="text-left">Health</th><th className="text-left">Order date</th><th className="text-left">Planned dispatch</th><th className="text-right pr-5">Production days</th><th className="text-left">Dispatch completion</th><th className="text-right">Pending / shortage</th>
         </tr></thead>
         <tbody>{visible.map(order=><React.Fragment key={order.order_no}>
           <tr onClick={()=>setOpenOrder(openOrder===order.order_no?null:order.order_no)}
             className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
             style={{background:openOrder===order.order_no?"#F6F8FA":undefined}}>
           <td className="py-2"><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi_no||"No PI"}</div></td>
-          <td>{order.party||"—"}</td><td>{order.article}</td><td className="mono text-right">{fmt(order.qty)}</td>
-          <td><StatusPill status={order.status}/>{order.bottleneck&&<div className="text-slate-400 mt-1">{order.bottleneck}</div>}</td>
-          <td className="mono">{niceDate(order.order_date)}</td><td className="mono">{niceDate(order.dispatch_date)}</td><td className="mono text-right">{fmt(order.lead_days,1)}</td>
+          <td>{order.party||"—"}</td><td>{order.article}</td><td className="mono text-right pr-5">{fmt(order.qty)}</td>
+          <td><StatusPill status={order.status}/>{order.bottleneck&&<div className="text-slate-400 mt-1">{order.bottleneck}{order.slip_days>0?` · ${order.slip_days}d slip`:""}</div>}</td>
+          <td className="mono">{niceDate(order.order_date)}</td><td className="mono">{niceDate(order.dispatch_date)}</td><td className="mono text-right pr-5">{order.status==="waiting"?"—":fmt(order.lead_days,1)}</td>
           <td><div className="flex justify-between gap-2 mb-1"><span className="mono">{fmt(order.dispatched)} / {fmt(order.qty)}</span><span className="mono text-slate-400">{pct(order.completion_pct)}</span></div><Progress value={order.completion_pct} color={order.completion_pct>=100?"#047857":"#0B6BCB"}/></td>
           <td className="mono text-right"><div className={order.pending?"text-amber-700":"text-emerald-700"}>{fmt(order.pending)} pending</div>{order.shortage>0&&<div className="text-rose-700">{fmt(order.shortage)} short</div>}</td>
         </tr>
@@ -291,121 +312,59 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
       </table>
       {!visible.length && <div className="text-sm text-slate-500 text-center py-8">No orders match this dashboard filter.</div>}
     </section>
-    <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
-      <Kpi label="Total live orders" value={fmt(snapshot.total_orders)} detail={`${fmt(snapshot.total_pairs)} ordered pairs`} testId="kpi-total-orders" />
-      <Kpi label="Waiting for job card" drill="waiting" onDrill={setDrill} open={drill==="waiting"} value={fmt(snapshot.status.waiting.count)} detail="PI issued, not released to production" tone={STATUS.waiting.color} pale={STATUS.waiting.pale} testId="kpi-waiting" />
-      <Kpi label="Orders on time" value={fmt(snapshot.status.on_track.count)} detail={dateRange(snapshot.status.on_track)} tone={STATUS.on_track.color} pale={STATUS.on_track.pale} testId="kpi-on-time" />
-      <Kpi label="Orders at risk" drill="at_risk" onDrill={setDrill} open={drill==="at_risk"} value={fmt(snapshot.status.at_risk.count)} detail={dateRange(snapshot.status.at_risk)} tone={STATUS.at_risk.color} pale={STATUS.at_risk.pale} testId="kpi-at-risk" />
-      <Kpi label="Delayed orders" drill="breach" onDrill={setDrill} open={drill==="breach"} value={fmt(snapshot.status.breach.count)} detail={dateRange(snapshot.status.breach)} tone={STATUS.breach.color} pale={STATUS.breach.pale} testId="kpi-delayed" />
-      <Kpi label="Avg production days" value={fmt(snapshot.average_production_days,1)} detail="Average scheduled release-to-dispatch lead time" testId="kpi-production-days" />
-      <Kpi label="Capacity utilisation" value={pct(snapshot.capacity_util_pct)} detail="Average planned utilisation across active centres" tone="#0B6BCB" pale="#EFF6FF" testId="kpi-utilisation" />
-    </section>
-
-    <section className="grid grid-cols-1 md:grid-cols-4 gap-3">
-      <Kpi label="Today's production plan" value={fmt(production.planned_pairs)}
-        detail={`${production.planned_rows} scheduled line/order row${production.planned_rows===1?"":"s"}`}
-        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-production-plan" />
-      <Kpi label="Today's achievement" value={fmt(production.actual_pairs)}
-        detail={`${pct(production.achievement_pct)} · ${production.recorded_rows} of ${production.planned_rows} rows reported`}
-        tone={production.recorded_rows?"#047857":"#64748B"} pale={production.recorded_rows?"#ECFDF5":"#F8FAFC"}
-        testId="kpi-production-actual" />
-      <Kpi label="Order vs dispatch %" value={pct(snapshot.order_vs_dispatch_pct)}
-        detail={`${fmt(snapshot.dispatched_last_30_days)} dispatched ÷ ${fmt(snapshot.ordered_last_30_days)} ordered pairs · last 30 days`}
-        tone="#0B6BCB" pale="#EFF6FF" testId="kpi-order-dispatch-pct" drill="coverage" onDrill={setDrill} open={drill==="coverage"} />
-      <Kpi label="Dispatch shortage %" value={pct(snapshot.dispatch_shortage_pct)}
-        detail={`${fmt(snapshot.shortage_pairs_last_30_days)} shortage ÷ ${fmt(snapshot.closed_order_pairs_last_30_days)} pairs on orders closed in 30 days`}
-        tone={snapshot.dispatch_shortage_pct?"#BE123C":"#047857"} pale={snapshot.dispatch_shortage_pct?"#FFF1F2":"#ECFDF5"}
-        testId="kpi-dispatch-shortage-pct" drill="shortage" onDrill={setDrill} open={drill==="shortage"} />
-      <Kpi label="Still to ship" value={fmt((snapshot.orders||[]).reduce((n,o)=>n+o.pending,0))}
-        detail={`${(snapshot.orders||[]).filter(o=>o.pending>0).length} order(s) part-shipped or not started`}
-        tone="#B45309" pale="#FFFBEB" testId="kpi-pending"
-        drill="pending" onDrill={setDrill} open={drill==="pending"} />
-      <Kpi label="Average dispatch days" value={fmt(snapshot.average_dispatch_days,1)}
-        detail={`${fmt(snapshot.completed_orders_used_for_dispatch_days)} completed order${snapshot.completed_orders_used_for_dispatch_days===1?"":"s"} · order date to completed dispatch`}
-        tone="#334155" pale="#F8FAFC" testId="kpi-average-dispatch-days" />
+    <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+      <Band title="Dispatch" note="last 30 days">
+        <Fig label="Still to ship" value={fmt((snapshot.orders||[]).reduce((n,o)=>n+o.pending,0))}
+          detail={`pairs on ${(snapshot.orders||[]).filter(o=>o.pending>0).length} order(s)`}
+          tone="#B45309" testId="kpi-pending" drill="pending" onDrill={setDrill} open={drill==="pending"} />
+        <Fig label="Order vs dispatch" value={pct(snapshot.order_vs_dispatch_pct)}
+          detail={`${fmt(snapshot.dispatched_last_30_days)} dispatched of ${fmt(snapshot.ordered_last_30_days)} ordered${snapshot.shortfall_last_30_days>0?` · ${fmt(snapshot.shortfall_last_30_days)} short`:""}`}
+          tone="#0B6BCB" testId="kpi-order-dispatch-pct" drill="coverage" onDrill={setDrill} open={drill==="coverage"} />
+        <Fig label="Dispatch shortage" value={pct(snapshot.dispatch_shortage_pct)}
+          detail={`${fmt(snapshot.shortage_pairs_last_30_days)} short of ${fmt(snapshot.closed_order_pairs_last_30_days)} on closed orders`}
+          tone={snapshot.dispatch_shortage_pct?"#BE123C":"#047857"}
+          testId="kpi-dispatch-shortage-pct" drill="shortage" onDrill={setDrill} open={drill==="shortage"} />
+        <Fig label="Average dispatch days" value={fmt(snapshot.average_dispatch_days,1)}
+          detail={`order to dispatch · ${fmt(snapshot.completed_orders_used_for_dispatch_days)} completed order${snapshot.completed_orders_used_for_dispatch_days===1?"":"s"}`}
+          testId="kpi-average-dispatch-days" />
+      </Band>
+      <Band title="Production" note={production.recorded_rows?"today, as reported":"today, as scheduled"}>
+        <Fig label="Today's plan" value={fmt(production.planned_pairs)}
+          detail={`pairs on ${production.planned_rows} line${production.planned_rows===1?"":"s"}`}
+          tone="#0B6BCB" testId="kpi-production-plan" />
+        <Fig label="Today's achievement" value={fmt(production.actual_pairs)}
+          detail={`${pct(production.achievement_pct)} · ${production.recorded_rows} of ${production.planned_rows} reported`}
+          tone={production.recorded_rows?"#047857":"#64748B"} testId="kpi-production-actual" />
+        <Fig label="Average production days" value={fmt(snapshot.average_production_days,1)}
+          detail="release to dispatch, as planned" testId="kpi-production-days" />
+        <Fig label="Capacity utilisation" value={pct(snapshot.capacity_util_pct)}
+          detail="planned, across active machines" tone="#0B6BCB" testId="kpi-utilisation" />
+      </Band>
     </section>
 
     <Drill metric={drill} snapshot={snapshot} fmt={fmt} pct={pct} niceDate={niceDate} />
 
+    {/* The movement over time beside the machines that made it. The card that
+        used to sit here repeated the Dispatch band figure for figure. */}
     <section className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-      <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl p-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
-            <h2 className="serif text-lg font-semibold">Order versus dispatch — last 30 days</h2>
-            <p className="text-xs text-slate-500 mt-1">{niceDate(snapshot.month_from)} to {niceDate(snapshot.month_to)} · orders use order date; dispatch uses recorded dispatch date.</p>
-          </div>
-          {dispatchLoading && <span className="text-xs text-slate-400">Refreshing dispatch history…</span>}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
-          {[
-            ["Ordered",snapshot.ordered_last_30_days,"#24425E"],
-            ["Dispatched",snapshot.dispatched_last_30_days,"#0B6BCB"],
-            ["Shortfall",snapshot.shortfall_last_30_days,snapshot.shortfall_last_30_days?"#BE123C":"#047857"],
-          ].map(([label,value,color])=><div key={label} className="rounded-lg bg-slate-50 px-3 py-3">
-            <div className="sign text-slate-500" style={{fontSize:10}}>{label} pairs</div>
-            <div className="mono text-xl font-semibold mt-1" style={{color}}>{fmt(value)}</div>
-            <div className="mt-2 rounded-full overflow-hidden" style={{height:5,background:"#E3E8EE"}}>
-              <div style={{height:"100%",width:`${100*Number(value)/barMax}%`,background:color,borderRadius:99}} />
-            </div>
-          </div>)}
-        </div>
-        <div className="mt-4 flex items-center gap-3">
-          <div className="flex-1"><Progress value={snapshot.order_vs_dispatch_pct} /></div>
-          <div className="mono text-sm font-semibold text-slate-700">{pct(snapshot.order_vs_dispatch_pct)} order vs dispatch</div>
-        </div>
-      </div>
-
       <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="serif text-lg font-semibold">Five-day movement</h2>
-            <p className="text-xs text-slate-500 mt-1">Ordered <span style={{color:"#24425E"}}>■</span> vs dispatched <span style={{color:"#0B6BCB"}}>■</span></p>
+            <p className="text-xs text-slate-500 mt-1">Ordered <span style={{color:"#24425E"}}>■</span> vs dispatched <span style={{color:"#0B6BCB"}}>■</span> · {shortDate(snapshot.month_from)} to {shortDate(snapshot.month_to)}</p>
           </div>
         </div>
         <TrendChart trend={snapshot.trend} />
       </div>
-    </section>
 
-    <details className="bg-white border border-slate-200 rounded-xl p-4">
-      <summary className="text-sm font-semibold text-indigo-800 cursor-pointer">Show MIS calculation logic</summary>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 mt-4 text-xs text-slate-600">
-        <div><b className="text-slate-800">Order vs dispatch %</b><br/>Pairs recorded as dispatched in the last 30 days ÷ pairs on orders raised in the last 30 days × 100. Current calculation: {fmt(snapshot.dispatched_last_30_days)} ÷ {fmt(snapshot.ordered_last_30_days)} × 100 = <b>{pct(snapshot.order_vs_dispatch_pct)}</b>.</div>
-        <div><b className="text-slate-800">Dispatch shortage %</b><br/>Accepted shortage pairs on orders completed or closed in the last 30 days ÷ the original ordered pairs on those same closed orders × 100. Current calculation: {fmt(snapshot.shortage_pairs_last_30_days)} ÷ {fmt(snapshot.closed_order_pairs_last_30_days)} × 100 = <b>{pct(snapshot.dispatch_shortage_pct)}</b>.</div>
-        <div><b className="text-slate-800">Average dispatch days</b><br/>For fully dispatched or deliberately closed orders: calendar days from order date to completed dispatch date, added together ÷ completed orders. Open and partially dispatched orders are excluded.</div>
-        <div><b className="text-slate-800">Average production days</b><br/>Sum of the planner&rsquo;s scheduled release-to-dispatch lead days ÷ live scheduled orders.</div>
-        <div><b className="text-slate-800">Capacity utilisation</b><br/>Average of each active work centre&rsquo;s planned utilisation percentage. It is planned capacity until actual shop-floor output is connected.</div>
-        <div><b className="text-slate-800">Waiting / on time / at risk / delayed</b><br/>An order stays Waiting until a job card releases it. Once scheduled, its delivery health is calculated from the current production plan. The displayed date range is the earliest to latest planned dispatch date in that status.</div>
-      </div>
-    </details>
-
-    <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div><h2 className="serif text-lg font-semibold">Orders needing attention</h2><p className="text-xs text-slate-500 mt-1">Unreleased orders first, then delayed and at-risk orders by planned dispatch date.</p></div>
-          <span className="mono text-xs rounded-full bg-rose-50 text-rose-700 px-2 py-1">{attention.length} shown</span>
-        </div>
-        {attention.length ? <table className="w-full text-xs" style={{minWidth:620}}>
-          <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
-            <th className="text-left py-2">Order / PI</th><th className="text-left">Customer</th><th className="text-left">Article</th><th className="text-left">Risk stage</th><th className="text-left">Planned dispatch</th><th className="text-right">Pending</th>
-          </tr></thead>
-          <tbody>{attention.map(order=><tr key={order.order_no} className="border-t border-slate-100">
-            <td className="py-2"><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi_no||"No PI"}</div></td>
-            <td>{order.party||"—"}</td><td>{order.article}</td>
-            <td><StatusPill status={order.status}/><div className="text-slate-500 mt-1">{order.bottleneck||"Schedule"}{order.slip_days>0?` · ${order.slip_days}d slip`:""}</div></td>
-            <td className="mono">{niceDate(order.dispatch_date)}</td>
-            <td className="mono text-right font-semibold">{fmt(order.pending)}</td>
-          </tr>)}</tbody>
-        </table> : <div className="rounded-lg bg-emerald-50 text-emerald-800 text-sm p-4">No orders are waiting for release, at risk or delayed.</div>}
-      </div>
-
-      <div className="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
-        <div className="mb-3"><h2 className="serif text-lg font-semibold">Average machine output</h2><p className="text-xs text-slate-500 mt-1">Scheduled pairs per busy day. This becomes actual output after the shop-floor actual feed is connected.</p></div>
-        {snapshot.machines.length ? <table className="w-full text-xs" style={{minWidth:620}}>
+      <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
+        <div className="mb-3"><h2 className="serif text-lg font-semibold">Average machine output</h2><p className="text-xs text-slate-500 mt-1">Scheduled pairs per busy day — planned, not measured.</p></div>
+        {snapshot.machines.length ? <table className="w-full text-xs" style={{minWidth:560}}>
           <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
             <th className="text-left py-2">Machine / centre</th><th className="text-left">Stage</th><th className="text-right">Avg output / busy day</th><th className="text-right">Daily capacity</th><th className="text-right">Avg util.</th><th className="text-right">Peak</th>
           </tr></thead>
           <tbody>{snapshot.machines.map(machine=><tr key={machine.work_center} className="border-t border-slate-100">
-            <td className="py-2"><div className="font-semibold">{machine.name}</div><div className="mono text-slate-400">{machine.work_center} · {machine.busy_days} busy days</div></td>
+            <td className="py-2"><div className="font-semibold">{machine.name}</div><div className="mono text-slate-400">{machine.busy_days} busy day{machine.busy_days===1?"":"s"}</div></td>
             <td>{machine.stage}</td><td className="mono text-right font-semibold">{fmt(machine.average_output)}</td><td className="mono text-right">{fmt(machine.capacity_per_day)}</td>
             <td className="text-right"><div className="mono font-semibold">{pct(machine.avg_util_pct)}</div><div className="mt-1 ml-auto" style={{width:72}}><Progress value={machine.avg_util_pct} color={machine.avg_util_pct>90?"#BE123C":machine.avg_util_pct>75?"#B45309":"#0B6BCB"}/></div></td>
             <td className="mono text-right">{pct(machine.peak_util_pct)}</td>
@@ -418,10 +377,7 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
     <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-baseline gap-2 flex-wrap mb-1">
         <h3 className="text-sm font-semibold text-slate-800">Planned against achieved</h3>
-        <span className="text-[11px] text-slate-500">
-          By the factory&rsquo;s own financial week. Percentages compare the rows that were reported,
-          like for like; a row nobody reported is counted as missing, never as zero achieved.
-        </span>
+        <span className="text-[11px] text-slate-400">by financial week · reported rows only</span>
       </div>
       {!vs.reported
         ? <div className="text-sm text-slate-500 py-6 text-center">
@@ -463,11 +419,8 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
 
     <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Plan adherence">
       <div className="flex items-baseline gap-2 flex-wrap mb-1">
-        <h3 className="text-sm font-semibold text-slate-800">Plan adherence % — production plan vs actual achieved</h3>
-        <span className="text-[11px] text-slate-500">
-          Up to {adherence.as_of}. Each plan row counts only up to what it planned, so making extra of one job never hides a
-          shortfall on another. <b>Adherence</b> is over the rows reported; <b>strict</b> also counts unreported past rows as missed.
-        </span>
+        <h3 className="text-sm font-semibold text-slate-800">Plan adherence</h3>
+        <span className="text-[11px] text-slate-400">production plan against what was made · up to {adherence.as_of}</span>
       </div>
       {!adherence.reported
         ? <div className="text-sm text-slate-500 py-6 text-center">No production has been reported against a past plan day yet.</div>
@@ -500,8 +453,23 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
         </>}
     </section>
 
-    <div className="rounded-lg border border-blue-200 bg-blue-50 text-blue-900 px-3 py-2 text-xs">
-      <b>Data boundary:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement, rejection, repair and cartons come from Daily plan vs achievement; dispatch comes from recorded packing reports. The plan skips Sundays and the holidays on Machine load.
+    <details className="bg-white border border-slate-200 rounded-xl p-4">
+      <summary className="text-sm font-semibold text-indigo-800 cursor-pointer">Show MIS calculation logic</summary>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 mt-4 text-xs text-slate-600">
+        <div><b className="text-slate-800">Order vs dispatch %</b><br/>Pairs recorded as dispatched in the last 30 days ÷ pairs on orders raised in the last 30 days × 100. Current calculation: {fmt(snapshot.dispatched_last_30_days)} ÷ {fmt(snapshot.ordered_last_30_days)} × 100 = <b>{pct(snapshot.order_vs_dispatch_pct)}</b>.</div>
+        <div><b className="text-slate-800">Dispatch shortage %</b><br/>Accepted shortage pairs on orders completed or closed in the last 30 days ÷ the original ordered pairs on those same closed orders × 100. Current calculation: {fmt(snapshot.shortage_pairs_last_30_days)} ÷ {fmt(snapshot.closed_order_pairs_last_30_days)} × 100 = <b>{pct(snapshot.dispatch_shortage_pct)}</b>.</div>
+        <div><b className="text-slate-800">Average dispatch days</b><br/>For fully dispatched or deliberately closed orders: calendar days from order date to completed dispatch date, added together ÷ completed orders. Open and partially dispatched orders are excluded.</div>
+        <div><b className="text-slate-800">Average production days</b><br/>Sum of the planner&rsquo;s scheduled release-to-dispatch lead days ÷ live scheduled orders.</div>
+        <div><b className="text-slate-800">Capacity utilisation</b><br/>Average of each active work centre&rsquo;s planned utilisation percentage. It is planned capacity until actual shop-floor output is connected.</div>
+        <div><b className="text-slate-800">Achievement % (planned against achieved)</b><br/>By the factory&rsquo;s own financial week. Percentages compare the rows that were reported, like for like; a row nobody reported is counted as missing, never as zero achieved.</div>
+        <div><b className="text-slate-800">Adherence % and strict %</b><br/>Each plan row counts only up to what it planned, so making extra of one job never hides a shortfall on another. <b>Adherence</b> is over the rows reported; <b>strict</b> also counts unreported past rows as missed.</div>
+        <div><b className="text-slate-800">Waiting / on time / at risk / delayed</b><br/>An order stays Waiting until a job card releases it. Once scheduled, its delivery health is calculated from the current production plan. The displayed date range is the earliest to latest planned dispatch date in that status.</div>
+      </div>
+    </details>
+
+    {/* A footnote, not a banner: it is true every day. */}
+    <div className="text-[11px] text-slate-500 px-1">
+      <b>Where the figures come from:</b> order dates, schedule health and machine utilisation come from the Factory OS plan; production achievement, rejection, repair and cartons come from Daily plan vs achievement; dispatch comes from recorded packing reports. The plan skips Sundays and the holidays set on Production plan → Capacity.
       {production.recorded_rows===0&&<> Until achievement is uploaded, production output is <b>scheduled—not actual</b>.</>}
     </div>
   </div>;

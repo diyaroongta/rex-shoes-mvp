@@ -1755,8 +1755,10 @@ describe("material issues",()=>{
     expect(res.body.error).toMatch(/may have been deleted/);
   });
 
-  it("is the Store's: a dispatch clerk and a planner are refused before any query",async()=>{
-    for(const role of ["dispatch","planner","sales","viewer"]){
+  /* The Production Planner updates stock since the client's 11-Nov-2026 list,
+     so it is no longer among the refused. */
+  it("is the Store's: a dispatch clerk and a sales head are refused before any query",async()=>{
+    for(const role of ["dispatch","sales","viewer"]){
       const client=lockedClient();
       const res=await post({job_id:12,moved_on:"2026-11-10",lines:[{material_key:THREAD,qty:1}]},as(role));
       expect([role,res.statusCode]).toEqual([role,403]);

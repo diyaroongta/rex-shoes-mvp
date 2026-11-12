@@ -45,7 +45,7 @@ import { productionUnits } from "../shared/production-units.js";
 import { materialDone } from "../shared/material-demand.js";
 import { progressFrom } from "../shared/production-progress.js";
 import { comboSizes, mrpForSize } from "../shared/pi.js";
-import { can, canSeeTab, defaultTab, isReadOnly, ROLE_LABEL, canEditSchedule, canDecideStock } from "../shared/permissions.js";
+import { can, canSeeTab, defaultTab, isReadOnly, rolesLabel, hasRole, canEditSchedule, canDecideStock } from "../shared/permissions.js";
 import StockDecisions from "./StockDecisions.jsx";
 import PlanBoard from "./PlanBoard.jsx";
 import { mergeOverrides } from "../shared/plan-board.js";
@@ -495,8 +495,9 @@ export default function App({ user=null, onSignOut=null }={}){
     ["Overview", [
       ["mis","Executive MIS", {n:state.totals.sla.breach, tone:"#BE123C"}],
     ]],
+    /* "Production plan" opens on whichever of its views the role may see. */
     ...FLOW.map(({group, tabs}) => [group, tabs.map(([k,label]) =>
-      k==="orders" ? [k,label,{n:lateCount, tone:"#BE123C"}] : [k,label])]),
+      k==="orders" ? [k,label,{n:lateCount, tone:"#BE123C"}] : [k==="plan" ? planHome(role) : k, label])]),
     /* THE STORES. Three stores, each one screen with its own sub-pages (the
        client's list: add item, item register, store stock — and for raw
        material, the issue register and purchase orders too). The Raw Material
@@ -617,9 +618,9 @@ export default function App({ user=null, onSignOut=null }={}){
                   one the screen is about — and "to procure" is already a badge
                   on the Materials menu. */}
               {tab==="mis" && <>
+                {/* At risk / late is NOT repeated here: the dashboard's own
+                    status tiles say it, directly underneath. */}
                 <Stat label="Last dispatch" value={niceDate(t.last_dispatch)||"—"} />
-                <Stat label="At risk / late" value={`${t.sla.at_risk} / ${t.sla.breach}`}
-                      tone={t.sla.breach?"#BE123C":t.sla.at_risk?"#B45309":"#047857"} />
                 <Stat label="To procure" value={state.procurement.length}
                       tone={state.procurement.length?"#B45309":"#047857"} />
               </>}
@@ -631,7 +632,7 @@ export default function App({ user=null, onSignOut=null }={}){
                       {user.display_name || user.username}
                     </div>
                     <div style={{fontSize:10.5,color:"#8A9AAC",textTransform:"uppercase",letterSpacing:".04em"}}>
-                      {ROLE_LABEL[user.role] || user.role}
+                      {rolesLabel(user.role)}
                     </div>
                   </div>
                   <ChangePassword />
@@ -662,6 +663,7 @@ export default function App({ user=null, onSignOut=null }={}){
           )}
 
           <FlowStrip tab={tab} setTab={setTab} role={role} />
+          <PlanViews tab={tab} setTab={setTab} role={role} />
 
           {errBanner}
 
@@ -746,7 +748,7 @@ export default function App({ user=null, onSignOut=null }={}){
         {(tab==="upper_store"||upperSeen) && canSeeTab(role,"upper_store") &&
           <div style={{display:tab==="upper_store"?"block":"none"}}>
             <UpperStoreTab orders={orders||[]} jobs={jobs} dispatches={dispatches} role={role}
-              active={tab==="upper_store"} canEditRules={role==="admin"} />
+              active={tab==="upper_store"} canEditRules={hasRole(role,"admin")} />
           </div>}
         {tab==="repair" && <RepairTab orders={orders||[]} dispatches={dispatches} onChanged={syncAll} />}
         {tab==="schedule" && <ScheduleTab state={state} setPlanOverride={setPlanOverride} />}
@@ -772,12 +774,12 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="procurement" && <ProcurementTab state={state} role={role}
           onStockChanged={async()=>{await reloadReference();setRefTick(t=>t+1);}} />}
         {tab==="machines" && <MachinesTab state={state} caps={caps} setCaps={editCaps} targets={targets} setTargets={setTargets} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
-          calendar={calendar} setCalendar={role==="admin"?setCalendar:null} />}
+          calendar={calendar} setCalendar={hasRole(role,"admin")?setCalendar:null} />}
         {tab==="dispatch" && <DispatchTab orders={state.orders} dispatches={dispatches} onChanged={syncAll}
           onOpenGatePass={canSeeTab(role,"gatepass")?(id=>{setGateFocus(id);setTab("gatepass");}):null} />}
         {tab==="gatepass" && <GatePassTab dispatches={dispatches} orders={orders||[]} onChanged={syncAll}
           focusId={gateFocus} />}
-        {tab==="finished" && <FinishedGoodsTab state={state} jobs={jobs} moves={finishedMoves} actuals={productionActuals} dispatches={dispatches} onChanged={syncAll} readOnly={readOnly||role==="sales"} canLock={canDecideStock(role)} />}
+        {tab==="finished" && <FinishedGoodsTab state={state} jobs={jobs} moves={finishedMoves} actuals={productionActuals} dispatches={dispatches} onChanged={syncAll} readOnly={readOnly||!can(role,"POST","/api/dispatches?resource=finished_stock",{resource:"finished_stock"}).allowed} canLock={canDecideStock(role)} />}
         {tab==="formats" && <FormatsTab state={state} orders={orders||[]} jobs={jobs} moves={finishedMoves} actuals={productionActuals} calendar={calendar} dispatches={dispatches} />}
         {/* Mounted once opened, like the upper store: quantities typed against
             a job card are unsaved work and a tab click must not discard them. */}
@@ -2361,13 +2363,42 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
 const FLOW = [
   { step:1, group:"Orders",     tabs:[["intake","PI generation"],["pis","PI database"],["orders","Order Book"]] },
   { step:2, group:"Job orders", tabs:[["jobs","Create Job Order"],["jobwork","Job Orders Database"]] },
-  { step:3, group:"Production", tabs:[["schedule","Schedule"],["production_input","Daily plan vs achievement"],
-                                      ["status","Production status"],
-                                      ["plan","Production plan"],["machines","Machine load"]] },
+  { step:3, group:"Production", tabs:[["plan","Production plan"],["production_input","Daily plan vs achievement"],
+                                      ["status","Production status"]] },
   /* The upper store and finished goods are on the Stores menu now. */
   { step:4, group:"Dispatch",   tabs:[["dispatch","Dispatch Book"],["gatepass","Gate passes"],["repair","Repair"]] },
 ];
 const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
+
+/* ONE PLAN, THREE WAYS OF LOOKING AT IT. Schedule, Production plan and Machine
+   load were three menu entries for the same plan — by order, by machine, by
+   capacity — and the client read them as three near-identical pages. They are
+   one screen now, "Production plan", with a switch at the top. The three keys
+   are kept: a role is still granted each view separately (the buyer sees the
+   plan by order and nothing else), and a role with one view gets no switch. */
+const PLAN_VIEWS = [
+  ["plan",     "Weekly sheet", "What runs on which machine, day by day — laid out like the weekly planning sheet"],
+  ["schedule", "By order",     "Every order's stages on a timeline, with its dispatch date"],
+  ["machines", "Capacity",     "Machine load, capacities, delivery targets and holidays"],
+];
+const PLAN_KEYS = PLAN_VIEWS.map(([k]) => k);
+/* The view a role lands on when it opens Production plan: the first it may see. */
+const planHome = role => PLAN_KEYS.find(k => canSeeTab(role, k)) || null;
+const sameScreen = (key, tab) => key === tab || (PLAN_KEYS.includes(key) && PLAN_KEYS.includes(tab));
+const flowTabs = (f, role) => f.tabs.map(([k, label]) => [k === "plan" ? planHome(role) : k, label]).filter(([k]) => k && canSeeTab(role, k));
+
+function PlanViews({ tab, setTab, role }){
+  if(!PLAN_KEYS.includes(tab)) return null;
+  const mine = PLAN_VIEWS.filter(([k]) => canSeeTab(role, k));
+  if(mine.length < 2) return null;
+  return <div data-noprint role="tablist" aria-label="Production plan views"
+    style={{margin:"14px 22px 0",display:"inline-flex",border:"1px solid #CBD5E1",borderRadius:9,overflow:"hidden",background:"#fff"}}>
+    {mine.map(([k, label, hint], i) => <button key={k} role="tab" aria-selected={tab === k} title={hint} onClick={()=>setTab(k)}
+      style={{padding:"7px 16px",fontSize:12.5,fontWeight:600,fontFamily:"inherit",cursor:"pointer",border:"none",
+              borderLeft:i ? "1px solid #CBD5E1" : "none",
+              background:tab === k ? "#1F3348" : "#fff",color:tab === k ? "#fff" : "#33465C"}}>{label}</button>)}
+  </div>;
+}
 
 /* Where this screen sits in the walk — one quiet line, four steps. The menu
    already lists every screen; repeating them here only doubled the clutter,
@@ -2375,13 +2406,13 @@ const FLOW_STEP = Object.fromEntries(FLOW.map(f => [f.group, f.step]));
    cannot open is still named (the walk has four steps whoever is looking)
    but is not a link. */
 function FlowStrip({ tab, setTab, role }){
-  const here = FLOW.find(f => f.tabs.some(([k]) => k === tab));
+  const here = FLOW.find(f => f.tabs.some(([k]) => sameScreen(k, tab)));
   if(!here) return null;
   return <nav data-noprint aria-label="Order flow"
     style={{margin:"12px 22px 0",display:"flex",gap:4,flexWrap:"wrap",alignItems:"center",fontSize:12}}>
     {FLOW.map((f, i) => {
       const on = f === here;
-      const first = f.tabs.find(([k]) => canSeeTab(role, k));
+      const first = flowTabs(f, role)[0];
       const style = {display:"inline-flex",alignItems:"center",gap:6,padding:"3px 10px 3px 4px",
         borderRadius:99,border:"none",fontFamily:"inherit",fontSize:12,fontWeight:on?700:500,
         background:on?"#E3EEFB":"transparent",color:on?"#0B4F98":first?"#52667C":"#A7B4C2",
@@ -2412,10 +2443,10 @@ const VIEWS = {
   status:      {title:"Production status",   sub:"Where every job card actually is — recorded movements first, the plan where nothing is recorded"},
   dispatch:    {title:"Dispatch Book",      sub:"Record what shipped and what is still outstanding"},
   gatepass:    {title:"Gate passes",        sub:"The slip security checks as each lorry leaves — from the packing list, with the SR. No off the book"},
-  schedule:    {title:"Schedule",           sub:"Stage by stage, order by order"},
+  schedule:    {title:"Production plan",    sub:"By order — every order's stages on a timeline"},
   production_input:{title:"Daily plan vs achievement",sub:"Enter what was made against the day's plan; the balance re-plans from the next day"},
-  plan:        {title:"Production plan",    sub:"What runs on which machine, day by day"},
-  machines:    {title:"Machine load",       sub:"Capacity, utilisation and delivery targets"},
+  plan:        {title:"Production plan",    sub:"Weekly sheet — what runs on which machine, day by day"},
+  machines:    {title:"Production plan",    sub:"Capacity — machine load, capacities, delivery targets and holidays"},
   procurement: {title:"Procurement",        sub:"What to buy, purchase orders, and what is still to arrive"},
   stock_add:   {title:"Raw Material Store", sub:"Issue Register — what the store received and issued, day by day"},
   stock_issue: {title:"Issue Material",     sub:"Hand material to the floor against a job card, take it back, and see what each card has had"},
@@ -2613,7 +2644,7 @@ function PiDatabaseTab({orders=[],jobs=[],shortfall,onScheduled,onChanged,onGoTo
           <p className="text-xs text-orange-900 mb-2 leading-relaxed">
             Stock is shared, so it is counted out in the order the plan runs: every PI ahead of this
             one in the queue takes what it needs first, and what is missing here is what would be
-            left when this one starts. Move this PI earlier in <b>Schedule → Adjust</b> and the
+            left when this one starts. Move this PI earlier in <b>Production plan → By order → Adjust</b> and the
             shortfall moves to whichever PI now waits behind it.
           </p>
           <table className="text-xs" style={{borderCollapse:"collapse",minWidth:420}}>
@@ -2988,7 +3019,7 @@ function MenuBar({ nav, tab, setTab, role, totals, syncedAt, syncFailed }){
   const go = k => { setTab(k); setOpen(null); };
   /* An entry may stand for several screens (the Raw Material Store's
      sub-pages): its fourth element lists them, and it stays lit on each. */
-  const isOn = ([k,,,also]) => k === tab || (also || []).includes(tab);
+  const isOn = ([k,,,also]) => sameScreen(k, tab) || (also || []).includes(tab);
   const groupHasTab = items => items.some(isOn);
 
   return <div data-noprint ref={wrap} style={{position:"relative"}}>
@@ -3598,8 +3629,11 @@ function FloorToday({state}){
         {board.pairs_today>0 && <> · <b className="mono text-slate-700">{fmt(board.pairs_today)}</b> pairs planned today</>}
       </div>
     </div>
+    {/* A CARD FOR A MACHINE THAT IS RUNNING, ONE LINE FOR THE REST. Eleven
+        cards of which nine said "Nothing scheduled today" was a wall of text
+        to find the two that mattered. */}
     <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))"}}>
-      {board.centres.map(c=>{
+      {board.centres.filter(c=>!c.idle).map(c=>{
         const first=c.running[0];
         return <div key={c.code} className="rounded-xl border bg-white px-3 py-2.5"
           style={{borderColor:c.over_capacity?"#fca5a5":c.idle?"#e2e8f0":"#c7d2fe"}}>
@@ -3645,6 +3679,11 @@ function FloorToday({state}){
         </div>;
       })}
     </div>
+    {board.centres.some(c=>c.idle) && <div className="text-xs text-slate-500 mt-2">
+      <span className="font-semibold text-slate-600">Nothing scheduled today on:</span>{" "}
+      {board.centres.filter(c=>c.idle).map((c,i)=><span key={c.code}>{i>0 && " · "}{c.name}
+        {c.next && <span className="text-slate-400"> (next {c.next.card_no||c.next.order_no}, {niceDate(c.next.starts_on)})</span>}</span>)}
+    </div>}
   </div>;
 }
 
@@ -3824,16 +3863,19 @@ function ScheduleTab({state,setPlanOverride}){
             {label}</button>)}
       </div>
     </div>
-    <p className="text-sm text-slate-500 mb-1"><b>Press Adjust on any row</b> to overrule the plan for that order — run it first or later, pin its start date, move a stage to another machine, or force a stage to finish in a set number of days. <b>Rows are in queue order</b> - the plan fills top to bottom. Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey = before the order's own date.</p>
+    {/* One line to act on; the rest is there for whoever wants it. A paragraph
+        above every chart is a paragraph nobody reads twice. */}
+    <p className="text-xs text-slate-500 mb-1">Rows are in queue order. <b>Adjust</b> on a row overrules the plan for that order.</p>
     <details className="mb-3">
-      <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How this plan is calculated (6 rules)</summary>
+      <summary className="text-xs font-semibold text-indigo-700 cursor-pointer">How to read this, and how the plan is calculated</summary>
       <div className="text-xs text-slate-500 mt-1 leading-relaxed">
+        <b>Reading the chart.</b> Each colour is a stage. A hatched stretch means that order is waiting because a row above it is using the machine it needs. Faint grey is before the order's own date. <b>Adjust</b> can run an order first or later, pin its start date, move a stage to another machine, or force a stage to finish in a set number of days.<br/>
         1. Orders queue by <b>priority first</b>, then earliest order date, then order number. Every order starts at P2, so in practice that is first-in first-out until someone sets P1 to jump the queue or P3 to yield. <b>Adjust</b> on any row overrules all of that — a pinned queue position, start date, machine or stage duration is obeyed exactly, and what it costs is shown at the top.<br/>
         2. Each order follows its article route. A stage starts on the next planning day after the previous stage finishes; in-house Preparation appears once in that route and is not added again as a buffer.<br/>
         3. Each machine line has a daily capacity in pairs. An order takes whatever is free each day - rows higher in the queue get first claim, which is why lower rows show hatched waiting.<br/>
         4. An order never starts before its own order date (faint grey zone).<br/>
         5. Dispatch is its own stage with its own capacity — the dispatch date is the day it finishes, not the day packing ends. Same inputs always give the same plan.<br/>
-        6. <b>Nothing is planned on a Sunday or a holiday</b> (the working calendar on Machine load). A run that reaches one carries on the next working day; only outside-stitching transit counts those days, because the lorry still moves.
+        6. <b>Nothing is planned on a Sunday or a holiday</b> (the working calendar on Production plan → Capacity). A run that reaches one carries on the next working day; only outside-stitching transit counts those days, because the lorry still moves.
       </div>
     </details>
     <div className="overflow-x-auto" ref={scroller} data-testid="schedule-scroller">
@@ -3954,8 +3996,8 @@ function ProcurementTab({state,role="admin",onStockChanged}){
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm overflow-x-auto">
     <PurchaseOrders materials={list} allMaterials={state.netted}
-      canCreate={role==="admin"||role==="procurement"}
-      canReceive={role==="admin"||role==="procurement"||role==="store"}
+      canCreate={can(role,"POST","/api/reference?resource=purchase_orders",{}).allowed}
+      canReceive={can(role,"PATCH","/api/reference?resource=purchase_orders",{action:"receive"}).allowed}
       onStockChanged={onStockChanged}/>
     <div className="flex items-center gap-3 flex-wrap mb-2">
       <div className="text-sm font-semibold text-slate-700">
@@ -4053,13 +4095,16 @@ function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTim
   // read the way the factory flows, and rows never re-order while editing.
   const ORDER=workCentresInOrder(INPUTS.workcenters);
   const maxDay=Math.max(...state.orders.map(o=>o.dispatch_day),1);
-  const days=Array.from({length:maxDay+1},(_,i)=>i);
+  /* THE STRIP STARTS WHERE THE WORK DOES. It used to start at the planner's
+     day zero, months back, so the booked days were a sliver at the far right
+     of an empty bar. From the first booked day (or today, if earlier) to the
+     last dispatch. */
+  const booked=Object.values(state.daily_load||{}).flatMap(l=>Object.keys(l).filter(d=>l[d]>1e-9).map(Number));
+  const firstDay=Math.max(0,Math.min(maxDay,dayIndex(todayIso(),INPUTS.origin),...booked));
+  const days=Array.from({length:maxDay-firstDay+1},(_,i)=>firstDay+i);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <p className="text-sm text-slate-500 mb-1">One strip per line, day by day: <b>how full that line is on each day</b>. Red = fully booked, amber = nearly full, blue = partly used, empty = free. The date on the right is when the line frees up.</p>
     <p className="text-xs text-slate-400 mb-4">Each molding machine runs one order at a time, but they run in parallel with each other. Capacities are placeholders until the factory confirms them.</p>
-    <SlaTargets targets={targets} setTargets={setTargets} />
-    <LeadTimes leadTimes={leadTimes} setLeadTimes={setLeadTimes} />
-    {setCalendar && <WorkCalendar calendar={calendar} setCalendar={setCalendar} />}
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
       const cap=caps[code];
@@ -4097,6 +4142,15 @@ function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTim
     })}
     <div className="flex gap-3 mt-1 flex-wrap">
       <Leg c="#dc2626" t="full (100%)"/><Leg c="#d97706" t="75–99%"/><Leg c="#4f46e5" t="partly used"/><Leg c="#f8fafc" t="free" border/><Leg c="#e2e8f0" t="Sunday / holiday — shut"/>
+    </div>
+    {/* THE LOAD FIRST, THE SETTINGS UNDER IT. This view is opened to see how
+        full the lines are; the targets, lead times and calendar are changed
+        once in a while, and used to push the answer a screen and a half down. */}
+    <div className="mt-6 pt-4 border-t border-slate-200">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-3">Settings behind the plan</div>
+      <SlaTargets targets={targets} setTargets={setTargets} />
+      <LeadTimes leadTimes={leadTimes} setLeadTimes={setLeadTimes} />
+      {setCalendar && <WorkCalendar calendar={calendar} setCalendar={setCalendar} />}
     </div>
   </div>;
 }

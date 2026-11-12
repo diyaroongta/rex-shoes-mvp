@@ -298,19 +298,54 @@ total — the layout of their `WEEKLY PLANNING` workbook. Things worth keeping:
   used, print) is in the weekly table. The downloaded workbook carries the
   same layout as a read-only `Week view` sheet.
 
-**The plan goes out as a workbook and comes back as locks.** The factory plans
-on a sheet, so Production plan has **Download plan (.xlsx)** and **Upload
-edited plan** (`shared/plan-sheet.js`, `src/PlanSheet.jsx`). One row is one
-job, at one stage, on one day; the planner changes the Date, the Work centre
-or the Pairs, or adds and deletes rows to split work differently.
+**The plan goes out as the factory's weekly sheet and comes back as locks.**
+Production plan has **Download plan (.xlsx)** and **Upload edited plan**
+(`shared/plan-sheet.js`, `src/PlanSheet.jsx`, drawn by `src/lib/plan-workbook.js`).
+The first download was a LIST — one row per job, stage and day, with a `Ref`
+column that must not be touched. A program could read it and nobody could plan
+on it; the client's words were "very machine written… not editable". The
+download is now the sheet the factory already plans on:
 
-- **It is the app's OWN sheet that round-trips, not the factory's.** Their
-  monthly planning workbook (`WEEKLY PLANNING - NOVEMBER 2026`) names an
-  article, a size and a party per cell and no job card, and two live cards for
-  "GOLA PLUS · MTS" cannot be told apart by that — a row matched to the wrong
-  card silently re-plans somebody else's work. Every row carries a `Ref`
-  (`unit_key::STAGE`); a row without one is refused by number, and a workbook
-  with no Date/Ref heading is refused with what to do instead.
+```
+WEEK 1        |     CUTTING      |    STITCHING     |  MOULDING …
+6 – 12 Jul    |   Cutting hall   | Stitching lines  |  PVC rotary …
+DATE  | DAY   |  JOB    | PAIRS  |  JOB    | PAIRS  |  JOB | PAIRS
+06/07 | MON   | JC 95 … | 1,500  |         |        |
+              | JC 96 … | 1,000  |         |        |
+WEEK 1 TOTAL  |         | 9,400  |         | 4,800  |
+```
+
+A block a week, a band of rows a day (with spare rows under it), and for every
+machine a JOB beside its PAIRS. The planner types over the pairs, or cuts a job
+with its pairs and pastes it under another day or another machine. Things
+worth keeping:
+
+- **A JOB cell is tied to its job by the CARD NUMBER it starts with** —
+  `JC 95 · GOLA PLUS …`, which is also what the floor calls it. The column says
+  the machine (so the stage) and the band says the day; the old `Ref` is
+  rebuilt from those three, so everything after the reading — what changed,
+  what is refused, what is locked — is the code that was already there. Typed
+  by hand, `95`, `jc-95` and `JC 95 gola` all find it; an ARTICLE alone
+  (`GOLA PLUS`, as the factory's own sheet writes) is refused BY CELL, because
+  two live cards for one article cannot be told apart. Their own monthly
+  workbook is still not read back, for that reason.
+- **What is on the sheet is decided in `weeklyLayout()`, how it looks in
+  `plan-workbook.js`.** The layout is rows of cells with a ROLE, the merges and
+  the page breaks — pure, tested, and read back by `parseWeeklySheet()` in the
+  same file, so the writer and the reader cannot drift. ExcelJS draws it
+  (fills, borders, frozen columns, a week to a printed page, totals as
+  formulas, a dropdown of jobs in every JOB cell) because the community build
+  of SheetJS cannot write a fill or a border. It is loaded only on Download.
+- **A machine's heading is matched on its NAME, exactly.** A prefix match read
+  `Cutting M/C-4` as the cutting hall, because the work centre's code is
+  `CUTTING` — jobs under a heading nobody recognises would have been planned
+  onto a real line.
+- The plan AS DOWNLOADED still travels in the file, on a HIDDEN sheet. A
+  workbook from before the weekly sheet (the list, with its `Ref`) is still
+  read, so a file somebody is half-way through is not lost.
+- The sheet is known by its HEADINGS (`looksWeekly`), not its name — a planner
+  renames a sheet "Week 46" without a second thought.
+
 - **"Changed" is judged against the sheet AS DOWNLOADED**, which travels in the
   workbook as the `As downloaded` sheet. The plan moves between download and
   upload; compared with the LIVE plan, every block that moved by itself would
@@ -509,6 +544,29 @@ orders in — so it is a mode inside that screen. `NewOrderFlow` stays MOUNTED
 when the spreadsheet mode is showing, because it holds an unsaved draft and
 switching modes must not discard a slip the clerk has already checked.
 
+**Schedule, Production plan and Machine load are ONE screen.** They were three
+menu entries for the same plan — by order, by machine, by capacity — and read
+as three near-identical pages. The menu has one entry, **Production plan**,
+with a switch at the top: *Weekly sheet · By order · Capacity* (`PLAN_VIEWS`
+in `src/App.jsx`). The three tab keys (`plan`, `schedule`, `machines`) are
+kept, because a role is still granted each view separately — the buyer sees
+the plan by order and nothing else — so the entry opens on the first view the
+role may see (`planHome`) and a role with one view gets no switch.
+
+**The dashboard says each thing once.** The Executive MIS had the status
+counts on screen three times — thirteen large tiles, the same counts again as
+filter chips over the order table, and again as an "orders needing attention"
+list under it — plus a 30-day card that repeated the dispatch tiles figure for
+figure. `src/MISDashboard.jsx` now reads top to bottom: five **status tiles
+that ARE the filter** for the order table beneath them (so the count and the
+list cannot disagree), then two bands of four figures — *Dispatch, last 30
+days* and *Production, today* — then the movement chart beside machine output,
+then the two plan-against-actual reports. Explanations live behind "Show MIS
+calculation logic", not above each table. Two rules it now follows: **a zero
+is grey** (a red nought says "look here" about nothing), and **an unreleased
+order shows a dash for production days**, not a 0 nobody measured. The
+`data-testid`s (`kpi-…`) are unchanged.
+
 There are exactly **two job-order screens** after the Order Book. **Create Job
 Order** reads every active Order Book row live and accepts the date, destination
 and size-wise quantities. **Job Orders Database** lists every issued record for
@@ -576,6 +634,7 @@ shared/            imported by BOTH browser and server — pure, testable
   job-work.js      issuing work out and taking it back: slips, shortage, what it costs
   stock-plan.js    stock first: on hand / reserved / free, the stock check, reservations
   plan-board.js    the production board: blocks, whether a drop is allowed, knock-on effects
+  plan-sheet.js    the plan as the factory's weekly sheet: what is on it, and reading it back
   material-issues.js which material went to which job card: release, issue, return, undo
   inputs.js        SEED reference data only — real data lives in Postgres
   catalogue-seed.js article photos + MRP bands from the catalogue PDF
@@ -591,6 +650,7 @@ src/
   IssueMaterialTab.jsx Issue Material: a job card's material account, issue, return, undo
   PackingList.jsx      the dispatch document, in the factory's own layout
   lib/refdata.js   hydrates live reference data over the seed at startup
+  lib/plan-workbook.js draws the weekly plan workbook (ExcelJS, loaded on Download)
   lib/client.js    the only thing the browser calls — never a provider directly
 api/
   _lib/ai.js       the ONLY file that reads ANTHROPIC_API_KEY
@@ -803,6 +863,10 @@ Each of these was a real bug found in production. Most have a regression test no
 | A job card that could not be printed twice | A PDF that failed half-way meant raising the card again. The Job Orders Database reopens any issued card from its stored snapshot (`SavedJobCard`) with its own number. Printing looks inside its own box, because Create Job Order stays mounted behind other screens and a page-wide `querySelector(".job-card")` could print a hidden draft. |
 | A stock total sent by the browser | Raising a job card booked its material by sending the register a new running `issue` total computed from the BROWSER's copy of it — the fault `rec_add` had already fixed for receipts. Two cards raised from two screens each sent "what I saw + mine" and the second erased the first. The server now derives the release from the stored card and ADDS it inside the reference row lock (`releaseForJob`); `tests/api/postgres.test.js` raises two cards at once and checks both land. `issuePatch` in `shared/stock.js` is no longer called by any screen. |
 | A line moved by its position | Changing a card's product remapped every line onto the new article's range at the SAME INDEX in its range list, so an unmatched "8X10" became "11X12" and was invoiced as 11s/12s at ₹899. Re-picking a line's rate basis cleared its exact sizes, so "11 over 3" printed as 18 each of 11s/12s/13s. `remapLine` / `rekeySizes` in `shared/intake.js` follow the WRITTEN sizes: keep them, move only to a range that holds them, otherwise leave the line unmatched for the clerk. |
+| A download nobody could edit | "Download the plan, change it, upload it" shipped as a flat list with a `Ref (do not change)` column, in ISO dates, unstyled. It round-tripped perfectly and no planner could use it: moving a job meant retyping a date, and one slip in `Ref` broke the row. A file a person is asked to edit has to be laid out for the PERSON — theirs, a block a week and a row a day — and the machine does the work of reading it. |
+| A load strip that started at day zero | The Capacity strips drew every day from the planner's ORIGIN to the last dispatch, so on live data the booked days were a sliver at the far right of months of empty bar. They run from the first booked day (or today) now, and the load comes BEFORE the targets, lead times and calendar — the settings used to push the answer a screen and a half down. |
+| Eleven cards to say two things | "On the floor today" gave every machine a card, and most of them said "Nothing scheduled today". A machine that is running gets a card; the idle ones are named on one line with what is next. |
+| Two numbers read as one | The order-health table right-aligned Production days hard against the left-aligned Dispatch completion, so "8" and "0 / 1,500" printed as "80 / 1,500". A right-aligned number followed by a left-aligned column needs room between them. |
 | A card's override the server threw away | `PATCH /api/orders` normalised `plan_override` with `normalizeOverride`, which keeps the order's own fields and drops every other key — `units` among them, which is where a JOB CARD's override lives. The plan runs job cards, so every Adjust (and every block locked on the board) was stored as an empty override: it showed for as long as the browser's own copy lasted and was gone on the next refresh. Found by reloading the page, not by any test — the mocked test asserted the order-level shape only. Each `units[key]` is normalised and kept now; an empty one is dropped. |
 | An undo that re-reserved | Undoing a dispatch that shipped from finished goods wrote a fresh `reserve` row. The pairs were back, but the ledger then read "granted 120, consumed 60", so an edit that later shrank the order could never release them. An undo NEGATES the row it undoes (same kind, opposite sign). Only a real Postgres run showed it. |
 | An order total that forgot the shelf | Everything that totals an order added pairs on cards + pairs waiting. Pairs supplied from finished goods are neither, so a 300-pair order read 240 on the Order Book and in MIS. `from_stock_pairs` is the third term, in `pairsOf`, `orderQuantity` and the Order Book. |

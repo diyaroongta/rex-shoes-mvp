@@ -45,24 +45,30 @@ const EVERY_TAB = ["mis","intake","pis","orders","jobs","jobwork","status","uppe
 
 export const ROLE_DEFS = {
   admin: {
-    label:"Admin (IT)",
-    summary:"Everything, including the article master, BOM, parties, capacities and accounts.",
+    label:"Master",
+    summary:"Sees and changes everything, including the article master, BOM, parties, capacities, "
+      +"and every login: who has an account, what access it has, and resetting its password.",
     tabs:"all", writes:"all", reference:"all",
   },
   owner: {
-    label:"Owner / Director",
-    summary:"Sees the whole factory. Changes nothing.",
+    label:"Director (view only)",
+    summary:"Sees the whole factory — production, dispatch, stocks, restocking. Changes nothing.",
     tabs:"all", writes:[], reference:null,
   },
+  /* Client, 11-Nov-2026: "can see only MIS reports, order taking and orders
+     pending — no viewership or access to production related tabs". Finished
+     goods went with that: it is the production floor's output ledger. */
   sales: {
-    label:"CRM / Sales",
-    summary:"Raises PIs and bulk orders, and maintains customers and their terms.",
-    tabs:["mis","intake","pis","orders","finished","parties","copilot"],
+    label:"Sales Head",
+    summary:"MIS reports, order taking and pending orders. Raises PIs and bulk orders and keeps customers' terms. "
+      +"No production screens.",
+    tabs:["mis","intake","pis","orders","parties","copilot"],
     writes:["orders","pis","parties","read-order-photo","read-pi","copilot"], reference:null,
   },
   dispatch: {
     label:"Dispatch Executive",
-    summary:"Records what shipped and how it was packed. Cannot raise or change an order.",
+    summary:"Records dispatches and updates finished-goods stock; sees pending orders and order sheets. "
+      +"Cannot raise or change an order.",
     /* The order book and the packing rules are READ here: you cannot pack a
        shipment without seeing what was ordered and how it packs. Writing is
        confined to dispatch. */
@@ -70,30 +76,32 @@ export const ROLE_DEFS = {
        lorry, so it belongs to whoever is packing it. */
     /* Gate passes: the slip for the lorry this role just packed. Saving its
        SR. No is a write to dispatches, which this role already has. */
-    tabs:["mis","orders","pis","status","repair","dispatch","gatepass","finished","formats","rules"],
+    /* Client, 11-Nov-2026: "can update dispatch stock (fg stocks), can record
+       dispatches, see pending orders, see order sheets". The finished-goods
+       ledger rides on /api/dispatches, so the one grant covers both. No MIS. */
+    tabs:["orders","pis","dispatch","gatepass","finished","repair","formats","rules"],
     writes:["dispatches"], reference:null,
   },
-  /* Row 5 of the factory's access list: "Production, Schedule, Production plan,
-     Machine load — Edit (Production module)". It used to be the broad
-     three-role operating role, which let a production planner raise PIs and
-     record dispatches — work the same list gives to CRM/Sales and the Dispatch
-     Executive.
-     `orders:"plan"` is what makes "edit the PLAN, not the ORDER" expressible:
-     permissions are enforced per ENDPOINT, and re-sequencing work is a PATCH
-     on /api/orders, so granting the endpoint outright would also allow
-     rewriting quantities and DELETING orders. It is judged on the body keys
-     instead, the same way `reference:"stock"` is. */
+  /* The planner was once narrowed to "edit the PLAN, not the ORDER"
+     (`orders:"plan"`, judged on the body keys). The client's 11-Nov-2026 list
+     gives the planner order taking and dispatch outright, so it is
+     `orders:"all"` now; `"plan"` remains available for a role that should
+     re-sequence work without touching what was ordered. */
   planner: {
     label:"Production Planner",
-    summary:"Builds the production schedule and balances machine load. "
-      +"Re-sequences work; cannot raise a PI, record a dispatch, "
-      +"or change what was ordered.",
-    /* The upper store is READ here: an upper short for an order is a planning
-       problem before it is a store problem. */
-    tabs:["mis","orders","status","upper_store","schedule","production_input","plan","machines","formats"],
-    /* `stock_plan`: whether a new order uses ready stock is a planning
-       decision — it settles what is made and what is not. */
-    writes:[], orders:"plan", production_actuals:true, stock_plan:true, reference:null,
+    /* Client, 11-Nov-2026: sees order taking, order planning, material
+       procurement, machine planning, recording production and dispatch,
+       updating stocks. Cannot see MIS reports, change machine capacities
+       (`settings` is not granted) or change existing BOMs (`reference` is the
+       stock grant only — never the BOM). `orders:"all"` is the whole order
+       endpoint AND the plan, as opposed to `"plan"`, which is the plan alone. */
+    summary:"Order taking, planning, job orders, procurement, machine planning, recording production and "
+      +"dispatch, and stock updates. Cannot see the MIS, change machine capacities or change a BOM.",
+    tabs:["intake","pis","orders","jobs","jobwork","schedule","production_input","status","upper_store","plan","machines",
+          "dispatch","gatepass","finished","repair","stock_add","stock_issue","stock","procurement","material_new",
+          "formats","rules"],
+    writes:["orders","pis","dispatches","read-order-photo","read-pi"], orders:"all",
+    production_actuals:true, stock_plan:true, reference:"stock", purchase_orders:"all", upper_store:"record",
   },
   procurement: {
     label:"Procurement Officer",
@@ -175,7 +183,38 @@ export function endpointOf(url){
 
 const defOf = role => ROLE_DEFS[role] || null;
 
+/* ONE ACCOUNT, SEVERAL ROLES. A sales head who also sits on the board, or a
+   planner who also records dispatch, is given both roles rather than a third
+   invented one. The roles are stored in the existing `users.role` column as a
+   comma-separated list ("sales,owner") — a single role is just a list of one,
+   so every account that already exists reads exactly as before.
+   The account may do whatever ANY of its roles may do: each exported check
+   below asks the single-role version once per role. Unrecognised entries are
+   dropped, and a list with nothing recognised in it is still refused
+   everything — the fail-closed rule does not loosen because a list is longer. */
+export function rolesOf(role){
+  const list = Array.isArray(role) ? role : String(role || "").split(",");
+  return [...new Set(list.map(r => String(r).trim().toLowerCase()).filter(Boolean))];
+}
+const knownRoles = role => rolesOf(role).filter(r => ROLE_DEFS[r]);
+/* A stored role value: known roles only, in ROLE_DEFS order, comma-joined.
+   null when nothing recognisable was given. */
+export function normalizeRoles(role){
+  const set = new Set(knownRoles(role));
+  const out = ROLES.filter(r => set.has(r));
+  return out.length ? out.join(",") : null;
+}
+export const hasRole = (role, wanted) => knownRoles(role).includes(wanted);
+export const rolesLabel = role => {
+  const list = knownRoles(role);
+  return list.length ? list.map(r => ROLE_DEFS[r].label).join(" + ") : String(role || "");
+};
+const anyRole = (role, fn) => knownRoles(role).some(fn);
+
 export function canSeeTab(role, tab){
+  return anyRole(role, r => canSeeTabOne(r, tab));
+}
+function canSeeTabOne(role, tab){
   const def = defOf(role);
   if(!def) return false;
   if(tab === "profiles") return role === "admin";
@@ -185,6 +224,18 @@ export function canSeeTab(role, tab){
 /* May this role make this request? Returns {allowed} or {allowed:false, reason}
    where the reason is written to be shown to the person who hit it. */
 export function can(role, method, url, body){
+  if(OPEN.has(endpointOf(url))) return { allowed:true };
+  const list = knownRoles(role);
+  if(!list.length) return canOne(null, method, url, body);
+  let first = null;
+  for(const r of list){
+    const verdict = canOne(r, method, url, body);
+    if(verdict.allowed) return verdict;
+    first = first || verdict;
+  }
+  return first;
+}
+function canOne(role, method, url, body){
   const endpoint = endpointOf(url);
   const verb = String(method || "GET").toUpperCase();
 
@@ -284,7 +335,7 @@ export function can(role, method, url, body){
      a `plan_override` PATCH on /api/orders, so a role with the whole endpoint
      (Sales) could otherwise drag the production board about. The factory's
      rule is Production Planner and Admin only. */
-  if(endpoint === "orders" && body && typeof body === "object" && "plan_override" in body && def.orders !== "plan")
+  if(endpoint === "orders" && body && typeof body === "object" && "plan_override" in body && def.orders !== "plan" && def.orders !== "all")
     return { allowed:false,
       reason:"Only the Production Planner or an administrator can move, lock or re-plan the schedule." };
 
@@ -318,6 +369,9 @@ const LABEL = {
 /* The first screen a role is actually allowed to open, so nobody is dropped
    onto a tab that is not theirs. */
 export function defaultTab(role){
+  return defaultTabOne(knownRoles(role)[0]);
+}
+function defaultTabOne(role){
   const def = defOf(role);
   if(!def) return "mis";
   return def.tabs === "all" ? "mis" : (def.tabs[0] || "mis");
@@ -325,6 +379,9 @@ export function defaultTab(role){
 
 /* True when a role may change nothing at all. */
 export function isReadOnly(role){
+  return !anyRole(role, r => !isReadOnlyOne(r));
+}
+function isReadOnlyOne(role){
   const def = defOf(role);
   if(!def) return true;
   /* `orders` counts: a production planner writes nothing on the ORDER but does
@@ -338,17 +395,27 @@ export function isReadOnly(role){
    approving a count adjustment), "record", or null for read-only. */
 /* May this role move, lock and re-plan blocks on the production board? */
 export function canEditSchedule(role){
+  return anyRole(role, canEditScheduleOne);
+}
+function canEditScheduleOne(role){
   const def = defOf(role);
-  return !!def && (def.writes === "all" || def.orders === "plan");
+  return !!def && (def.writes === "all" || def.orders === "plan" || def.orders === "all");
 }
 
 /* May this role decide an order's stock, and lock stock to a party? */
 export function canDecideStock(role){
+  return anyRole(role, canDecideStockOne);
+}
+function canDecideStockOne(role){
   const def = defOf(role);
   return !!def && (def.writes === "all" || !!def.stock_plan);
 }
 
 export function upperStoreAccess(role){
+  const levels = knownRoles(role).map(upperStoreAccessOne);
+  return levels.includes("approve") ? "approve" : levels.includes("record") ? "record" : null;
+}
+function upperStoreAccessOne(role){
   const def = defOf(role);
   if(!def) return null;
   if(def.writes === "all") return "approve";

@@ -44,6 +44,9 @@ export const listProfiles = () => j("/api/auth?resource=profiles");
 export const createProfile = profile => post("/api/auth?resource=profiles",profile);
 export const setProfileActive = (username,active) => j("/api/auth?resource=profiles",{
   method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,active})});
+/* `change` is any of {roles:[...]} and {password} — see api/auth.js. */
+export const updateProfile = (username,change) => j("/api/auth?resource=profiles",{
+  method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,...change})});
 
 /* ---- order sheet ---- */
 export const listOrders      = ()          => j("/api/orders");

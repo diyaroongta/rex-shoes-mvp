@@ -36,12 +36,11 @@
  * and back; everything that decides anything is here.
  */
 import { dayIndex, fromDay, workCalendar, normalizeOverride, workCentresInOrder } from "./engine.js";
-import { boardRows, boardSpan, weeklySheets, machineFits, cleanOverride } from "./plan-board.js";
+import { boardRows, machineFits, cleanOverride } from "./plan-board.js";
 
 export const PLAN_SHEET = "Plan";
 export const SNAPSHOT_SHEET = "As downloaded";
-export const HELP_SHEET = "How to edit";
-export const WEEK_SHEET = "Week view";
+export const HELP_SHEET = "How to use";
 export const COLUMNS = ["Date", "Day", "Stage", "Work centre", "Job card", "Order", "Party", "Article",
                         "Sizes", "Pairs", "Locked", "Ref (do not change)"];
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -90,47 +89,292 @@ export const sheetRows = rows => [COLUMNS, ...(rows || []).map(r => [r.date, r.d
 
 export function helpRows(wcs){
   return [
-    ["HOW TO EDIT THE PLAN"],
-    ["Edit the sheet called \"Plan\", then upload this workbook on Production -> Production plan."],
+    ["HOW TO USE THIS WORKBOOK"],
     [],
-    ["One row is one job, at one stage, on one day."],
-    ["To move work to another day", "change the Date (2026-11-17 or 17/11/2026)."],
-    ["To run it on another machine or line", "change the Work centre to one from the list below, of the same stage."],
-    ["To make more or fewer pairs that day", "change the Pairs."],
-    ["To split work over more days", "copy the row, give the copy another Date, and share the Pairs between them."],
-    ["To take a day away", "delete that row and add its Pairs to another day of the same job and stage."],
-    ["A Sunday or a holiday", "may be given as the Date: the line is then planned to work that day."],
+    ["1", "Open the \"Weekly plan\" sheet. It is the plan week by week: a row a day, a pair of columns a machine or line."],
+    ["2", "Change it the way the plan has changed:"],
+    ["", "•  More or fewer pairs that day — type over the PAIRS."],
+    ["", "•  Another day — cut the JOB and its PAIRS and paste them under that day."],
+    ["", "•  Another machine or line of the same stage — paste them under that machine's columns."],
+    ["", "•  Over more days — put the job on each day (pick it from the list in the JOB cell, or type its card number, e.g. JC 95) and share the pairs."],
+    ["", "•  A Sunday or a holiday — put the job on that day; the line is then planned to work it."],
+    ["3", "Save, and upload the file on Production plan. You are shown what changed before anything is saved."],
     [],
-    ["Do NOT change the Ref column. It is how a row is matched to its job card and stage."],
-    ["Day, Job card, Order, Party, Article, Sizes and Locked are there to read by. Changing them changes nothing."],
-    ["The sheet \"As downloaded\" is the plan as it was when this file was made. Leave it alone: it is how the upload tells what you changed."],
-    ["The sheet \"Week view\" is the same plan laid out week by week, to read and print. It is not read back."],
-    ["Only the jobs you change are locked. Everything else is still planned automatically, around them."],
+    ["Good to know"],
+    ["", "A JOB cell must START with the job card number. The article and party after it are there to read by."],
+    ["", "Every job is listed on the \"Job cards\" sheet, with its order, party, sizes and dispatch date."],
+    ["", "Only the jobs you change are fixed where you put them. Everything else is still planned automatically, around them."],
+    ["", "Totals are worked out by the sheet. There is no need to keep them in step by hand."],
     [],
-    ["WORK CENTRES", "Stage", "Pairs a day"],
+    ["MACHINES AND LINES", "Stage", "Pairs a day"],
     ...workCentresInOrder(wcs).map(code => [(wcs[code] || {}).name || code, (wcs[code] || {}).stage, (wcs[code] || {}).capacity_per_day]),
   ];
 }
 
-/* THE SAME PLAN, LAID OUT THE WAY THE FACTORY LAYS ITS OWN: a block per week,
-   a row a day, a column a work centre, and in each cell the jobs running there
-   with that day's pairs. For reading and printing only — it is never read
-   back, because a cell of free text cannot be tied to a job card. */
-export function weekViewRows(state, wcs, origin){
-  const rows = boardRows(state, wcs).filter(r => r.blocks.length);
-  const span = boardSpan(rows);
-  if(!span) return [["Nothing is on the plan yet."]];
-  const out = [["WEEKLY PRODUCTION PLAN — to read and print. To change the plan, edit the \"Plan\" sheet, not this one."]];
-  const job = ({ block:b, pairs }) => `${b.card_no ? `JC ${b.card_no}` : b.order_no} · ${b.article} · ${Math.round(pairs)}${b.locked ? " (locked)" : ""}`;
-  for(const week of weeklySheets(rows, span.first, span.last, origin)){
-    if(!week.any) continue;
-    out.push([], [`WEEK OF ${week.from} TO ${week.to}`],
-      ["Date", "Day", ...rows.map(r => `${r.name} (${r.capacity_per_day} a day)`)]);
-    for(const d of week.days)
-      out.push([d.date, dowOf(d.date), ...rows.map(r => ((d.cells[r.work_center] || {}).jobs || []).map(job).join("\n"))]);
-    out.push(["Week total", "", ...rows.map(r => week.totals[r.work_center] ? Math.round(week.totals[r.work_center]) : "")]);
+/* ================= THE FACTORY'S OWN WEEKLY SHEET =================
+ *
+ * The first download was a list — one row per job, stage and day, with a
+ * `Ref` column that must not be touched. It was easy for a program to read
+ * and nothing a planner could plan on: the client's verdict was "very machine
+ * written… not editable". The factory already HAS a planning sheet, and this
+ * is that sheet:
+ *
+ *   WEEK 1         |      CUTTING      |     STITCHING     |  MOULDING …
+ *   09 – 15 Nov    |   Cutting hall    |  Stitching lines  |  PVC rotary …
+ *   DATE  | DAY    |   JOB   |  PAIRS  |   JOB   |  PAIRS  |  JOB | PAIRS
+ *   09/11 | MON    | JC 95 … |  1,200  | JC 91 … |   800   |
+ *                  | JC 96 … |    600  |         |         |
+ *   …
+ *   WEEK 1 TOTAL   |         |  9,400  |         |  4,800  |
+ *
+ * A block per week, a band of rows per day, and for every machine or line a
+ * JOB beside its PAIRS. The planner types over the pairs, or cuts a job and
+ * its pairs and pastes them under another day or another machine. Nothing
+ * else on the sheet has to be kept right.
+ *
+ * WHAT TIES A CELL TO ITS JOB is the card number the JOB cell starts with
+ * ("JC 95 · GOLA PLUS …") — which is also what the floor calls the job. The
+ * column says the work centre, and so the stage; the band says the day. The
+ * old `Ref` is rebuilt from those three, so everything downstream of the
+ * reading (what changed, what is refused, what is locked) is the code that was
+ * already there. The plan AS DOWNLOADED still travels in the workbook, now on
+ * a hidden sheet.
+ */
+/* A stage's band and its machines' headings, as [band, heading] colours —
+   Excel's own light tints. The screen and the workbook take them from here,
+   so the sheet a planner downloads looks like the one they were looking at. */
+export const STAGE_TINTS = [["BDD7EE", "DDEBF7"], ["C6E0B4", "E2EFDA"], ["FFE699", "FFF2CC"], ["F8CBAD", "FCE4D6"],
+                            ["D9C3E8", "EDE2F5"], ["B7DEE8", "DAEEF3"], ["D9D9D9", "EDEDED"], ["FFD3B6", "FFE9DB"]];
+export const WEEKLY_SHEET = "Weekly plan";
+export const JOBS_SHEET = "Job cards";
+const DOW_UP = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const dayMonth = iso => `${Number(iso.slice(8, 10))} ${MONTHS[Number(iso.slice(5, 7)) - 1]}`;
+
+export const colName = c => { let s = ""; for(let n = c + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
+const addr = (r, c) => `${colName(c)}${r + 1}`;
+
+/* WHAT A JOB IS CALLED ON THE SHEET: its card number, or its order number
+   while it has no card. Two jobs that would read alike carry the order too —
+   a name that fits two jobs is how a row re-plans somebody else's work. */
+export function jobLabels(state, wcs){
+  const first = new Map();
+  for(const b of boardRows(state, wcs).flatMap(r => r.blocks)) if(!first.has(b.unit_key)) first.set(b.unit_key, b);
+  const short = b => b.card_no ? `JC ${b.card_no}` : String(b.order_no);
+  const count = {};
+  for(const b of first.values()) count[short(b)] = (count[short(b)] || 0) + 1;
+  const labels = new Map(), used = new Set();
+  for(const [key, b] of first){
+    let name = short(b);
+    if(count[name] > 1) name = b.card_no ? `JC ${b.card_no} (${b.order_no})` : key;
+    if(used.has(name)) name = key;
+    used.add(name); labels.set(key, name);
   }
-  return out;
+  return labels;
+}
+const jobKey = v => clean(v).toUpperCase().replace(/^(JOB\s*CARD|JC|CARD)(?![A-Z])[\s.:#№\-]*/, "").replace(/\s+/g, "");
+
+/* Every spelling a planner may give a job, to the job it means — and to null
+   where a spelling fits more than one, so it is asked about instead of guessed. */
+function jobIndex(state, wcs){
+  const index = new Map();
+  const put = (k, unit) => { if(k) index.set(k, index.has(k) && index.get(k) !== unit ? null : unit); };
+  const labels = jobLabels(state, wcs);
+  const blocks = new Map();
+  for(const b of boardRows(state, wcs).flatMap(r => r.blocks)) if(!blocks.has(b.unit_key)) blocks.set(b.unit_key, b);
+  for(const [key, name] of labels){
+    const b = blocks.get(key);
+    put(jobKey(name), key); put(jobKey(key), key);
+    if(b.card_no) put(jobKey(`JC ${b.card_no}`), key);
+    put(jobKey(b.order_no), key);
+  }
+  return index;
+}
+function matchJob(text, index){
+  const head = clean(String(text == null ? "" : text).split(/[\n·|]/)[0]);
+  const token = (/^(?:JOB\s*CARD|JC|CARD)?[\s.:#№\-]*([A-Z0-9][A-Z0-9\/_#\-]*)/i.exec(head) || [])[1];
+  for(const t of [head, token]){
+    const k = t && jobKey(t);
+    if(k && index.has(k)) return index.get(k) || { ambiguous:true };
+  }
+  return null;
+}
+
+/* The jobs on the plan, as the list a planner looks a card up in. `pick` is
+   the text a JOB cell is filled with. */
+export function jobList(state, wcs){
+  const units = new Map(((state && state.units) || []).map(u => [u.unit_key, u]));
+  return [...jobLabels(state, wcs)].map(([key, name]) => {
+    const u = units.get(key) || {};
+    const sizes = [...new Set((u.lines || []).map(l => clean(l.label || l.combo)).filter(Boolean))].join(", ");
+    return { unit_key:key, name, pick:`${name} · ${u.article || ""}${u.party ? ` · ${u.party}` : ""}`,
+      order_no:u.order_no || "", party:u.party || "", article:u.article || "", sizes,
+      pairs:Math.round(u.qty || 0), dispatch:u.dispatch_date || "", late:u.sla === "breach" };
+  }).sort((a, z) => a.name.localeCompare(z.name, undefined, { numeric:true }));
+}
+
+/* THE SHEET, as a description any spreadsheet writer can draw: rows of cells
+   carrying a value and a ROLE (title, week, stage, centre, head, date, day,
+   job, pairs, total), the merges, and where a week ends. Styling is the
+   component's business; what is on the sheet, and where, is decided here so
+   it can be tested and so the reader below can never drift from the writer.
+
+     opts.spare   empty rows left under each day for work moved onto it
+     opts.min     the fewest rows a working day gets                        */
+export function weeklyLayout(state, wcs, origin, { calendar = null, spare = 2, min = 4 } = {}){
+  const rows = planRows(state, wcs, origin);
+  if(!rows.length) return null;
+  const centres = boardRows(state, wcs);
+  const labels = jobLabels(state, wcs);
+  const { off } = workCalendar(calendar || (state && state.calendar) || null, origin);
+  const cells = new Map();                      // "date|work centre" -> rows
+  for(const r of rows){
+    const k = `${r.date}|${r.work_center}`;
+    if(!cells.has(k)) cells.set(k, []);
+    cells.get(k).push(r);
+  }
+  const weekday = d => new Date(fromDay(d, origin) + "T00:00:00Z").getUTCDay();
+  const mondayOf = d => d - ((weekday(d) + 6) % 7);
+  const firstDay = dayIndex(rows[0].date, origin);
+  const lastDay = Math.max(...rows.map(r => dayIndex(r.date, origin)));
+  const width = 2 + centres.length * 2;
+  const out = [], merges = [], breaks = [];
+  const put = (cellsOf, extra = {}) => { out.push({ cells:cellsOf, ...extra }); return out.length - 1; };
+
+  put({ 0:{ v:"WEEKLY PRODUCTION PLAN", s:"title" } });
+  merges.push([0, 0, 0, width - 1]);
+  put({ 0:{ v:"Type over the PAIRS, or cut a JOB with its PAIRS and paste them under another day or another machine. "
+    + "Then upload this file on Production plan. Every job is listed on the \"Job cards\" sheet.", s:"hint" } });
+  merges.push([1, 0, 1, width - 1]);
+  put({});
+
+  /* One more week than the plan needs, so work can be pushed LATER too. */
+  let n = 0;
+  for(let monday = mondayOf(firstDay); monday <= lastDay + 7; monday += 7){
+    n++;
+    const band = {}, names = {}, head = { 0:{ v:"DATE", s:"head" }, 1:{ v:"DAY", s:"head" } };
+    band[0] = { v:`WEEK ${n}\n${dayMonth(fromDay(monday, origin))} – ${dayMonth(fromDay(monday + 6, origin))}`, s:"week" };
+    let stage = null, tone = -1;
+    const tones = [];
+    centres.forEach((c, i) => {
+      const col = 2 + i * 2;
+      if(c.stage !== stage){ stage = c.stage; tone++; band[col] = { v:stage.replace(/_/g, " "), s:"stage", tone }; }
+      else band[col] = { v:"", s:"stage", tone };
+      band[col + 1] = { v:"", s:"stage", tone };
+      tones.push(tone);
+      names[col] = { v:`${c.name}\n${Number(c.capacity_per_day || 0).toLocaleString("en-IN")} pairs a day`, s:"centre", tone };
+      names[col + 1] = { v:"", s:"centre", tone };
+      head[col] = { v:"JOB", s:"head" }; head[col + 1] = { v:"PAIRS", s:"head" };
+    });
+    const bandRow = put(band, { kind:"band" });
+    const nameRow = put(names, { kind:"centres" });
+    merges.push([bandRow, 0, nameRow, 1]);
+    /* A stage's heading runs across every machine of that stage. */
+    for(let i = 0; i < centres.length;){
+      let j = i;
+      while(j + 1 < centres.length && centres[j + 1].stage === centres[i].stage) j++;
+      merges.push([bandRow, 2 + i * 2, bandRow, 3 + j * 2]);
+      i = j + 1;
+    }
+    centres.forEach((c, i) => merges.push([nameRow, 2 + i * 2, nameRow, 3 + i * 2]));
+    put(head, { kind:"head" });
+
+    const firstData = out.length;
+    const weekTotals = centres.map(() => 0);
+    for(let d = monday; d < monday + 7; d++){
+      const date = fromDay(d, origin), closed = off(d);
+      const lists = centres.map(c => cells.get(`${date}|${c.work_center}`) || []);
+      const busiest = Math.max(0, ...lists.map(l => l.length));
+      const depth = closed ? Math.max(2, busiest + 1) : Math.max(min, busiest + spare);
+      const top = out.length;
+      for(let k = 0; k < depth; k++){
+        const row = { 0:{ v:k ? "" : date, s:"date", off:closed }, 1:{ v:k ? "" : DOW_UP[weekday(d)], s:"day", off:closed } };
+        centres.forEach((c, i) => {
+          const r = lists[i][k], col = 2 + i * 2;
+          row[col] = { v:r ? `${labels.get(r.ref.split("::")[0])} · ${r.article}\n${[r.sizes, r.party].filter(Boolean).join(" · ")}` : "",
+            s:"job", off:closed, tone:tones[i], locked:!!(r && r.locked) };
+          row[col + 1] = { v:r ? r.pairs : "", s:"pairs", off:closed, tone:tones[i] };
+          if(r) weekTotals[i] += r.pairs;
+        });
+        put(row, { kind:"day", date, last:k === depth - 1 });
+      }
+      merges.push([top, 0, top + depth - 1, 0], [top, 1, top + depth - 1, 1]);
+    }
+    const lastData = out.length - 1;
+    const total = { 0:{ v:`WEEK ${n} TOTAL`, s:"total" }, 1:{ v:"", s:"total" } };
+    centres.forEach((c, i) => {
+      const col = 2 + i * 2;
+      total[col] = { v:"", s:"total" };
+      total[col + 1] = { f:`SUM(${addr(firstData, col + 1)}:${addr(lastData, col + 1)})`, v:weekTotals[i], s:"total" };
+    });
+    const totalRow = put(total, { kind:"total" });
+    merges.push([totalRow, 0, totalRow, 1]);
+    breaks.push(put({}));
+  }
+  return { rows:out, merges, breaks, width, centres:centres.map(c => ({ work_center:c.work_center, name:c.name })),
+    cols:[{ width:8 }, { width:6 }, ...centres.flatMap(() => [{ width:30 }, { width:9 }])], weeks:n };
+}
+
+/* The layout as bare values, the way a spreadsheet reader hands a sheet back. */
+export const layoutValues = layout => (layout ? layout.rows : []).map(r => {
+  const line = Array.from({ length:layout.width }, () => "");
+  for(const [c, cell] of Object.entries(r.cells)) line[c] = cell.v == null ? "" : cell.v;
+  return line;
+});
+
+/* Is this worksheet the weekly plan? Judged by its headings, never by its
+   name — a planner renames a sheet "Week 46" without a second thought. */
+export const looksWeekly = aoa => (Array.isArray(aoa) ? aoa : []).some(r => Array.isArray(r)
+  && headerKey(r[0]) === "date" && r.some(c => headerKey(c) === "job") && r.some(c => headerKey(c) === "pairs"));
+
+/* THE UPLOAD, read off the weekly sheet. Each JOB with pairs beside it becomes
+   the same row the list sheet used to carry — date, work centre, pairs, ref —
+   and whatever cannot be read is named by its CELL, the way a planner would
+   look for it. Nothing is dropped without saying so, and nothing is guessed: a
+   JOB cell that names no card on the plan stops the upload. */
+export function parseWeeklySheet(aoa, state, wcs){
+  const grid = Array.isArray(aoa) ? aoa : [], rows = [], problems = [];
+  if(!looksWeekly(grid)) return { rows, problems:["This does not look like the weekly plan downloaded from Factory OS: no row is headed DATE with JOB and PAIRS beside it. "
+    + "Download the plan from Production plan, change that file, and upload it."] };
+  const index = jobIndex(state, wcs);
+  /* A heading is the machine's NAME, exactly — its capacity is printed under
+     it and is not part of the name. "Cutting M/C-4" is not the cutting hall. */
+  const known = new Map(Object.keys(wcs || {}).flatMap(code => [[code.toLowerCase(), code], [clean((wcs[code] || {}).name).toLowerCase(), code]]));
+  const centreOf = text => known.get(clean(String(text == null ? "" : text).split("\n")[0]).replace(/\s*[\d,]+\s*pairs a day.*$/i, "").toLowerCase()) || null;
+  let cols = null, date = null;
+  for(let i = 0; i < grid.length; i++){
+    const r = grid[i] || [], first = clean(r[0]);
+    if(headerKey(r[0]) === "date" && r.some(c => headerKey(c) === "job")){
+      cols = []; date = null;
+      const above = grid[i - 1] || [];
+      r.forEach((c, j) => {
+        if(headerKey(c) !== "job") return;
+        const code = centreOf(above[j]);
+        if(!code) problems.push(`Column ${colName(j)}: "${clean(above[j])}" (row ${i}) is not a machine or line Factory OS knows, so the jobs under it cannot be read.`);
+        cols.push({ j, code });
+      });
+      continue;
+    }
+    if(!cols) continue;
+    if(/\btotal\b/i.test(first) || /^week\b/i.test(first)){ cols = null; continue; }
+    if(first){
+      date = sheetDate(r[0]);
+      if(!date) problems.push(`Row ${i + 1}: "${first}" is not a date, so the jobs under it cannot be placed on a day.`);
+    }
+    for(const { j, code } of cols){
+      const job = clean(r[j]), raw = r[j + 1], typed = clean(raw);
+      if(!job && !typed) continue;
+      if(!date || !code) continue;                       // already reported, once, above
+      if(!job){ problems.push(`Cell ${addr(i, j + 1)}: ${typed} pairs with no job beside them. Put the job card in ${addr(i, j)}, or clear the pairs.`); continue; }
+      const unit = matchJob(r[j], index);
+      if(!unit){ problems.push(`Cell ${addr(i, j)}: "${job.slice(0, 40)}" is not a job on the plan. Start the cell with the job card number — JC 95 — as it is listed on the "${JOBS_SHEET}" sheet.`); continue; }
+      if(unit.ambiguous){ problems.push(`Cell ${addr(i, j)}: "${job.slice(0, 40)}" fits more than one job. Write it the way the "${JOBS_SHEET}" sheet lists it.`); continue; }
+      const pairs = typed === "" ? 0 : Number(String(raw).replace(/,/g, ""));
+      if(!Number.isInteger(pairs) || pairs < 0){ problems.push(`Cell ${addr(i, j + 1)}: pairs must be a whole number of 0 or more, not "${typed}".`); continue; }
+      rows.push({ line:addr(i, j), date, work_centre:code, pairs, ref:refOf(unit, (wcs[code] || {}).stage) });
+    }
+  }
+  return { rows, problems };
 }
 
 /* A date as the planner may have left it: 2026-11-17, 17/11/2026, 17-11-26,
@@ -164,8 +408,8 @@ export function parsePlanSheet(aoa){
   const problems = [], rows = [];
   const grid = Array.isArray(aoa) ? aoa : [];
   const at = grid.findIndex(r => Array.isArray(r) && r.some(c => headerKey(c) === "ref") && r.some(c => headerKey(c) === "date"));
-  if(at < 0) return { rows, problems:["This does not look like a plan downloaded from Factory OS: no row carries both a \"Date\" and a \"Ref\" heading. "
-    + "Download the plan from Production -> Production plan, edit that file, and upload it."] };
+  if(at < 0) return { rows, problems:["This does not look like a plan downloaded from Factory OS. "
+    + "Download the plan from Production plan, change that file, and upload it."] };
   const col = name => grid[at].findIndex(c => headerKey(c) === name);
   const c = { date:col("date"), wc:col("workcentre"), pairs:col("pairs"), ref:col("ref") };
   for(const [name, i] of Object.entries({ "Work centre":c.wc, "Pairs":c.pairs }))
@@ -242,16 +486,21 @@ export function planFromSheet(uploaded, baseline, state, { wcs, articles, origin
 
   for(const g of up.values()){
     const block = blocks.get(g.ref);
+    /* A list sheet names its rows by number, the weekly sheet by cell. */
+    const unitWord = typeof g.lines[0] === "string" ? "cell" : "row";
+    const rows = `${unitWord}${g.lines.length === 1 ? "" : "s"} ${g.lines.slice(0, 4).join(", ")}${g.lines.length > 4 ? "…" : ""}`;
     if(!block){
-      orphans.push(`${g.ref.replace("::", " · ")} (row ${g.lines[0]}) is not on the plan any more — it is finished, cancelled, or its card was deleted. Its rows were ignored.`);
+      const [key, stage] = g.ref.split("::"), known = units.get(key);
+      orphans.push(known
+        ? `${label(known)} has no ${stage} left to plan (${rows}) — that stage is finished, or the card does not pass through it. Ignored.`
+        : `${g.ref.replace("::", " · ")} (${rows}) is not on the plan any more — it is finished, cancelled, or its card was deleted. Ignored.`);
       continue;
     }
     const unit = units.get(block.unit_key);
-    const rows = `row${g.lines.length === 1 ? "" : "s"} ${g.lines.slice(0, 4).join(", ")}${g.lines.length > 4 ? "…" : ""}`;
     if(g.centres.size > 1){ fail(unit.unit_key, `${block.stage} is put on ${[...g.centres].join(" and ")} (${rows}). One job runs a stage on one work centre.`); continue; }
     const named = [...g.centres][0];
     const code = byName.get(named.toLowerCase());
-    if(!code){ fail(unit.unit_key, `"${named}" (${rows}) is not a work centre. Use a name from the "How to edit" sheet.`); continue; }
+    if(!code){ fail(unit.unit_key, `"${named}" (${rows}) is not a work centre. Use a name from the "${HELP_SHEET}" sheet.`); continue; }
     const fits = machineFits(unit, block.stage, code, wcs, articles);
     if(!fits.ok){ fail(unit.unit_key, `${fits.reason} (${rows})`); continue; }
     const was = base.get(g.ref) || live.get(g.ref);

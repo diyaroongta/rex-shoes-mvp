@@ -2,8 +2,10 @@ import React, { useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { REF as INPUTS } from "./lib/refdata.js";
 import { todayIso } from "./lib/today.js";
-import { planRows, sheetRows, helpRows, weekViewRows, parsePlanSheet, planFromSheet, settle,
-         PLAN_SHEET, SNAPSHOT_SHEET, HELP_SHEET, WEEK_SHEET } from "../shared/plan-sheet.js";
+import { planRows, parsePlanSheet, parseWeeklySheet, looksWeekly, planFromSheet, settle,
+         PLAN_SHEET, SNAPSHOT_SHEET, WEEKLY_SHEET } from "../shared/plan-sheet.js";
+import { planWorkbook } from "./lib/plan-workbook.js";
+import { saveFile } from "./lib/save-file.js";
 import { moveEffects } from "../shared/plan-board.js";
 
 const fmt = n => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
@@ -21,12 +23,16 @@ const daysText = days => Object.keys(days || {}).sort().map(d => `${nice(d)}: ${
 
 /* THE PLAN AS A SPREADSHEET — the way the factory already plans.
  *
- *   1. Download   the plan as it stands, one row per job, stage and day
- *   2. Edit       in Excel: move a day, change a machine, change the pairs,
- *                 split a job over more days
+ *   1. Download   the plan as the factory's own weekly sheet: a block a week,
+ *                 a band of rows a day, a JOB beside its PAIRS per machine
+ *   2. Edit       in Excel: type over the pairs, or cut a job and paste it
+ *                 under another day or another machine
  *   3. Upload     the same file. What changed is shown BEFORE anything is
  *                 saved, with the dispatch dates it moves; only then is it
  *                 applied.
+ *
+ * A workbook downloaded before the weekly sheet existed (a list with a Ref
+ * column) is still read, so a file somebody is half-way through is not lost.
  *
  * The reading, the comparing and every rule about what a sheet may do are in
  * shared/plan-sheet.js. This only turns a workbook into rows and back, and
@@ -44,24 +50,15 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null,
   const input = useRef(null);
   const rows = useMemo(() => planRows(state, wcs, origin), [state, wcs, origin]);
 
-  function download(){
-    const wb = XLSX.utils.book_new();
-    const widths = [12, 6, 13, 24, 9, 10, 22, 26, 22, 8, 7, 30].map(wch => ({ wch }));
-    for(const name of [PLAN_SHEET, SNAPSHOT_SHEET]){
-      const ws = XLSX.utils.aoa_to_sheet(sheetRows(rows));
-      ws["!cols"] = widths;
-      XLSX.utils.book_append_sheet(wb, ws, name);
-    }
-    /* The same plan the way the factory lays its own sheet out — a row a day,
-       a column a work centre — to read and print. It is not read back. */
-    const view = XLSX.utils.aoa_to_sheet(weekViewRows(state, wcs, origin));
-    view["!cols"] = [{ wch:12 }, { wch:6 }, ...Object.keys(wcs).map(() => ({ wch:34 }))];
-    XLSX.utils.book_append_sheet(wb, view, WEEK_SHEET);
-    const help = XLSX.utils.aoa_to_sheet(helpRows(wcs));
-    help["!cols"] = [{ wch:44 }, { wch:70 }, { wch:12 }];
-    XLSX.utils.book_append_sheet(wb, help, HELP_SHEET);
-    XLSX.writeFile(wb, `production-plan-${todayIso()}.xlsx`);
-    setMsg(`Plan downloaded — ${fmt(rows.length)} rows. Edit the "Plan" sheet and upload the same file here.`); setErr("");
+  async function download(){
+    setErr(""); setMsg(""); setBusy(true);
+    try{
+      const book = await planWorkbook(state, wcs, origin);
+      saveFile(book.bytes, `weekly-production-plan-${todayIso()}.xlsx`);
+      setMsg(`Weekly plan downloaded — ${book.weeks} week${book.weeks === 1 ? "" : "s"}, ${fmt(book.jobs)} job${book.jobs === 1 ? "" : "s"}. `
+        + "Change the pairs or move jobs on it, save, and upload the same file here.");
+    }catch(e){ setErr(`The plan could not be written as a workbook: ${e.message || e}`); }
+    finally{ setBusy(false); }
   }
 
   async function read(file){
@@ -69,21 +66,33 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null,
     try{
       const wb = XLSX.read(await bytesOf(file));
       const grid = name => XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, raw:true, defval:"" });
-      const planName = wb.SheetNames.includes(PLAN_SHEET) ? PLAN_SHEET : wb.SheetNames[0];
-      const up = parsePlanSheet(grid(planName));
-      const base = wb.SheetNames.includes(SNAPSHOT_SHEET) ? parsePlanSheet(grid(SNAPSHOT_SHEET)) : { rows:null };
-      setSheet({ name:file.name, rows:up.rows, problems:up.problems, baseline:base.rows });
+      const baseline = wb.SheetNames.includes(SNAPSHOT_SHEET) ? parsePlanSheet(grid(SNAPSHOT_SHEET)).rows : null;
+      /* The weekly sheet is known by its headings, not its name: a planner
+         renames a sheet "Week 46" without a second thought. */
+      const weekly = [WEEKLY_SHEET, ...wb.SheetNames].find(n => n !== SNAPSHOT_SHEET && wb.Sheets[n] && looksWeekly(grid(n)));
+      if(weekly) setSheet({ name:file.name, grid:grid(weekly), baseline });
+      else{
+        const listName = wb.SheetNames.includes(PLAN_SHEET) ? PLAN_SHEET : wb.SheetNames[0];
+        const up = listName === SNAPSHOT_SHEET ? parseWeeklySheet([], state, wcs) : parsePlanSheet(grid(listName));
+        setSheet({ name:file.name, rows:up.rows, problems:up.problems, baseline });
+      }
     }catch(e){ setErr(`That file could not be read as an Excel workbook: ${e.message || e}`); }
     if(input.current) input.current.value = "";
   }
 
+  /* A weekly sheet names its jobs by card number, so it is read against the
+     plan as it stands NOW — a card raised or closed since the upload changes
+     what a cell means. */
+  const read_ = useMemo(() => !sheet ? null : sheet.grid ? parseWeeklySheet(sheet.grid, state, wcs)
+    : { rows:sheet.rows, problems:sheet.problems }, [sheet, state, wcs]);
+
   /* Worked out from the sheet AND the live plan each time either changes, so
      a plan that moves while the preview is open is never applied stale. */
   const result = useMemo(() => {
-    if(!sheet || sheet.problems.length) return null;
-    const raw = planFromSheet(sheet.rows, sheet.baseline, state, { ...ctx, lockAll });
+    if(!read_ || read_.problems.length) return null;
+    const raw = planFromSheet(read_.rows, sheet.baseline, state, { ...ctx, lockAll });
     return planWith ? settle(raw, planWith) : raw;
-  }, [sheet, state, lockAll, planWith]);
+  }, [read_, sheet, state, lockAll, planWith]);
   const effects = useMemo(() => result && result.preview ? moveEffects(state, result.preview) : [], [result, state]);
 
   async function apply(){
@@ -101,11 +110,11 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null,
     {/* One row of buttons. What each does is on its tooltip and in the
         workbook's own "How to edit" sheet, not in a sentence across the page. */}
     <div className="flex items-center gap-2 flex-wrap">
-      <button onClick={download} disabled={!rows.length} className={BTN}
-        title="The plan as an Excel workbook: one row per job, stage and day">Download plan (.xlsx)</button>
+      <button onClick={download} disabled={!rows.length || busy} className={BTN}
+        title="The plan as your weekly planning sheet: a block a week, a row a day, a job and its pairs per machine">Download plan (.xlsx)</button>
       {onApply && <>
         <button onClick={() => input.current && input.current.click()} className={BTN}
-          title="Upload the workbook after changing dates, machines or pairs in it — the plan follows the sheet">Upload edited plan</button>
+          title="Upload the workbook after changing pairs or moving jobs on it — the plan follows the sheet">Upload edited plan</button>
         <input ref={input} type="file" accept=".xlsx,.xls" aria-label="Upload an edited plan workbook" className="hidden"
           onChange={e => e.target.files && e.target.files[0] && read(e.target.files[0])} />
       </>}
@@ -120,10 +129,10 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null,
         <button onClick={() => setSheet(null)} className="ml-auto text-xs font-semibold text-slate-500 hover:underline">Discard</button>
       </div>
 
-      {!!sheet.problems.length && <div role="alert" className="mt-2 text-xs text-rose-800">
-        <b>Nothing was applied.</b> {sheet.problems.length === 1 && !/^Row/.test(sheet.problems[0]) ? "" : "These rows could not be read — correct them and upload the file again, so no part of the sheet is lost:"}
-        <ul className="mt-1 ml-4 list-disc">{sheet.problems.slice(0, 12).map((p, i) => <li key={i}>{p}</li>)}</ul>
-        {sheet.problems.length > 12 && <div>…and {sheet.problems.length - 12} more.</div>}
+      {!!read_.problems.length && <div role="alert" className="mt-2 text-xs text-rose-800">
+        <b>Nothing was applied.</b> {read_.problems.length === 1 && !/^(Row|Cell|Column)/.test(read_.problems[0]) ? "" : "These could not be read — correct them in the sheet and upload the file again, so no part of it is lost:"}
+        <ul className="mt-1 ml-4 list-disc">{read_.problems.slice(0, 12).map((p, i) => <li key={i}>{p}</li>)}</ul>
+        {read_.problems.length > 12 && <div>…and {read_.problems.length - 12} more.</div>}
       </div>}
 
       {result && <>
@@ -132,11 +141,11 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null,
           {!lockAll && <> · {result.unchanged} left as planned</>}
           {!!result.skipped.length && <> · <b className="text-rose-700">{result.skipped.length} job{result.skipped.length === 1 ? "" : "s"} cannot be applied</b></>}
           {!!result.not_in_sheet && <> · {result.not_in_sheet} not in the sheet, left as they are</>}
-          {!result.used_baseline && <> · compared with the live plan (this file carries no "{SNAPSHOT_SHEET}" sheet)</>}
+          {!result.used_baseline && <> · compared with the live plan (the copy of the plan as downloaded is missing from this file)</>}
         </div>
         <label className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-slate-700">
           <input type="checkbox" checked={lockAll} onChange={e => setLockAll(e.target.checked)} aria-label="Lock every block in the sheet" />
-          Lock every block in the sheet, not only the ones I changed</label>
+          Fix every job where the sheet has it, not only the ones I changed</label>
 
         {!!result.skipped.length && <div role="alert" className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900">
           <b>Not applied — correct these in the sheet and upload again.</b> A job is applied whole or not at all.

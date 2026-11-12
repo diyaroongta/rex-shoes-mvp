@@ -427,6 +427,50 @@ describe("profile administration",()=>{
     expect(params[0]).toBe("planner1");expect(params[1]).toMatch(/^scrypt\$/);
     expect(params[1]).not.toContain("temporary-2026");
   });
+
+  const call=async(method,body,role="admin")=>{
+    const res=response();
+    await authHandler({method,url:"/api/auth?resource=profiles",query:{resource:"profiles"},headers:as(role),body},res);
+    return res;
+  };
+
+  it("stores the ticked roles comma-joined, in one canonical order, unknown ones dropped",async()=>{
+    dbMocks.q.mockClear();dbMocks.q.mockResolvedValue({rows:[{username:"asha"}]});
+    const res=await call("POST",{username:"asha",display_name:"Asha",roles:["owner","sales","superuser"],password:"temporary-2026"});
+    expect(res.statusCode).toBe(201);
+    expect(dbMocks.q.mock.calls[0][1][3]).toBe("owner,sales");
+  });
+
+  it("refuses an account with no recognised role ticked",async()=>{
+    dbMocks.q.mockClear();
+    const res=await call("POST",{username:"asha",display_name:"Asha",roles:[],password:"temporary-2026"});
+    expect(res.statusCode).toBe(400);expect(dbMocks.q).not.toHaveBeenCalled();
+  });
+
+  it("lets a Master who also holds another role manage profiles",async()=>{
+    dbMocks.q.mockClear();dbMocks.q.mockResolvedValue({rows:[]});
+    expect((await call("GET",undefined,"sales,admin")).statusCode).toBe(200);
+    expect((await call("GET",undefined,"sales,owner")).statusCode).toBe(403);
+  });
+
+  it("changes roles and resets a password with a hash, clearing a lockout",async()=>{
+    dbMocks.q.mockClear();dbMocks.q.mockResolvedValue({rows:[{username:"asha"}]});
+    const res=await call("PATCH",{username:"asha",roles:["planner","dispatch"],password:"new-temp-2026"});
+    expect(res.statusCode).toBe(200);
+    const [sql,params]=dbMocks.q.mock.calls[0];
+    expect(params[1]).toBe("dispatch,planner");
+    expect(params[2]).toMatch(/^scrypt\$/);expect(params.join()).not.toContain("new-temp-2026");
+    expect(sql).toMatch(/failed_attempts=0/);expect(sql).toMatch(/locked_until=null/);
+  });
+
+  it("refuses a short reset password, an empty role list, and taking Master off yourself",async()=>{
+    dbMocks.q.mockClear();
+    expect((await call("PATCH",{username:"asha",password:"short"})).statusCode).toBe(400);
+    expect((await call("PATCH",{username:"asha",roles:[]})).statusCode).toBe(400);
+    expect((await call("PATCH",{username:"someone",roles:["sales"]})).statusCode).toBe(400);
+    expect((await call("PATCH",{username:"asha"})).statusCode).toBe(400);
+    expect(dbMocks.q).not.toHaveBeenCalled();
+  });
 });
 
 /* Shape, not example: the point of putting the guard in wrap() is that it

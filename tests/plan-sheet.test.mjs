@@ -10,7 +10,8 @@
  */
 import assert from "node:assert/strict";
 import { compute, dayIndex, fromDay, normalizeOverride } from "../shared/engine.js";
-import { planRows, sheetRows, helpRows, weekViewRows, sheetDate, parsePlanSheet, planFromSheet, settle, COLUMNS } from "../shared/plan-sheet.js";
+import { planRows, sheetRows, helpRows, sheetDate, parsePlanSheet, planFromSheet, settle, COLUMNS,
+         weeklyLayout, layoutValues, parseWeeklySheet, looksWeekly, jobLabels, jobList, colName } from "../shared/plan-sheet.js";
 import { checkMove, unlockStage, mergeOverrides, boardRows, boardSpan, weeklySheets, unlockAll } from "../shared/plan-board.js";
 import { INPUTS } from "../shared/inputs.js";
 
@@ -69,19 +70,6 @@ test("the sheet names the work centre, the article and the day in words", () => 
   assert.equal(first[COL.Day], "Mon");
   assert.equal(first[COL.Ref], "JO1::CUTTING");
   assert.ok(helpRows(wcs).some(r => r[0] === "PVC rotary" && r[1] === "MOLDING"));
-});
-
-test("the week view lays the same plan out a row a day, a column a work centre", () => {
-  const view = weekViewRows(plan([A]), wcs, origin);
-  const head = view.find(r => r[0] === "Date");
-  assert.deepEqual(head.slice(0, 3), ["Date", "Day", "Cutting hall (2500 a day)"]);
-  const monday = view.find(r => r[0] === "2026-07-06");
-  assert.equal(monday[1], "Mon");
-  assert.equal(monday[2], "JO1 · REX GOLA (V) · 1500");
-  const total = view.find(r => r[0] === "Week total");
-  assert.equal(total[2], 1500);
-  assert.match(view[0][0], /edit the "Plan" sheet, not this one/);
-  assert.deepEqual(weekViewRows(plan([]), wcs, origin), [["Nothing is on the plan yet."]]);
 });
 
 console.log("\nB — dates, day first");
@@ -405,6 +393,196 @@ test("two cards of one order are saved in one blob, neither wiping the other", (
     JO2:{ at:{ CUTTING:"2026-08-03" } } });
   /* The orders handed in are not altered. */
   assert.deepEqual(Object.keys(orders[0].plan_override.units), ["JO1#JC7"]);
+});
+
+
+/* ================= THE FACTORY'S OWN WEEKLY SHEET =================
+   The download a planner actually edits: a block a week, a band of rows a
+   day, and for each machine a JOB beside its PAIRS. These work on the sheet's
+   bare values, exactly as a spreadsheet reader hands them back. */
+const weekly = (state, opts) => layoutValues(weeklyLayout(state, wcs, origin, opts));
+const colOf = (grid, name) => { const h = grid.findIndex(r => r[0] === "DATE"); return grid[h - 1].findIndex(c => String(c).startsWith(name)); };
+const bandOf = (grid, date) => { const top = grid.findIndex(r => r[0] === date), out = [top];
+  for(let i = top + 1; i < grid.length && grid[i][0] === ""; i++) out.push(i); return out; };
+const cellOf = (grid, date, name, job) => { const c = colOf(grid, name);
+  const i = bandOf(grid, date).find(i => String(grid[i][c]).startsWith(job)); return i == null ? null : [i, c]; };
+/* Cut a job with its pairs and paste it under another day or machine. */
+const cutPaste = (grid, [i, c], toDate, toName) => { const tc = colOf(grid, toName), ti = bandOf(grid, toDate).find(i => !grid[i][tc]);
+  grid[ti][tc] = grid[i][c]; grid[ti][tc + 1] = grid[i][c + 1]; grid[i][c] = ""; grid[i][c + 1] = ""; return [ti, tc]; };
+const uploadWeekly = (grid, state, base = state, opts = {}) => {
+  const up = parseWeeklySheet(grid, state, wcs);
+  return { parsed:up, ...planFromSheet(up.rows, parsePlanSheet(download(base)).rows, state, { ...ctx, ...opts }) };
+};
+
+console.log("\nJ — the weekly sheet, laid out like the factory's own");
+test("a block a week, a band a day, a JOB beside its PAIRS for every machine", () => {
+  const state = plan([A, B]), layout = weeklyLayout(state, wcs, origin), grid = layoutValues(layout);
+  assert.equal(grid[0][0], "WEEKLY PRODUCTION PLAN");
+  assert.equal(grid[3][0], "WEEK 1\n6 Jul – 12 Jul");
+  assert.equal(grid[3][2], "CUTTING");
+  assert.equal(grid[4][2], "Cutting hall\n2,500 pairs a day");
+  assert.deepEqual(grid[5].slice(0, 6), ["DATE", "DAY", "JOB", "PAIRS", "JOB", "PAIRS"]);
+  assert.equal(layout.width, 2 + Object.keys(wcs).length * 2, "every machine has its two columns, busy or not");
+  /* Monday: both jobs are being cut, and there is room under them to add work. */
+  assert.deepEqual(grid[6].slice(0, 4), ["2026-07-06", "MON", "JO1 · REX GOLA (V)\n8X10 · Party JO1", 1500]);
+  assert.deepEqual(grid[7].slice(0, 4), ["", "", "JO2 · SMART BOY (L) BLACK\n6X8 · Party JO2", 1000]);
+  assert.deepEqual(bandOf(grid, "2026-07-06").length, 4);
+  assert.ok(bandOf(grid, "2026-07-06").slice(2).every(i => grid[i][2] === "" && grid[i][3] === ""), "spare rows are empty");
+  /* The date and the day each run down their whole band, as on the factory's sheet. */
+  assert.ok(layout.merges.some(m => String(m) === "6,0,9,0") && layout.merges.some(m => String(m) === "6,1,9,1"));
+  /* A stage with several machines is headed once, across all of them. */
+  const mould = grid[3].indexOf("MOLDING"), machines = Object.values(wcs).filter(w => w.stage === "MOLDING").length;
+  assert.equal(machines, 4);
+  assert.ok(layout.merges.some(m => m[0] === 3 && m[1] === mould && m[3] === mould + machines * 2 - 1));
+  assert.equal(grid[3].filter(c => c === "MOLDING").length, 1);
+});
+test("the week total is a formula over that week's pairs, and already holds the figure", () => {
+  const layout = weeklyLayout(plan([A, B]), wcs, origin), grid = layoutValues(layout);
+  const at = grid.findIndex(r => r[0] === "WEEK 1 TOTAL");
+  assert.equal(grid[at][3], 2700);
+  assert.deepEqual(layout.rows[at].cells[3], { f:`SUM(D7:D${at})`, v:2700, s:"total" });
+  assert.ok(layout.breaks.includes(at + 1), "a week ends the printed page");
+});
+test("a closed day is on the sheet too, marked, so Sunday working can be planned", () => {
+  const layout = weeklyLayout(plan([A, B]), wcs, origin), grid = layoutValues(layout);
+  const sun = grid.findIndex(r => r[0] === "2026-07-12");
+  assert.equal(grid[sun][1], "SUN");
+  assert.equal(layout.rows[sun].cells[0].off, true);
+  assert.equal(layout.rows[6].cells[0].off, false);
+});
+test("there is always one more week than the plan needs, to push work later", () => {
+  const state = plan([A]), grid = weekly(state);
+  const last = planRows(state, wcs, origin).map(r => r.date).sort().pop();
+  const weeks = grid.filter(r => /^WEEK \d+\n/.test(r[0])).length;
+  assert.equal(weeks, weeklyLayout(state, wcs, origin).weeks);
+  assert.ok(grid.some(r => r[0] === later(last, 7)), "a day a week past the end of the plan is there");
+  assert.equal(weeklyLayout(plan([]), wcs, origin), null, "nothing on the plan, nothing to lay out");
+});
+test("a job is called by its card number, and by its order when it has no card", () => {
+  const state = plan([A, B]);
+  state.units.find(u => u.unit_key === "JO1").card_no = "95";
+  assert.deepEqual([...jobLabels(state, wcs)], [["JO1", "JC 95"], ["JO2", "JO2"]]);
+  assert.equal(weekly(state)[6][2], "JC 95 · REX GOLA (V)\n8X10 · Party JO1");
+  const list = jobList(state, wcs);
+  assert.deepEqual(list.map(j => j.pick), ["JC 95 · REX GOLA (V) · Party JO1", "JO2 · SMART BOY (L) BLACK · Party JO2"]);
+  assert.deepEqual([list[0].order_no, list[0].sizes, list[0].pairs], ["JO1", "8X10", 1500]);
+  /* Two cards that would read alike carry their order. */
+  state.units.find(u => u.unit_key === "JO2").card_no = "95";
+  assert.deepEqual([...jobLabels(state, wcs).values()], ["JC 95 (JO1)", "JC 95 (JO2)"]);
+});
+
+console.log("\nK — the weekly sheet, read back");
+test("the sheet uploaded untouched reads back as the plan, and changes nothing", () => {
+  const state = plan([A, B]);
+  const up = parseWeeklySheet(weekly(state), state, wcs);
+  assert.deepEqual(up.problems, []);
+  assert.deepEqual(up.rows.map(r => [r.date, r.work_centre, r.pairs, r.ref]).sort(),
+    planRows(state, wcs, origin).map(r => [r.date, r.work_center, r.pairs, r.ref]).sort());
+  assert.equal(up.rows[0].line, "C7", "a row is known by the cell its job is in");
+  const res = uploadWeekly(weekly(state), state);
+  assert.deepEqual([res.changes.length, res.skipped.length, res.unchanged], [0, 0, 14]);
+});
+test("typing over the pairs re-plans that job on those days, and only that job", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  const [i, c] = cellOf(grid, "2026-07-06", "Cutting hall", "JO1");
+  grid[i][c + 1] = 900;                                   // 1,500 becomes 900 on Monday…
+  const [ti, tc] = [bandOf(grid, "2026-07-07").find(r => !grid[r][c]), c];
+  grid[ti][tc] = "JO1"; grid[ti][tc + 1] = 600;           // …and 600 on Tuesday, typed in by its number
+  const res = uploadWeekly(grid, state);
+  assert.deepEqual(res.parsed.problems, []);
+  assert.deepEqual(res.changes.map(x => [x.unit_key, x.stage]), [["JO1", "CUTTING"]]);
+  assert.deepEqual(res.changes[0].to.days, { "2026-07-06":900, "2026-07-07":600 });
+  const after = apply([A, B], res);
+  const cut = stageOf(after, "JO1", "CUTTING");
+  assert.deepEqual([cut.start_date, cut.end_date, cut.locked], ["2026-07-06", "2026-07-07", true]);
+});
+test("cut and paste under another day moves the work there", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  const pack = stageOf(state, "JO1", "PACKING"), to = nextOpen(later(pack.start_date, 2));
+  cutPaste(grid, cellOf(grid, pack.start_date, "Packing", "JO1"), to, "Packing");
+  const res = settle(uploadWeekly(grid, state), o => plan([A, B], o));
+  assert.deepEqual(res.changes.map(x => [x.unit_key, x.stage, Object.keys(x.to.days)]), [["JO1", "PACKING", [to]]]);
+  assert.equal(stageOf(res.preview, "JO1", "PACKING").start_date, to);
+});
+test("cut and paste under another machine of the same stage moves it to that machine", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  const days = planRows(state, wcs, origin).filter(r => r.ref === "JO1::MOLDING");
+  assert.equal(days[0].work_center, "MOLDING_PVC_ROTARY");
+  for(const d of days) cutPaste(grid, cellOf(grid, d.date, "PVC rotary", "JO1"), d.date, "PVC vertical");
+  const res = uploadWeekly(grid, state);
+  assert.deepEqual(res.parsed.problems, []);
+  assert.deepEqual(res.changes.map(x => [x.stage, x.from.name, x.to.name]), [["MOLDING", "PVC rotary", "PVC vertical"]]);
+  assert.equal(stageOf(apply([A, B], res), "JO1", "MOLDING").work_center, "MOLDING_PVC_VERTICAL");
+});
+test("pasted onto a machine that cannot make the article, the job is refused in words", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  for(const d of planRows(state, wcs, origin).filter(r => r.ref === "JO1::MOLDING"))
+    cutPaste(grid, cellOf(grid, d.date, "PVC rotary", "JO1"), d.date, "EVA molding");
+  const res = uploadWeekly(grid, state);
+  assert.equal(res.changes.length, 0);
+  assert.match(res.skipped[0].reasons[0], /is a PVC article and cannot run on EVA molding\. \(cells [A-Z]+\d+, [A-Z]+\d+\)/);
+});
+test("a job put on a Sunday is planned to work it, and the sheet says so", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  const [i, c] = cellOf(grid, "2026-07-11", "Packing", "JO1") || cellOf(grid, stageOf(state, "JO1", "PACKING").start_date, "Packing", "JO1");
+  const sunday = grid.find(r => r[1] === "SUN" && r[0] > grid[bandOf(grid, stageOf(state, "JO1", "MOLDING").end_date)[0]][0])[0];
+  cutPaste(grid, [i, c], sunday, "Packing");
+  const res = uploadWeekly(grid, state);
+  assert.ok(res.changes[0].notes.some(n => /normally closed/.test(n)));
+  assert.equal(stageOf(apply([A, B], res), "JO1", "PACKING").start_date, sunday);
+});
+test("a job is found however its number is typed", () => {
+  const state = plan([A, B]);
+  state.units.find(u => u.unit_key === "JO1").card_no = "95";
+  for(const typed of ["95", "JC 95", "jc-95", "JC95", "Card 95", "JC 95 · anything after it", "JC 95 gola velcro", "JO1"]){
+    const grid = weekly(state), [i, c] = cellOf(grid, "2026-07-06", "Cutting hall", "JC 95");
+    grid[i][c] = typed;
+    const up = parseWeeklySheet(grid, state, wcs);
+    assert.deepEqual(up.problems, [], typed);
+    assert.ok(up.rows.some(r => r.line === "C7" && r.ref === "JO1::CUTTING" && r.pairs === 1500), typed);
+  }
+});
+test("what cannot be read is named by its cell, and nothing is guessed", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  grid[6][2] = "GOLA PLUS";                               // an article, as the factory's own sheet writes — but which card?
+  grid[8][3] = 300;                                       // pairs with no job beside them
+  grid[10][3] = "lots";
+  const up = parseWeeklySheet(grid, state, wcs);
+  assert.equal(up.problems.length, 3);
+  assert.match(up.problems[0], /Cell C7: "GOLA PLUS" is not a job on the plan\. Start the cell with the job card number/);
+  assert.match(up.problems[1], /Cell D9: 300 pairs with no job beside them\. Put the job card in C9/);
+  assert.match(up.problems[2], /Cell D11: pairs must be a whole number of 0 or more, not "lots"/);
+  /* An order with two jobs on the plan cannot be meant by its order number alone. */
+  const two = plan([A, B]);
+  two.units.forEach(u => { u.order_no = "JO1"; });
+  two.units[0].card_no = "7"; two.units[1].card_no = "8";
+  const g2 = weekly(two); g2[6][2] = "JO1";
+  assert.match(parseWeeklySheet(g2, two, wcs).problems[0], /Cell C7: "JO1" fits more than one job/);
+});
+test("a job left with pairs but a heading nobody knows is reported, not dropped", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  grid[4][2] = "Cutting M/C-4";
+  const up = parseWeeklySheet(grid, state, wcs);
+  assert.match(up.problems[0], /Column C: "Cutting M\/C-4" \(row 5\) is not a machine or line Factory OS knows/);
+});
+test("the factory's own workbook, and the old list sheet, are not mistaken for it", () => {
+  const theirs = [["WEEKLY PLANNING - NOVEMBER 2026"], ["WEEK 1", "", "CUTTING"], ["", "", "M/C", "ARTICLE", "SIZE", "QTY"], ["02/11", "MON", "M/C-1", "GOLA PLUS", "7*10", 1200]];
+  assert.equal(looksWeekly(theirs), false);
+  assert.match(parseWeeklySheet(theirs, plan([A]), wcs).problems[0], /does not look like the weekly plan downloaded from Factory OS/);
+  assert.equal(looksWeekly(download(plan([A]))), false);
+  assert.equal(looksWeekly(weekly(plan([A]))), true);
+});
+test("a job put under a stage it has already finished is set aside, in words", () => {
+  const state = plan([A, B]), grid = weekly(state);
+  /* B is not an EVA shoe and never visits sole sticking; write it there. */
+  const c = colOf(grid, "Sole sticking"), i = bandOf(grid, "2026-07-08")[0];
+  grid[i][c] = "JO2"; grid[i][c + 1] = 100;
+  const res = uploadWeekly(grid, state);
+  assert.match(res.ignored[0], new RegExp(`JO2 has no ASSEMBLY left to plan \\(cell ${colName(c)}${i + 1}\\)`));
+  assert.equal(res.changes.length, 0);
+});
+test("column letters run past Z", () => {
+  assert.deepEqual([0, 25, 26, 27, 51, 52].map(colName), ["A", "Z", "AA", "AB", "AZ", "BA"]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -2,7 +2,7 @@ import { q } from "./_lib/db.js";
 import { fail, wrap } from "./_lib/http.js";
 import { verifyPassword, hashPassword, signSession, sessionOf, authSecret,
          sessionCookie, clearedCookie, SESSION_SECONDS } from "./_lib/auth.js";
-import { ROLES } from "../shared/permissions.js";
+import { hasRole, normalizeRoles } from "../shared/permissions.js";
 
 /* The only endpoint that is reachable without a session — everything else is
    guarded by wrap(). It is therefore also the only one an attacker can talk
@@ -24,7 +24,7 @@ export default wrap(async (req, res) => {
   if(String((req.query||{}).resource||"")==="profiles"){
     const me=sessionOf(req);
     if(!me) return fail(res,401,"Sign in required");
-    if(me.role!=="admin") return fail(res,403,"Only Admin (IT) can manage profiles");
+    if(!hasRole(me.role,"admin")) return fail(res,403,"Only a Master account can manage profiles");
     if(req.method==="GET"){
       const {rows}=await q(`select username, display_name, role, active, last_login_at, created_at
                               from users order by created_at, username`);
@@ -32,11 +32,13 @@ export default wrap(async (req, res) => {
     }
     if(req.method==="POST"){
       const b=req.body||{},username=String(b.username||"").trim().toLowerCase();
-      const display_name=String(b.display_name||"").trim(),role=String(b.role||"").trim();
+      /* `roles` is the checkbox list; a lone `role` is still accepted. Stored
+         comma-joined in the one `role` column — see rolesOf(). */
+      const display_name=String(b.display_name||"").trim(),role=normalizeRoles(b.roles ?? b.role);
       const password=String(b.password||"");
       if(!/^[a-z0-9._-]{3,40}$/.test(username)) return fail(res,400,"Username must be 3–40 letters, numbers, dots, dashes or underscores");
       if(!display_name) return fail(res,400,"Display name is required");
-      if(!ROLES.includes(role)) return fail(res,400,"Choose a recognised access role");
+      if(!role) return fail(res,400,"Tick at least one access role");
       if(password.length<8) return fail(res,400,"Temporary password must be at least 8 characters");
       try{
         const {rows}=await q(`insert into users (username,password_hash,display_name,role)
@@ -49,13 +51,34 @@ export default wrap(async (req, res) => {
         throw error;
       }
     }
+    /* One PATCH, three independent changes: active, roles, and a password
+       reset. A stored password is a one-way scrypt hash and cannot be shown to
+       anybody, the Master included — what the Master can do is set a new
+       temporary one. A reset also clears a lockout. */
     if(req.method==="PATCH"){
       const b=req.body||{},username=String(b.username||"").trim().toLowerCase();
       if(!username) return fail(res,400,"username is required");
-      if(username===me.username&&b.active===false) return fail(res,400,"You cannot deactivate the profile you are signed in with");
-      if(typeof b.active!=="boolean") return fail(res,400,"active must be true or false");
-      const {rows}=await q(`update users set active=$2,updated_at=now() where username=$1
-                            returning username,display_name,role,active,last_login_at,created_at`,[username,b.active]);
+      const sets=[],args=[username];
+      if("active" in b){
+        if(typeof b.active!=="boolean") return fail(res,400,"active must be true or false");
+        if(username===me.username&&b.active===false) return fail(res,400,"You cannot deactivate the profile you are signed in with");
+        args.push(b.active);sets.push(`active=$${args.length}`);
+      }
+      if("roles" in b){
+        const role=normalizeRoles(b.roles);
+        if(!role) return fail(res,400,"Tick at least one access role");
+        if(username===me.username&&!hasRole(role,"admin"))
+          return fail(res,400,"You cannot take Master access off the profile you are signed in with");
+        args.push(role);sets.push(`role=$${args.length}`);
+      }
+      if("password" in b){
+        const password=String(b.password||"");
+        if(password.length<8) return fail(res,400,"Temporary password must be at least 8 characters");
+        args.push(hashPassword(password));sets.push(`password_hash=$${args.length}`,"failed_attempts=0","locked_until=null");
+      }
+      if(!sets.length) return fail(res,400,"Nothing to change");
+      const {rows}=await q(`update users set ${sets.join(",")},updated_at=now() where username=$1
+                            returning username,display_name,role,active,last_login_at,created_at`,args);
       if(!rows.length) return fail(res,404,"Profile not found");
       return res.status(200).json(rows[0]);
     }

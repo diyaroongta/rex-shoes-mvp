@@ -5,7 +5,9 @@
  *   node scripts/create-user.mjs --list             # who has an account
  *   node scripts/create-user.mjs --verify <user>    # does this password work?
  *   node scripts/create-user.mjs <user> --set-role planner   # change role only
+ *   node scripts/create-user.mjs <user> --set-role sales,owner   # several roles
  *   node scripts/create-user.mjs --unlock <user>    # clear a lockout
+ *   node scripts/create-user.mjs --delete <user>    # remove an account for good
  *   node scripts/create-user.mjs --secret           # print an AUTH_SECRET
  *
  * The password is typed at the prompt and never echoed, never passed as an
@@ -18,7 +20,7 @@ import { Pool } from "pg";
 import { hashPassword, verifyPassword, assertUsablePassword,
          normalisePassword, MIN_PASSWORD } from "../api/_lib/auth.js";
 import { hiddenPrompts } from "./hidden-prompt.mjs";
-import { ROLES as VALID_ROLES, ROLE_SUMMARY } from "../shared/permissions.js";
+import { ROLES as VALID_ROLES, ROLE_SUMMARY, normalizeRoles, rolesLabel, hasRole } from "../shared/permissions.js";
 import { loadEnvLocal } from "./env-local.mjs";
 
 /* So the Neon URL can be saved once in .env.local instead of pasted in
@@ -43,24 +45,27 @@ const ROLES = VALID_ROLES;
 const listing  = args.includes("--list");
 const verifying = flag("--verify");
 const unlocking = flag("--unlock");
+const deleting = flag("--delete");
 /* Changing a role must NOT require resetting the password. Accounts get
    created before anyone has decided who does what, so the common case is an
    existing person being narrowed from admin to planner. */
 const settingRole = flag("--set-role");
-const role = (settingRole || flag("--role") || "admin").toLowerCase();
-const username = String(verifying || unlocking ||
-                        args.find(a => !a.startsWith("--") && a !== role) || "").trim().toLowerCase();
+const rawRole = (settingRole || flag("--role") || "admin").toLowerCase();
+const username = String(verifying || unlocking || deleting ||
+                        args.find(a => !a.startsWith("--") && a !== rawRole) || "").trim().toLowerCase();
 
 if(!listing && !username){
   console.error("Usage: node scripts/create-user.mjs <username> [--role <role>]");
-  console.error("       node scripts/create-user.mjs --list | --verify <user> | --unlock <user> | --secret");
+  console.error("       node scripts/create-user.mjs --list | --verify <user> | --unlock <user> | --delete <user> | --secret");
   process.exit(1);
 }
-if(!ROLES.includes(role)){
-  console.error(`Unknown role: ${role}. Use one of:\n`);
+/* Several roles are given comma-separated: --role sales,owner */
+if(!normalizeRoles(rawRole) || normalizeRoles(rawRole).split(",").length !== rawRole.split(",").filter(Boolean).length){
+  console.error(`Unknown role: ${rawRole}. Use one of:\n`);
   for(const r of ROLES) console.error(`  ${r.padEnd(8)} ${ROLE_SUMMARY[r]}`);
   process.exit(1);
 }
+const role = normalizeRoles(rawRole);
 if(!process.env.DATABASE_URL){
   console.error("DATABASE_URL is not set.\n");
   console.error("Get it from the Neon dashboard (Vercel stores it write-only, so it");
@@ -121,6 +126,26 @@ try{
     process.exit(0);
   }
 
+  /* ---- remove an account ----
+     Deactivating (the Profiles screen) is the everyday way to take a login
+     away. This is for clearing out accounts that should never have existed.
+     Nothing references users.username by foreign key, so past records keep
+     the name they were written with. The last active Master is refused: with
+     no Master left, nobody could open Profiles & access again. */
+  if(deleting){
+    const { rows } = await pool.query("select username, role, active from users");
+    const target = rows.find(r => r.username === username);
+    if(!target) fail(`No account called "${username}" in this database. Run --list to see what is there.`);
+    else if(hasRole(target.role, "admin") && target.active
+         && rows.filter(r => r.active && hasRole(r.role, "admin")).length === 1)
+      fail(`${username} is the last active Master account. Create another Master first.`);
+    else{
+      await pool.query("delete from users where username = $1", [username]);
+      console.log(`\n✓ Deleted ${username} (${target.role}).`);
+    }
+    process.exit(process.exitCode || 0);
+  }
+
   /* ---- clear a lockout ---- */
   if(unlocking){
     const { rowCount } = await pool.query(
@@ -146,7 +171,7 @@ try{
     await pool.query("update users set role = $2, updated_at = now() where username = $1",
                      [username, role]);
     console.log(`\n✓ ${username}: ${rows[0].role} -> ${role}`);
-    console.log(`  ${ROLE_SUMMARY[role]}`);
+    console.log(`  ${rolesLabel(role)}`);
     /* The role rides in the signed session cookie, so it is fixed for the rest
        of the current 12-hour session and does not tighten retroactively. */
     console.log("\n  They must sign out and back in for this to take effect.");
