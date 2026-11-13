@@ -2,6 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   THE ONE THING TO DO ON A SCREEN LOOKS LIKE IT.
+   Every screen had hand-written button classes, and the action that mattered
+   — Save, Record, Create — was the same 12px pill as "Cancel" beside it, in a
+   purple that was nobody's brand colour, fading to pale lavender when it could
+   not be pressed. Four classes, used everywhere:
+
+     .cta          the main action of a form or panel: solid, the menu's blue
+     .cta-danger   the same, for something that cannot be taken back
+     .cta-warn     the same, for "do it anyway" — an override, in amber
+     .cta-row      an action on ONE ROW of a table (Receive, Packing report):
+                   a small outlined button, so it reads as something to press
+                   and not as a link to somewhere else
+
+   A disabled button is grey, not a paler shade of the live one. */
+@layer components {
+  .cta {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 34px; padding: 7px 16px; white-space: nowrap; cursor: pointer;
+    font-size: 13px; font-weight: 600; line-height: 1.2; color: #fff;
+    background: #0B6BCB; border: 1px solid #0B6BCB; border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(15, 34, 51, .18); transition: background .12s, border-color .12s;
+  }
+  .cta:hover:not(:disabled) { background: #0958A8; border-color: #0958A8; }
+  .cta:focus-visible, .cta-row:focus-visible { outline: 2px solid #9CC3EC; outline-offset: 2px; }
+  .cta:disabled { background: #E2E8F0; border-color: #E2E8F0; color: #94A3B8; box-shadow: none; cursor: not-allowed; }
+  .cta.cta-sm { min-height: 26px; padding: 3px 10px; font-size: 12px; border-radius: 7px; }
+  .cta.cta-danger:not(:disabled) { background: #BE123C; border-color: #BE123C; }
+  .cta.cta-danger:hover:not(:disabled) { background: #9F1239; border-color: #9F1239; }
+  .cta.cta-warn:not(:disabled) { background: #B45309; border-color: #B45309; }
+  .cta.cta-warn:hover:not(:disabled) { background: #92400E; border-color: #92400E; }
+
+  .cta-row {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 26px; padding: 3px 10px; white-space: nowrap; cursor: pointer;
+    font-size: 12px; font-weight: 600; line-height: 1.2; color: #0B5CAD;
+    background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 7px; transition: background .12s;
+  }
+  .cta-row:hover:not(:disabled) { background: #DBEAFE; }
+  .cta-row:disabled { opacity: .45; cursor: not-allowed; }
+}
+
 html, body, #root { height: 100%; }
 body { margin: 0; background: #eef0f4; }
 

@@ -25,10 +25,11 @@
  *   adjust    a physical count correcting the book, signed — PENDING until the
  *             store in-charge approves it, and counting for nothing until then
  *
- * ONE POOL. Uppers are a common pool per article, colour and size; the order
- * number on a receipt or an issue is the reference, not a reservation. The
- * client's own note leaves "reserve or pool?" open, and a pool is the one that
- * can be narrowed into reservations later without rewriting history.
+ * ONE POOL ON THE SHELF. This log keeps one pool per article, colour and size;
+ * the order number on a receipt or an issue is a reference, not a reservation.
+ * The client has since answered "reserve or pool?" with RESERVE, and that lives
+ * BESIDE this log in `stock_reservations` (shared/stock-plan.js), so nothing
+ * here was rewritten to add it.
  *
  * Pure — no database, no clock. `today` is always passed in.
  */

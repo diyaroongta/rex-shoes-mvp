@@ -329,13 +329,12 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
     <section className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
       <div className="flex items-start gap-3 flex-wrap">
         <div className="flex-1 min-w-64">
-          <div className="text-sm font-semibold text-slate-800">Daily plan vs achievement</div>
-          <p className="text-xs text-slate-500 mt-1">The plan is filled from Factory OS. Your team enters only <b>Achieved Pairs</b> and, if needed, a note.</p>
+          <p className="text-xs text-slate-500">The plan is filled from Factory OS. Your team enters only <b>Achieved Pairs</b> and, if needed, a note.</p>
         </div>
         <label className="text-xs text-slate-600">Week starting
           <input type="date" value={weekStart} onChange={e=>setWeekStart(mondayOf(e.target.value))}
             className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white mono"/></label>
-        <button onClick={download} className="text-xs font-semibold px-3 py-2 rounded-lg bg-indigo-600 text-white self-end">Download weekly Excel</button>
+        <button onClick={download} className="cta self-end">Download weekly Excel</button>
         <label className={`text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 bg-white self-end ${busy?"opacity-50":"cursor-pointer"}`}>
           {busy?"Uploading…":"Upload completed Excel"}
           <input ref={fileRef} type="file" accept=".xlsx,.xls" disabled={busy} className="hidden" onChange={e=>e.target.files[0]&&upload(e.target.files[0])}/>
@@ -432,7 +431,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
         {['Date','Where','Job card / Order','Article','Plan','Achievement'].map(h=><th key={h} className={`py-2 px-2 ${['Plan','Achievement'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
         <th></th>
       </tr></thead><tbody>{visible.flatMap(row=>[<tr key={`${row.production_on}-${row.work_center}-${row.stage}-${row.order_no}`} className="border-t border-slate-100 align-top">
-        <td className="py-2 px-2 mono whitespace-nowrap">{row.production_on}
+        <td className="py-2 px-2 mono whitespace-nowrap" title={row.production_on}>{new Date(row.production_on+"T00:00:00").toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}
           {isOffDay(row.production_on,calendar) && <div className="text-[10px] text-rose-700 font-sans">{holidayName(row.production_on,calendar)||"Sunday"} — shut</div>}</td>
         <td className="py-2 px-2"><div>{(INPUTS.workcenters[row.work_center]||{}).name||row.work_center}</div>
           <div className="text-slate-400">{STAGE_WORD[row.stage]||row.stage}</div></td>
@@ -505,7 +504,7 @@ export default function ProductionInputTab({state,actuals=[],onChanged,replan,jo
         </td></tr>])}</tbody></table>
       {!!visible.length&&<div className="flex items-center gap-3 flex-wrap mt-3">
         <button onClick={saveTyped} disabled={busy||(!Object.values(entry).some(v=>String(v).trim()!=="")&&!Object.values(cardEntry).some(c=>Object.values(c||{}).some(v=>String(v).trim()!=="")))}
-          className="text-xs font-semibold rounded-lg px-4 py-2 bg-indigo-600 text-white disabled:opacity-40">
+          className="cta">
           {busy?"Saving…":"Save today's production"}</button>
         <span className="text-xs text-slate-500">
           Type the pairs achieved against any row and save. The plan re-plans what is left, and the panel above

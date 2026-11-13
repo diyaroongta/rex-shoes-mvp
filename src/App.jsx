@@ -19,6 +19,7 @@ import * as XLSX from "xlsx";
 import * as api from "./lib/client.js";
 import DataTab from "./DataTab.jsx";
 import StatusTab from "./StatusTab.jsx";
+import { orderHealth } from "../shared/mis.js";
 import CatalogueTab from "./CatalogueTab.jsx";
 import PiDocument from "./PiDocument.jsx";
 import BulkOrderTab from "./BulkOrderTab.jsx";
@@ -151,6 +152,7 @@ export default function App({ user=null, onSignOut=null }={}){
   const [syncedAt, setSyncedAt] = useState(null);
   const [syncFailed, setSyncFailed] = useState(false);
   const [refTick, setRefTick] = useState(0);   // bumped when reference data is re-uploaded
+  const [partiesTick, setPartiesTick] = useState(0);   // bumped when a customer's terms are saved in Setup
   const [catalogueTick, setCatalogueTick] = useState(0);
   const [targets, setTargets] = useState(null);
 
@@ -201,8 +203,17 @@ export default function App({ user=null, onSignOut=null }={}){
   // appears without requiring a full browser reload.
   useEffect(()=>{
     const timer=setInterval(()=>{
-      Promise.all([api.listOrders(), api.listDispatchesWithHidden(),api.listProductionActuals()])
-        .then(([o,d,a])=>{ setOrders(o); setDispatches(d); setProductionActuals(a); setDispatchErr("");
+      /* Job cards and finished stock too. The plan is built from job cards,
+         so a card another clerk raised or closed changed nothing on this
+         screen until somebody reloaded the page. */
+      /* A job-card or stock request that fails keeps the last good figures
+         and does not fail the whole refresh. */
+      const quiet = get => { try{ return Promise.resolve(get()).catch(()=>null); }catch(_){ return Promise.resolve(null); } };
+      Promise.all([api.listOrders(), api.listDispatchesWithHidden(),api.listProductionActuals(),
+                   quiet(()=>api.listJobWork(true)), quiet(()=>api.listFinishedStock())])
+        .then(([o,d,a,j,f])=>{ setOrders(o); setDispatches(d); setProductionActuals(a); setDispatchErr("");
+                         if(Array.isArray(j)) setJobs(j.filter(x=>!x.cancelled));
+                         if(Array.isArray(f)) setFinishedMoves(f);
                          setSyncedAt(new Date()); setSyncFailed(false); })
         .catch(()=>setSyncFailed(true));   // shown in the header, not as a banner every minute
     },60000);
@@ -221,6 +232,14 @@ export default function App({ user=null, onSignOut=null }={}){
      all of them — editing an order from the PI database used to leave the
      schedule, dispatch and MIS showing the figures from before the edit. */
   const syncAll = async ()=>{ await Promise.all([refresh(), refreshDispatches(), refreshProductionActuals(), refreshJobs(), refreshFinished()]); };
+  /* …AND THE STOCK REGISTER, for anything that touches a job card. Raising a
+     card books its material out of the store on the SERVER, and deleting one
+     takes it back; the browser's copy of the register was not reloaded, so
+     Procurement went on netting against stock the card had already taken. */
+  const syncWithStock = async ()=>{
+    await Promise.all([syncAll(), reloadReference().catch(()=>{})]);
+    setRefTick(t=>t+1);
+  };
 
   const bump = async (no,dir)=>{
     const cur=(orders||[]).find(o=>o.order_no===no); if(!cur)return;
@@ -288,7 +307,10 @@ export default function App({ user=null, onSignOut=null }={}){
   };
   const editOrder = async (no, patch) => {
     await api.patchOrder(no, patch);     // server re-validates; errors surface in the panel
-    await refresh();
+    /* Everything, not just the order list: an edit that shrinks an order
+       releases stock reserved for it, and the dispatch ledger is cut from the
+       same rows. */
+    await syncAll();
   };
   // Returns the created rows so the intake screen can show the assigned order numbers.
   /* Saving jumps the clerk to Orders & dispatch, which meant the confirmation
@@ -315,7 +337,7 @@ export default function App({ user=null, onSignOut=null }={}){
     try{ await api.deleteAllOrders();
          setFlash(`${count} order${count===1?"":"s"} cleared. The PI snapshots remain in the PI database.`); }
     catch(e){ setLoadErr(e.message||String(e)); }
-    refresh();
+    syncAll();
   };
 
   /* Capacities are shared config, not a per-browser preference — persist them
@@ -612,6 +634,10 @@ export default function App({ user=null, onSignOut=null }={}){
               </h1>
               <div style={{fontSize:12,color:"#6B7C90",marginTop:1}}>{(VIEWS[tab]||{}).sub || ""}</div>
             </div>
+            {/* The plan's three views, beside its name: a row of its own under
+                the step strip pushed the plan itself a third of the way down
+                the screen. The header is sticky, so the switch stays in reach. */}
+            <PlanViews tab={tab} setTab={setTab} role={role} />
             <div style={{marginLeft:"auto",display:"flex",gap:22,flexWrap:"wrap",alignItems:"center"}}>
               {/* Factory-wide figures are the OVERVIEW's business. On every
                   other screen they were three more numbers competing with the
@@ -663,7 +689,6 @@ export default function App({ user=null, onSignOut=null }={}){
           )}
 
           <FlowStrip tab={tab} setTab={setTab} role={role} />
-          <PlanViews tab={tab} setTab={setTab} role={role} />
 
           {errBanner}
 
@@ -704,7 +729,7 @@ export default function App({ user=null, onSignOut=null }={}){
             ))}
           </div>
           <div style={{display:intakeMode==="slip"?"block":"none"}}>
-            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} jobs={jobs} finishedMoves={finishedMoves} />
+            <NewOrderFlow onSaved={addOrders} catalogueVersion={catalogueTick} partiesVersion={partiesTick} jobs={jobs} finishedMoves={finishedMoves} />
           </div>
           {intakeMode==="sheet" &&
             <BulkOrderTab onImported={async()=>{ await syncAll(); setTab("orders"); }} />}
@@ -730,7 +755,9 @@ export default function App({ user=null, onSignOut=null }={}){
                 catch(e){ setLoadErr(`Could not build the CSV: ${e.message||e}`); }
               }}
               className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Download order sheet (CSV)</button>
-            <button onClick={clearAll} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-500">Clear all orders</button>
+            {/* It empties the production schedule. It used to sit beside the
+                download looking exactly like it; it is set apart, and red. */}
+            <button onClick={clearAll} className="ml-auto text-xs font-semibold border border-rose-200 rounded-lg px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700">Clear all orders</button>
           </div></>}
         {/* MOUNTED, not conditionally rendered. A half-built job order — the
             fabricator, the article, the size-by-size quantities — is unsaved
@@ -739,9 +766,9 @@ export default function App({ user=null, onSignOut=null }={}){
             screen. Same reason NewOrderFlow stays mounted behind the
             spreadsheet mode. */}
         <div style={{display:tab==="jobs"?"block":"none"}}>
-          <JobCardTab orders={orders||[]} onIssued={syncAll} active={tab==="jobs"} finishedMoves={finishedMoves} />
+          <JobCardTab orders={orders||[]} onIssued={syncWithStock} active={tab==="jobs"} finishedMoves={finishedMoves} />
         </div>
-        {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} />}
+        {tab==="jobwork" && <JobWorkTab orders={orders||[]} allowDirectIssue={false} onChanged={syncWithStock} />}
         {tab==="status" && state && <StatusTab state={state} jobs={jobs} dispatches={dispatches} />}
         {/* Mounted once opened, like the job order: a half-entered receipt is
             unsaved work and a tab click must not throw it away. */}
@@ -796,7 +823,7 @@ export default function App({ user=null, onSignOut=null }={}){
         {tab==="stock" && rmView!=="items" && <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
           <RmStockSheet version={refTick} /></div>}
         {tab==="material_new" && <StockTab mode="material" state={state} onChanged={()=>setRefTick(t=>t+1)} />}
-        {tab==="parties" && <PartiesTab />}
+        {tab==="parties" && <PartiesTab onChanged={()=>setPartiesTick(t=>t+1)} />}
         {tab==="fabricators" && <FabricatorsTab />}
         {tab==="catalogue" && <CatalogueTab
           onChanged={()=>{setRefTick(t=>t+1);setCatalogueTick(t=>t+1);}}
@@ -854,7 +881,7 @@ const vlSummary = card => {
   return card.vl||"";
 };
 
-function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
+function NewOrderFlow({onSaved,catalogueVersion=0,partiesVersion=0,jobs=[],finishedMoves=[]}){
   const [img,setImg]=useState(null);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
@@ -914,6 +941,9 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
     .catch(e=>setErr(`Could not load the commercial terms: ${e.message||e}. `
       +`Check the discount on every article before issuing this PI — it may not be the agreed one.`));
   },[]);
+  /* THIS SCREEN STAYS MOUNTED, so a customer added or re-termed in Setup did
+     not reach its customer list until the page was reloaded. */
+  useEffect(()=>{ if(partiesVersion>0) api.listParties().then(rows=>setParties(rows||[])).catch(()=>{}); },[partiesVersion]);
   const [piNo,setPiNo]=useState("");
   const [savedMsg,setSavedMsg]=useState("");
   const saveErrRef=useRef(null);
@@ -1746,7 +1776,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files?.[0])}/>
       <div className="flex gap-2 mt-3 flex-wrap">
         <button disabled={!img||busy} onClick={readOrder}
-          className="font-semibold text-white rounded-xl px-4 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300">{busy?"Reading…":"Read the order"}</button>
+          className="cta">{busy?"Reading…":"Read the order"}</button>
         <label className={"font-semibold rounded-xl px-4 py-2.5 text-sm text-indigo-800 bg-indigo-50 border border-indigo-200 cursor-pointer "+(readingPi?"opacity-60":"")}>
           {readingPi ? (piStage || "Reading PI…") : "Upload a PI"}
           <input type="file" accept="application/pdf,image/*" className="hidden" disabled={readingPi}
@@ -1783,7 +1813,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
         <button onClick={()=>{ setErr(""); setSavedMsg("");
             try{ applyReadText(pasteText); setPasteText(""); }
             catch(e){ setErr("Could not parse the pasted text — paste Claude's full JSON reply. ("+(e.message||e)+")"); } }}
-          className="mt-2 text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 hover:bg-indigo-700">Use pasted result</button>
+          className="cta mt-2">Use pasted result</button>
       </details>
     </div>
 
@@ -2127,7 +2157,7 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
             </ul>
             <div className="flex gap-2 flex-wrap">
               <button onClick={()=>save(true)} disabled={saving}
-                className="text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-50">
+                className="cta cta-warn">
                 {saving?"Issuing…":"Issue the PI anyway"}
               </button>
               <button onClick={()=>setPiIssues(null)}
@@ -2139,14 +2169,14 @@ function NewOrderFlow({onSaved,catalogueVersion=0,jobs=[],finishedMoves=[]}){
 
         <div className="flex gap-2">
           <button onClick={generatePiPreview} disabled={generatingPi}
-            className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+            className="cta">
             {generatingPi?"Reloading latest terms…":piPreviewCards?(previewStale?"Regenerate PI with latest edits":"Generate PI again"):"Generate PI from these edits"}
           </button>
           {piPreviewCards && <button onClick={async()=>{if(await allocatePiNo()) await generatePiPreview();}}
             className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white">New PI number</button>}
           <button onClick={printPI} disabled={!piPreviewCards||previewStale} className="text-xs font-semibold border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50 disabled:opacity-40">Print / Save PDF</button>
           <button onClick={()=>save(false)} disabled={saving||!piPreviewCards||previewStale}
-            className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50">
+            className="cta">
             {saving ? "Saving…" : `Save & send ${piPreviewCards?.length||0} order${piPreviewCards?.length===1?"":"s"} to production →`}
           </button>
         </div>
@@ -2392,7 +2422,7 @@ function PlanViews({ tab, setTab, role }){
   const mine = PLAN_VIEWS.filter(([k]) => canSeeTab(role, k));
   if(mine.length < 2) return null;
   return <div data-noprint role="tablist" aria-label="Production plan views"
-    style={{margin:"14px 22px 0",display:"inline-flex",border:"1px solid #CBD5E1",borderRadius:9,overflow:"hidden",background:"#fff"}}>
+    style={{display:"inline-flex",border:"1px solid #CBD5E1",borderRadius:9,overflow:"hidden",background:"#fff"}}>
     {mine.map(([k, label, hint], i) => <button key={k} role="tab" aria-selected={tab === k} title={hint} onClick={()=>setTab(k)}
       style={{padding:"7px 16px",fontSize:12.5,fontWeight:600,fontFamily:"inherit",cursor:"pointer",border:"none",
               borderLeft:i ? "1px solid #CBD5E1" : "none",
@@ -2459,6 +2489,7 @@ const VIEWS = {
   catalogue:   {title:"Catalogue",          sub:"Articles, photos and prices"},
   rules:       {title:"Packing & BOM rules",sub:"The exact carton and material rules used for every article and type"},
   data:        {title:"Data & BOM",         sub:"Upload the article master workbook and check exactly what BOM, packing and MRP data is loaded"},
+  profiles:    {title:"Profiles & access",  sub:"Named logins and what each one may do"},
   upper_store: {title:"Upper Store",       sub:"Stitched uppers in from the line or a fabricator, out to pasting and moulding"},
   repair:      {title:"Repair",            sub:"Quality failures sent for repair, what came back and what was rejected"},
   copilot:     {title:"Copilot",            sub:"Ask about the current plan in plain language"},
@@ -2675,7 +2706,7 @@ function PiDatabaseTab({orders=[],jobs=[],shortfall,onScheduled,onChanged,onGoTo
         </div>
         <div className="flex gap-2">
           <button disabled={busyPi===deletePi} onClick={()=>runPiAction(deletePi,"delete")}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-700 text-white disabled:opacity-50">
+            className="cta cta-danger">
             {busyPi===deletePi?"Deleting…":`Delete ${deletePi} permanently`}</button>
           <button onClick={()=>setDeletePi(null)}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
@@ -2759,12 +2790,13 @@ function CancelOrderPanel({o,onKeep,onConfirm}){
     <div className="flex gap-2 mt-2 justify-end flex-wrap">
       <button onClick={onKeep} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
       <button disabled={!impact} onClick={()=>onConfirm(shipped)}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-600 text-white disabled:opacity-50">
+        className="cta cta-danger">
         {shipped?"Cancel order, job cards AND packing reports":"Cancel order and its job cards"}</button>
     </div>
   </div>;
 }
 
+const HEALTH_TONE = {waiting:["#475569","#F1F5F9"],on_track:["#047857","#ECFDF5"],at_risk:["#B45309","#FFFBEB"],breach:["#BE123C","#FFF1F2"]};
 function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
   const [confirmDel,setConfirmDel]=useState(null);
   const [editing,setEditing]=useState(null);
@@ -2845,11 +2877,12 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
     <table className="w-full text-sm" style={{borderCollapse:"collapse",minWidth:760}}>
       <thead><tr className="text-xs uppercase tracking-wide text-slate-500">
         <th className="text-left py-2 px-2">Order</th><th className="text-left py-2 px-2">Party</th><th className="text-left py-2 px-2">Article</th>
-        <th className="text-right py-2 px-2">Qty</th>
+        <th className="text-right py-2 px-2">Ordered</th>
         <th className="text-right py-2 px-2">On job cards</th>
+        <th className="text-left py-2 px-2">Health</th>
+        <th className="text-left py-2 px-2">Planned dispatch</th>
         <th className="text-right py-2 px-2">Dispatched</th>
-        <th className="text-center py-2 px-2">Priority</th>
-        <th className="text-left py-2 px-2">Dispatch</th><th className="text-right py-2 px-2">Lead</th><th></th>
+        <th className="text-center py-2 px-2">Priority</th><th></th>
       </tr></thead>
       <tbody>{visible.map(o=>(
         <React.Fragment key={o.order_no}>
@@ -2874,6 +2907,19 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
                 and never made — so they are on no card and are said separately. */}
             {o.from_stock_pairs>0&&<div className="text-[11px] text-emerald-700">{fmt(o.from_stock_pairs)} from finished goods</div>}
             {o.stock_status==="awaiting"&&<div className="text-[11px] font-semibold text-amber-700">stock decision needed</div>}</td>
+          {/* THE SAME HEALTH THE DASHBOARD PRINTS (orderHealth in shared/mis.js).
+              The planner and the dispatch clerk never open the dashboard; this
+              is the one list they work from, and it could not say an order was
+              at risk. A finished order is complete, whatever the plan thought. */}
+          <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>
+            {(()=>{ if(isDone(o)) return <span className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{color:"#047857",background:"#ECFDF5"}}>Complete</span>;
+              const h=orderHealth(o), tone=HEALTH_TONE[h.key]||HEALTH_TONE.on_track;
+              return <><span className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap" style={{color:tone[0],background:tone[1]}}>{h.label}</span>
+                {h.bottleneck && h.key!=="waiting" && <div className="text-[11px] text-slate-400 mt-0.5">{h.bottleneck}{h.slip_days>0?` · ${h.slip_days}d slip`:""}</div>}</>; })()}</td>
+          {/* The date, and how long the order takes to get there. An order with
+              no job card has neither — a dash, not a bare "d". */}
+          <td className="py-2 px-2 mono" style={{borderTop:"1px solid #eef0f4"}}>{niceDate(o.dispatch_date)||"—"}
+            {o.lead_days!=null && o.dispatch_date && <div className="text-[11px] text-slate-400">{o.lead_days} day{o.lead_days===1?"":"s"} from order</div>}</td>
           {/* WHAT HAS ACTUALLY LEFT. The ledger was already computed and handed
               to this screen, and used only to decide which rows to hide — so
               the order book could say 1,000 ordered and 500 on job cards while
@@ -2897,8 +2943,6 @@ function OrdersTab({state,ledger={},onBump,onSelect,selected,onRemove,onEdit}){
               <button onClick={()=>onBump(o.order_no,1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 mono">▼</button>
             </div>
           </td>
-          <td className="py-2 px-2 mono" style={{borderTop:"1px solid #eef0f4"}}>{niceDate(o.dispatch_date)}</td>
-          <td className="py-2 px-2 text-right mono text-slate-500" style={{borderTop:"1px solid #eef0f4"}}>{o.lead_days}d</td>
           <td className="py-2 px-2" style={{borderTop:"1px solid #eef0f4"}}>
             <button onClick={()=>onSelect(selected===o.order_no?null:o.order_no)} className="text-xs font-semibold text-indigo-700 hover:underline">{selected===o.order_no?"Hide":"Detail"}</button>
             {onEdit && <button onClick={()=>{setEditing(editing===o.order_no?null:o.order_no); setConfirmDel(null);}}
@@ -3398,7 +3442,7 @@ function EditOrder({o,onSave,onCancel}){
       <button disabled={busy} onClick={()=>save(false)}
         className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-indigo-300 bg-white text-indigo-800 disabled:opacity-50">{busy?"Saving…":"Save edits"}</button>
       <button disabled={busy} onClick={()=>save(true)}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">{busy?"Saving…":"Save & produce"}</button>
+        className="cta">{busy?"Saving…":"Save & produce"}</button>
       <button onClick={onCancel} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Cancel</button>
     </div>
   </div>;
@@ -3408,11 +3452,14 @@ function EditOrder({o,onSave,onCancel}){
    Built entirely from the computed stage allocations — nothing new is inferred. */
 function PlanningLogic({orders}){
   const queue=[...orders].sort((a,b)=>a.priority-b.priority||(a.order_date<b.order_date?-1:a.order_date>b.order_date?1:0)||String(a.order_no).localeCompare(String(b.order_no)));
-  return <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden">
-    <div className="px-3 py-2 bg-slate-50 border-b border-slate-200">
-      <div className="text-sm font-semibold text-slate-700">Production-planning logic for every order</div>
-      <div className="text-xs text-slate-500">The dates below show the exact inputs, capacity calculation and machine wait used for each order.</div>
-    </div>
+  /* SHUT UNTIL ASKED FOR. A line per order under the chart was a second list
+     of every order on a screen that had just drawn them all; it is the working
+     behind the dates, and is opened by whoever wants to check one. */
+  return <details className="mt-4 border border-slate-200 rounded-xl overflow-hidden">
+    <summary className="cursor-pointer px-3 py-2 bg-slate-50 text-sm font-semibold text-slate-700">
+      How each order&rsquo;s dates were worked out
+      <span className="font-normal text-xs text-slate-500"> — the inputs, capacity and machine wait behind all {queue.length}</span>
+    </summary>
     {queue.map((o,rank)=><details key={o.order_no} className="border-b border-slate-100 last:border-0">
       <summary className="cursor-pointer px-3 py-2 text-xs">
         <b className="mono">{o.order_no}</b> · queue #{rank+1} · P{o.priority} · {o.article} · {fmt(o.qty)} pairs · dispatch {niceDate(o.dispatch_date)}
@@ -3433,7 +3480,7 @@ function PlanningLogic({orders}){
         </table></div>
       </div>
     </details>)}
-  </div>;
+  </details>;
 }
 
 /* MANUAL PLANNING CONTROLS for one order.
@@ -3921,7 +3968,7 @@ function ScheduleTab({state,setPlanOverride}){
             {setPlanOverride && <button
               onClick={()=>setEditing(editing===o.order_no?null:o.order_no)}
               aria-label={`Adjust the plan for ${o.order_no}`}
-              className="flex-none text-xs font-semibold rounded-lg px-2 py-1 border border-indigo-300 text-indigo-800 bg-indigo-50 hover:bg-indigo-100">
+              className="cta-row flex-none">
               {editing===o.order_no?"Done":"Adjust"}</button>}
           </div>
         </div>
@@ -4103,8 +4150,10 @@ function MachinesTab({state,caps,setCaps,targets,setTargets,leadTimes,setLeadTim
   const firstDay=Math.max(0,Math.min(maxDay,dayIndex(todayIso(),INPUTS.origin),...booked));
   const days=Array.from({length:maxDay-firstDay+1},(_,i)=>firstDay+i);
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-    <p className="text-sm text-slate-500 mb-1">One strip per line, day by day: <b>how full that line is on each day</b>. Red = fully booked, amber = nearly full, blue = partly used, empty = free. The date on the right is when the line frees up.</p>
-    <p className="text-xs text-slate-400 mb-4">Each molding machine runs one order at a time, but they run in parallel with each other. Capacities are placeholders until the factory confirms them.</p>
+    {/* The legend under the strips says what the colours mean; one line here
+        says what the strips are, and that the capacities are not yet real. */}
+    <p className="text-xs text-slate-500 mb-4">How full each line is, day by day, and when it frees up. Each moulding machine runs one order at a time.{" "}
+      <b className="text-amber-700">Capacities are placeholders until the factory confirms them.</b></p>
     {ORDER.filter(c=>INPUTS.workcenters[c]).map(code=>{
       const wc=INPUTS.workcenters[code];
       const cap=caps[code];
@@ -4219,7 +4268,7 @@ function WorkCalendar({calendar,setCalendar}){
         </tbody></table>
       </div>
       <button disabled={busy||!dirty} onClick={save}
-        className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+        className="cta mt-3">
         {busy?"Saving…":"Save calendar"}</button>
     </div>}
     {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
@@ -4268,7 +4317,7 @@ function SlaTargets({targets,setTargets}){
     </div>
     {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
     <button disabled={busy||!dirty} onClick={save}
-      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      className="cta mt-3">
       {busy?"Saving…":"Save targets"}</button>
   </div>;
 }
@@ -4322,7 +4371,7 @@ function LeadTimes({leadTimes,setLeadTimes}){
     </div>
     {msg && <div className="text-xs text-slate-600 mt-2">{msg}</div>}
     <button disabled={busy||!dirty} onClick={save}
-      className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      className="cta mt-3">
       {busy?"Saving…":"Save lead times"}</button>
   </div>;
 }
@@ -4336,7 +4385,7 @@ function CopilotTab({q,setQ,a,busy,ask}){
     <div className="flex gap-2">
       <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==="Enter"&&ask()} placeholder="Ask the production copilot…"
         className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-500" />
-      <button onClick={ask} disabled={busy} className="font-semibold text-white rounded-xl px-5 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300">{busy?"Thinking…":"Ask"}</button>
+      <button onClick={ask} disabled={busy} className="cta">{busy?"Thinking…":"Ask"}</button>
     </div>
     {a && <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm whitespace-pre-wrap leading-relaxed">{a}</div>}
   </div>;

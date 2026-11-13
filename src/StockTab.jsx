@@ -252,7 +252,7 @@ function ViewStock({ version, onSaved }){
     {msg&&<div className="text-xs text-emerald-700 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 mb-3">{msg}</div>}
     {pendingUpload&&<div className="text-xs text-slate-700 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 mb-3 flex items-center gap-3 flex-wrap">
       <span><b>{pendingUpload.changes.length}</b> stock item{pendingUpload.changes.length===1?"":"s"} will be updated.</span>
-      <button disabled={busy} onClick={applyUpload} className="ml-auto text-xs font-semibold text-white bg-amber-700 rounded-lg px-3 py-1.5 disabled:opacity-50">{busy?"Updating…":"Confirm upload"}</button>
+      <button disabled={busy} onClick={applyUpload} className="cta cta-warn ml-auto">{busy?"Updating…":"Confirm upload"}</button>
       <button onClick={()=>setPendingUpload(null)} className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-1.5">Cancel</button>
     </div>}
 
@@ -435,7 +435,7 @@ function StockDetail({ row, onSaved }){
             onChange={e=>setEdit(d=>({...d,[f]:e.target.value}))}
             className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm w-24 mono text-right"/></label>)}
       <button onClick={save} disabled={busy}
-        className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-50">
+        className="cta">
         {busy?"Saving…":"Save"}</button>
       <button onClick={()=>{setEdit(null);setErr("");}} disabled={busy}
         className="text-xs font-semibold rounded-lg px-3 py-2 border border-slate-300 bg-white">Cancel</button>
@@ -536,7 +536,7 @@ function AddStock({ version, onSaved, onViewAll }){
         Stock will go from <b className="mono">{fmt(chosen.stock)}</b> to <b className="mono">{fmt(chosen.stock+amount)} {chosen.uom}</b>.</div>}
       {err && <div role="alert" className="text-xs text-rose-700 mt-2">{err}</div>}
       <button onClick={book} disabled={!valid||busy}
-        className="mt-3 w-full text-sm font-semibold text-white rounded-lg px-4 py-2.5 bg-indigo-600 disabled:opacity-40">
+        className="cta mt-3 w-full">
         {busy?"Adding…":"Add to stock"}</button>
     </div>
 
@@ -681,7 +681,7 @@ function NewMaterial({ draft, setDraft, existing = {}, onSaved, onError }){
           placeholder="e.g. 30 days credit, ex-works"
           className="block mt-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm min-w-56"/></label>
       <button onClick={save} disabled={saving||problems.length>0}
-        className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-50">
+        className="cta">
         {saving?"Adding…":"Add item"}</button>
     </div>
     {/* Show the key that will be created, because the colour folding surprises

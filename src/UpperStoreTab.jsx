@@ -311,7 +311,7 @@ function MoveForm({ kind, moves, orders, fabricators, onSaved }){
         <input value={defect} onChange={e=>setDefect(e.target.value)} aria-label="Defect"
           className={`${input} w-full max-w-md`}/></label>}
     <button disabled={busy||!total} onClick={submit}
-      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+      className="cta">
       {busy?"Saving…":kind==="in"&&failedTotal?`Record ${fmt(passedTotal)} passed, ${fmt(failedTotal)} failed`:`Record ${fmt(total)} uppers`}</button>
     {err && <div role="alert" className="mt-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}
     {msg && <div className="mt-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">{msg}</div>}
@@ -421,7 +421,7 @@ function PhysicalCount({ moves, access, pending, onSaved }){
           {d && d.diff!==0 && <span className="block mono font-semibold" style={{color:d.diff<0?"#b91c1c":"#047857"}}>{d.diff>0?"+":""}{d.diff}</span>}
         </label>;})}</div>}
       <button disabled={busy||!adjustments.length} onClick={submit}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+        className="cta">
         {busy?"Sending…":`Send ${adjustments.length} adjustment${adjustments.length===1?"":"s"} for approval`}</button>
     </>}
     {err && <div role="alert" className="mt-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}
@@ -623,7 +623,7 @@ function RulesEditor({ rules, setRules, canEdit }){
       {field("fabrication_due_days","Fabrication overdue after","days")}
       {field("rejection_alert_pct","QC rejection alert at","%")}
       {field("repair_rejection_alert_pct","Repair rejection alert at","%")}
-      {canEdit && <button onClick={save} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white">Save rules</button>}
+      {canEdit && <button onClick={save} className="cta">Save rules</button>}
     </div>
     {err && <div role="alert" className="mt-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{err}</div>}
     {msg && <div className="mt-2 text-xs text-emerald-800">{msg}</div>}

@@ -10,6 +10,7 @@ import JobCard from "./JobCard.jsx";
 import StageJobCard from "./StageJobCard.jsx";
 import { CardSwitch, printJobCard } from "./JobCardTab.jsx";
 import { CardMaterials } from "./IssueMaterialTab.jsx";
+import { localDay } from "../shared/valid.js";
 
 /* Issued-job-order database — work assigned to an internal line or outside fabricator.
  *
@@ -22,10 +23,18 @@ import { CardMaterials } from "./IssueMaterialTab.jsx";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
 const inr = n => "₹" + Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:2});
+/* The issue date as a person reads it — never the raw timestamp the API sends. */
+const niceDay = v => { const iso = localDay(v);
+  return iso ? new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}) : "—"; };
 
 const BLANK = { fabricator:"", article:"", qty:"", stage:"STITCHING", order_no:"", note:"" };
 
-export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue=true, refreshKey=0 }){
+/* `onChanged` tells the rest of the app that a job order changed. Job cards
+   are what the plan is built from: work received, a card closed short, a card
+   deleted — each moves the Production plan, the dashboard, the Order Book's
+   "on job cards" and the buying list. This screen reloaded its OWN list and
+   told nobody, so all of those went on showing the plan from before. */
+export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue=true, refreshKey=0, onChanged=null }){
   const [fabricators, setFabricators] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [form, setForm] = useState(BLANK);
@@ -43,6 +52,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   const [showArchived, setShowArchived] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null);
 
+  const changed = () => { if(onChanged) return Promise.resolve(onChanged()).catch(()=>{}); };
   async function reload(){
     try{
       const [f, j] = await Promise.all([api.listFabricators(), api.listJobWork(showArchived)]);
@@ -78,7 +88,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     setBusy(true); setErr(""); setMsg("");
     try{
       const made = await api.issueJobWork({ ...form, qty:Number(form.qty)||0 });
-      await reload();
+      await reload(); changed();
       setForm(BLANK);
       setMsg(`${made.slip} raised for ${made.fabricator}: ${fmt(made.qty)} × ${made.article}.`);
       setSlip(made);
@@ -90,7 +100,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     setBusy(true); setErr("");
     try{
       const out = await api.receiveJobWork(receiving.id, Number(gotBack)||0, close);
-      await reload();
+      await reload(); changed();
       setReceiving(null); setGotBack("");
       setMsg(out.shortage > 0
         ? `${out.fabricator}: closed ${fmt(out.shortage)} short — that balance is recorded, not forgotten.`
@@ -101,20 +111,20 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
 
   async function verdict(id, status){
     setBusy(true); setErr("");
-    try{ await api.setSampleStatus(id, status); await reload(); setMsg(`Sample marked ${SAMPLE_LABEL[status]}.`); }
+    try{ await api.setSampleStatus(id, status); await reload(); changed(); setMsg(`Sample marked ${SAMPLE_LABEL[status]}.`); }
     catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
   }
 
   async function archive(id){
     setBusy(true); setErr(""); setMsg("");
-    try{ const r=await api.archiveJobWork(id); setMsg(r.note||"Archived."); await reload(); }
+    try{ const r=await api.archiveJobWork(id); setMsg(r.note||"Archived."); await reload(); changed(); }
     catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
   }
   async function remove(id){
     setBusy(true); setErr(""); setMsg("");
-    try{ const r=await api.deleteJobWork(id); setMsg(r.note||"Deleted."); setConfirmDel(null); await reload(); }
+    try{ const r=await api.deleteJobWork(id); setMsg(r.note||"Deleted."); setConfirmDel(null); await reload(); changed(); }
     catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
   }
@@ -125,7 +135,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
   function exportHistory(){
     const header=["Slip","Issued on","Sent to","Type","Article","Order","Stage",
       "Issued","Received","Short","Status","Rate","Payable","Amount","Sample","Note","Archived"];
-    const body=rows.map(r=>[r.slip,r.issued_on,r.fabricator,r.fabricator_type,r.article,
+    const body=rows.map(r=>[r.slip,localDay(r.issued_on),r.fabricator,r.fabricator_type,r.article,
       r.order_no||"",r.stage,r.issued,r.received,r.shortage,r.status,
       Number(r.rate)||0,r.payable?"Yes":"No",r.payable?(r.amount||0):"",
       r.sample?(r.sample_status||"pending"):"",r.note||"",r.archived?"Yes":"No"]);
@@ -161,10 +171,6 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
     {msg && <div role="status" className="mb-3 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
     {err && <div role="alert" className="mb-3 text-xs rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2">{err}</div>}
 
-    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm mb-3">
-      <div className="text-sm font-semibold text-slate-800">Issued Job Orders</div>
-      <div className="text-xs text-slate-600 mt-1">Live database of created job orders. Receive work here and record any final shortage or external payment.</div>
-    </div>
 
     {/* The line layout: the factory's own lines first, outside work beside
         them. Every active line has a row whether or not it is carrying work. */}
@@ -253,7 +259,7 @@ export default function JobWorkTab({ orders=[], embedded=false, allowDirectIssue
         </div>}
 
       <button onClick={issue} disabled={busy || !check.ok}
-        className="mt-3 text-xs font-semibold text-white rounded-lg px-3 py-2 bg-slate-800 disabled:opacity-40">
+        className="cta mt-3">
         {busy ? "Issuing…" : chosen ? `Raise the ${slipFor(chosen)}` : "Issue"}
       </button>
     </div>}
@@ -308,7 +314,7 @@ function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, bu
             <tr className="border-t border-slate-100">
               <td className="px-3 py-1.5">
                 <div className="font-medium text-slate-800">{r.fabricator}</div>
-                <div className="text-[10.5px] text-slate-500 mono">{r.issued_on} · {r.slip}</div>
+                <div className="text-[10.5px] text-slate-500">{niceDay(r.issued_on)} · {r.slip}</div>
               </td>
               <td className="px-2">{r.article}{r.order_no && <span className="text-slate-400 mono"> · {r.order_no}</span>}</td>
               <td className="text-right px-2 mono">{fmt(r.issued)}</td>
@@ -338,7 +344,7 @@ function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, bu
                   title="What the store has issued to this job, against what its BOM calls for.">Materials</button>}
                 <button onClick={()=>onSlip(r)} className="text-slate-600 hover:underline">Slip</button>
                 {!closed && <button onClick={()=>onReceive(r)} disabled={busy}
-                  className="ml-2 font-semibold text-indigo-700 hover:underline disabled:opacity-40">Receive</button>}
+                  className="cta-row ml-2">Receive</button>}
                 {r.sample && !closed && <span className="ml-2">
                   {SAMPLE_STATUS.filter(s=>s!=="pending").map(sst =>
                     <button key={sst} onClick={()=>onVerdict(r.id, sst)} disabled={busy}
@@ -374,7 +380,7 @@ function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, bu
                     <button onClick={onCancelDelete}
                       className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Keep it</button>
                     <button onClick={()=>onReallyDelete(r.id)} disabled={busy}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-600 text-white disabled:opacity-40">
+                      className="cta cta-danger">
                       Delete the challan</button>
                   </div>
                 </div></td></tr>)}
@@ -387,7 +393,7 @@ function Register({ title, rows, empty, onReceive, onSlip, onCard, onVerdict, bu
                       onChange={e=>setGotBack(e.target.value)}
                       className="block mt-1 w-28 border border-slate-300 rounded px-2 py-1 bg-white mono" /></label>
                   <button onClick={()=>onConfirm(false)} disabled={busy}
-                    className="text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-indigo-700 disabled:opacity-40">
+                    className="cta">
                     Record</button>
                   {/* Closing accepts the balance as never coming back. Until
                       then it is still out, not short. */}
@@ -423,9 +429,9 @@ export function SavedJobCard({ job, onClose, onError }){
   return <div ref={box} className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm mb-4">
     <div data-noprint className="flex items-center gap-2 flex-wrap mb-2">
       <div className="text-sm font-semibold text-slate-800">Job order {job.id} — {job.article}{job.order_no ? ` · ${job.order_no}` : ""}</div>
-      <span className="text-[11px] text-slate-500">As issued on {String(job.issued_on || "").slice(0,10)}.</span>
+      <span className="text-[11px] text-slate-500">As issued on {niceDay(job.issued_on)}.</span>
       <button onClick={()=>printJobCard(box.current, onError)}
-        className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">Reprint / Save PDF</button>
+        className="cta ml-auto">Reprint / Save PDF</button>
       <button onClick={onClose} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
     </div>
     <CardSwitch value={kind} onChange={setKind} />
@@ -441,7 +447,7 @@ function JobSlip({ job, onPrint, onClose }){
   return <div className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm mb-4">
     <div data-noprint className="flex items-center gap-2 mb-2">
       <div className="text-sm font-semibold text-slate-800">{job.slip}</div>
-      <button onClick={onPrint} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">
+      <button onClick={onPrint} className="cta ml-auto">
         Print / Save PDF</button>
       <button onClick={onClose} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
     </div>
@@ -454,7 +460,7 @@ function JobSlip({ job, onPrint, onClose }){
         <tbody>
           <tr><td style={C(1)}>Issued to</td><td style={C()}>{job.fabricator}</td>
               <td style={C(1)}>Slip No</td><td style={C()}>{job.id}</td></tr>
-          <tr><td style={C(1)}>Date</td><td style={C()}>{job.issued_on}</td>
+          <tr><td style={C(1)}>Date</td><td style={C()}>{niceDay(job.issued_on)}</td>
               <td style={C(1)}>Stage</td><td style={C()}>{job.stage}</td></tr>
           <tr><td style={C(1)}>Article</td><td style={C()}>{job.article}</td>
               <td style={C(1)}>Production order</td><td style={C()}>{job.order_no||"—"}</td></tr>

@@ -140,12 +140,12 @@ export default function CatalogueTab({onChanged,onAddBom}){
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-3">{msg}</div>}
     {missingBom&&<div className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 mb-3 flex items-center gap-3 flex-wrap">
       <span><b>{missingBom} has catalogue details but no BOM or sizes.</b> It cannot be ordered or scheduled yet.</span>
-      <button onClick={()=>onAddBom&&onAddBom(missingBom)} className="text-xs font-semibold bg-amber-700 text-white rounded-lg px-3 py-1.5">Add its BOM now</button>
+      <button onClick={()=>onAddBom&&onAddBom(missingBom)} className="cta cta-warn">Add its BOM now</button>
     </div>}
     <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs w-fit mb-3">
       {[["browse","Browse by shoe"],["edit","Edit every article"]].map(([key,label])=>(
         <button key={key} onClick={()=>setMode(key)}
-          className={`px-3 py-1.5 font-semibold ${mode===key?"bg-indigo-600 text-white":"bg-white text-slate-600"}`}>
+          className={`px-3 py-1.5 font-semibold ${mode===key?"bg-slate-800 text-white":"bg-white text-slate-600"}`}>
           {label}</button>))}
     </div>
 
@@ -159,7 +159,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
       <p className="text-xs text-slate-500 max-w-2xl">
         Add or edit catalogue details here. An article added without a BOM stays clearly marked and cannot be ordered until its BOM is uploaded.
       </p>
-      <button onClick={()=>setShowAdd(v=>!v)} className="text-xs font-semibold bg-indigo-600 text-white rounded-lg px-3 py-2">
+      <button onClick={()=>setShowAdd(v=>!v)} className="cta">
         {showAdd?"Cancel":"Add new catalogue item"}</button>
     </div>
     {showAdd&&<form onSubmit={addCatalogueItem} className="bg-white border border-indigo-200 rounded-xl p-4 mb-4">
@@ -181,7 +181,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
           </select></label>
       </div>
       <div className="text-xs text-amber-800 mt-3">This creates only the catalogue item. Factory OS will ask for its BOM before it can be used in an order.</div>
-      <button disabled={busy==="new"} type="submit" className="mt-3 text-xs font-semibold bg-indigo-600 text-white rounded-lg px-4 py-2 disabled:opacity-50">
+      <button disabled={busy==="new"} type="submit" className="cta mt-3">
         {busy==="new"?"Adding…":"Add to catalogue"}</button>
     </form>}
     <div className="grid gap-4" style={{gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))"}}>
@@ -226,7 +226,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
                     : <>Delete <b>{code}</b>? It has no BOM, so its empty article record and catalogue details will both be removed.</>}</div>
                   <div className="flex gap-2 mt-2">
                     <button type="button" disabled={busy===`${code}:delete`} onClick={()=>deleteCatalogueItem(code,combos.length>0)}
-                      className="text-xs font-semibold text-white bg-rose-700 rounded px-2 py-1 disabled:opacity-40">
+                      className="cta cta-danger cta-sm">
                       {busy===`${code}:delete`?"Deleting…":`Confirm delete ${code}`}</button>
                     <button type="button" disabled={busy===`${code}:delete`} onClick={()=>setDeleteCandidate("")}
                       className="text-xs font-semibold border border-slate-300 bg-white rounded px-2 py-1">Cancel</button>
@@ -270,7 +270,7 @@ export default function CatalogueTab({onChanged,onAddBom}){
               </div>
               <div className="flex gap-2 mt-2">
                 <button disabled={busy===`${code}:reference`||!Object.keys(mrpEdits[code]||{}).length} onClick={()=>saveMrp(code)}
-                  className="text-xs font-semibold bg-indigo-600 text-white rounded-lg px-3 py-1.5 disabled:opacity-40">Save MRP changes</button>
+                  className="cta">Save MRP changes</button>
                 <button disabled={busy===`${code}:reference`||!Object.keys(mrpEdits[code]||{}).length}
                   onClick={()=>setMrpEdits(all=>{const next={...all};delete next[code];return next;})}
                   className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-1.5 disabled:opacity-40">Discard</button>

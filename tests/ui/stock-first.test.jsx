@@ -207,10 +207,14 @@ describe("the weekly production plan",()=>{
     expect(days[0]).toHaveAccessibleName(/1,200 pairs/);
     expect(days[1]).toHaveAccessibleName(/300 pairs/);
   });
-  it("sums the plan up in four figures",()=>{
+  /* Four figures on ONE line beside the buttons — they used to be a box each,
+     under a second copy of the screen's title. */
+  it("sums the plan up in four figures on one line",()=>{
     render(<PlanBoard state={plan()} setPlanOverride={vi.fn()}/>);
-    expect(screen.getByText("Jobs on the plan").parentElement).toHaveTextContent("1");
-    expect(screen.getByText("Locked by a planner").parentElement).toHaveTextContent(/0.*everything is planned automatically/);
+    const glance=screen.getByRole("group",{name:"Plan at a glance"});
+    expect(glance).toHaveTextContent("1 jobs on the plan0 running late0 days over capacity0 locked by a planner");
+    expect(within(glance).getByTitle("Everything is planned automatically")).toHaveTextContent("0 locked by a planner");
+    expect(screen.queryByText("Weekly production plan")).toBeNull();
   });
   it("opens a job in a box that says what it is and how it is planned",async()=>{
     const user=userEvent.setup();
@@ -246,13 +250,32 @@ describe("the weekly production plan",()=>{
     expect(screen.getByRole("alert")).toHaveTextContent(/Not moved\. STITCHING of JO1 cannot start/);
     expect(set).not.toHaveBeenCalled();
   });
-  it("a job dragged onto another day is checked the same way and locked",()=>{
+  /* The row that is dragged is what moves: its pairs go to the day it was
+     dropped on, and the screen says so in those words. */
+  it("a row dragged onto another day takes its pairs there, and says so",()=>{
     const set=vi.fn(), state=plan();
     render(<PlanBoard state={state} setPlanOverride={set}/>);
-    const to=fromDay(dayIndex(stage(state,"CUTTING").start_date,origin)+1,origin);
+    const from=stage(state,"CUTTING").start_date, to=fromDay(dayIndex(from,origin)+1,origin);
     fireEvent.dragStart(job("CUTTING"),{dataTransfer:{setData(){}}});
     fireEvent.drop(screen.getByRole("gridcell",{name:`Cutting hall ${to}`}));
-    expect(set).toHaveBeenCalledWith("JO1",{at:{CUTTING:to}},"JO1");
+    expect(set).toHaveBeenCalledWith("JO1",{at:{CUTTING:to},daily:{CUTTING:{[to]:1500}}},"JO1");
+    expect(screen.getByRole("status")).toHaveTextContent(/JO1 CUTTING: 1,500 pairs moved from .* to .*\. Its days are now fixed as shown\./);
+    expect(screen.getByRole("button",{name:"Undo"})).toBeInTheDocument();
+  });
+  /* Picking a job up and putting it straight back used to LOCK it where it
+     already was — a lock nobody asked for, from a slip of the mouse. */
+  it("a job dropped back where it was is not moved and not locked",()=>{
+    const set=vi.fn(), state=plan();
+    render(<PlanBoard state={state} setPlanOverride={set}/>);
+    const home=screen.getByRole("gridcell",{name:`Cutting hall ${stage(state,"CUTTING").start_date}`});
+    fireEvent.dragStart(job("CUTTING"),{dataTransfer:{setData(){}}});
+    /* The cell it is over is outlined, so the drop has a visible target. */
+    fireEvent.dragOver(home);
+    expect(home.style.boxShadow).toMatch(/inset/);
+    fireEvent.drop(home);
+    expect(set).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(home.style.boxShadow).toBe("none");
   });
   it("a job cannot be dragged onto a line that is not its stage",()=>{
     const set=vi.fn(), state=plan();
@@ -280,14 +303,14 @@ describe("the weekly production plan",()=>{
     const day=stage(plan(),"PACKING").start_date;
     render(<PlanBoard state={plan({JO1:{at:{PACKING:day},daily:{PACKING:{[day]:1500}}}})} setPlanOverride={vi.fn()}/>);
     await user.click(screen.getByRole("button",{name:/^JO1 PACKING on .*, locked/}));
-    expect(screen.getByRole("region",{name:"Selected job"})).toHaveTextContent(/Locked — set by an uploaded planning sheet/);
+    expect(screen.getByRole("region",{name:"Selected job"})).toHaveTextContent(/Locked — its days were set by hand: a row was dragged here, or it came from an uploaded planning sheet/);
   });
   it("counts the locks and hands them all back at once",async()=>{
     const user=userEvent.setup(), batch=vi.fn(async()=>({saved:1,failed:[]}));
     const state=plan();
     const locks={JO1:{at:{PACKING:stage(state,"PACKING").start_date,CUTTING:stage(state,"CUTTING").start_date},days:{STITCHING:2}}};
     render(<PlanBoard state={plan(locks)} setPlanOverride={vi.fn()} onApplySheet={batch}/>);
-    expect(screen.getByText("Locked by a planner").parentElement).toHaveTextContent("2");
+    expect(screen.getByRole("group",{name:"Plan at a glance"})).toHaveTextContent("2 locked by a planner");
     await user.click(screen.getByRole("button",{name:"Unlock all"}));
     expect(globalThis.confirm).toHaveBeenCalled();
     await waitFor(()=>expect(batch).toHaveBeenCalledWith([{order_no:"JO1",unit_key:"JO1",override:{days:{STITCHING:2}}}]));
@@ -332,7 +355,7 @@ describe("the weekly production plan",()=>{
     render(<PlanBoard state={tight} setPlanOverride={vi.fn()}/>);
     const cell=screen.getByRole("gridcell",{name:"Cutting hall 2026-07-06"});
     expect(cell).toHaveTextContent(/3,000 · 120% of 2,500 · \+500 over/);
-    expect(screen.getByText("Days over capacity").parentElement).toHaveTextContent("1");
+    expect(screen.getByRole("group",{name:"Plan at a glance"})).toHaveTextContent("1 day over capacity");
     expect(state).toBeTruthy();
   });
   it("is read-only for anyone who may not edit the schedule",async()=>{

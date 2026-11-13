@@ -261,7 +261,7 @@ export default function IssueMaterialTab({ active=true, canWrite=true, onChanged
               placeholder="Who asked, slip number — optional"
               className="block mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm" /></label>
           <button onClick={save} disabled={busy||!checked||!checked.ok}
-            className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-40">
+            className="cta">
             {busy?"Saving…":type==="return"?"Save return":"Save issue"}</button>
         </div>
         {checked&&!checked.ok && <div role="alert" className="text-xs text-rose-700 mt-2">{checked.problems.join("; ")}</div>}

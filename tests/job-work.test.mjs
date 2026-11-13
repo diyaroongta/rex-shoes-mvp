@@ -196,6 +196,24 @@ test("a quantity past the database's integer is refused, not crashed on", () => 
   assert.ok(out.problems.some(p => /check the figure/.test(p)));
 });
 
+
+/* THE ISSUE DATE, AS A DAY. A Postgres date reaches the browser as a
+   timestamp at the SERVER's midnight; the Job Orders Database and the issue
+   slip printed it raw ("2026-11-09T18:30:00.000Z"), and slicing ten characters
+   off it is a day early whenever the server is east of Greenwich. */
+{
+  const { localDay } = await import("../shared/valid.js");
+  test("a stored date is read as the day it was keyed, whatever zone the server kept it in", () => {
+    assert.equal(localDay("2026-11-10"), "2026-11-10");
+    /* Midnight on the 10th in THIS machine's zone, as the API would send it. */
+    assert.equal(localDay(new Date(2026, 10, 10).toISOString()), "2026-11-10");
+    assert.equal(localDay(new Date(2026, 10, 10)), "2026-11-10");
+    assert.equal(localDay(""), "");
+    assert.equal(localDay(null), "");
+    assert.equal(localDay("not a date"), "");
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 /* exitCode, not exit(): process.exit() kills the process before V8 flushes
    its coverage file, so a suite that passed reported 0% and dragged the whole

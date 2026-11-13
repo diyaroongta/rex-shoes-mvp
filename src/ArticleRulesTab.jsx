@@ -220,10 +220,9 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
       setMsg(`${out.combo} (sizes ${out.sizes.join(", ")}) added to ${out.article}. ${out.warnings.join(" ")}`);
       onChanged&&onChanged();
     }} />}
-    <div className="text-xs text-slate-600 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 mb-3">
-      This page is the current database view for the selected article. It shows every stored combination by default,
-      the effective rule for every individual size, and the complete BOM. Packing quantities can be edited here;
-      use the BOM Excel action for size-range or material changes.
+    {/* One line, not a boxed paragraph: what can be changed here and what cannot. */}
+    <div className="text-xs text-slate-500 mb-3">
+      Packing quantities can be edited here. For a size range or a material, use <b>Upload or replace BOM Excel</b>.
     </div>
     {removeOpen&&<BomRemovalPanel
       onCancel={()=>setRemoveOpen(false)}
@@ -246,7 +245,7 @@ export default function ArticleRulesTab({onChanged,onUploadBom}){
     {msg&&<div className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mt-3">{msg}</div>}
     <div className="flex gap-2 mt-3">
       <button disabled={busy||(!Object.keys(packingEdits).length&&!Object.keys(singleEdits).length)} onClick={savePacking}
-        className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-40">
+        className="cta">
         {busy?"Saving…":"Save packing changes"}</button>
       <button disabled={busy||(!Object.keys(packingEdits).length&&!Object.keys(singleEdits).length)} onClick={clearEdits}
         className="text-xs font-semibold border border-slate-300 rounded-lg px-4 py-2 bg-white disabled:opacity-40">Discard changes</button>
@@ -295,7 +294,7 @@ function AddRangePanel({article,onDone}){
         <input type="number" min={1} value={mrp} onChange={e=>setMrp(e.target.value)} placeholder="blank = unknown" aria-label="MRP"
           className="block mt-0.5 w-28 border border-slate-300 rounded px-2 py-1 mono text-sm"/></label>
       <button disabled={busy||!combo} onClick={add}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{busy?"Adding…":"Add range"}</button>
+        className="cta">{busy?"Adding…":"Add range"}</button>
     </div>
     {err&&<div role="alert" className="text-xs text-rose-800 mt-2">{err}</div>}
   </div>;

@@ -36,7 +36,7 @@
  * and back; everything that decides anything is here.
  */
 import { dayIndex, fromDay, workCalendar, normalizeOverride, workCentresInOrder } from "./engine.js";
-import { boardRows, machineFits, cleanOverride } from "./plan-board.js";
+import { boardRows, machineFits, cleanOverride, wholeDays } from "./plan-board.js";
 
 export const PLAN_SHEET = "Plan";
 export const SNAPSHOT_SHEET = "As downloaded";
@@ -48,19 +48,6 @@ const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const clean = v => String(v == null ? "" : v).replace(/\s+/g, " ").trim();
 const refOf = (unitKey, stage) => `${unitKey}::${stage}`;
 const dowOf = iso => DOW[new Date(iso + "T00:00:00Z").getUTCDay()];
-
-/* A block's pairs per day as WHOLE numbers that still add up to the block.
-   The engine spreads a forced run evenly — 1,000 pairs over three days is
-   333.33 a day — and a sheet of fractions is one nobody can plan from. */
-function wholeDays(days){
-  const keys = Object.keys(days).map(Number).sort((a, z) => a - z);
-  const total = Math.round(keys.reduce((a, d) => a + days[d], 0));
-  const base = keys.map(d => Math.floor(days[d] + 1e-9));
-  let short = total - base.reduce((a, n) => a + n, 0);
-  const byRemainder = keys.map((d, i) => [days[d] - base[i], i]).sort((a, z) => z[0] - a[0] || a[1] - z[1]);
-  for(const [, i] of byRemainder){ if(short <= 0) break; base[i]++; short--; }
-  return keys.map((d, i) => [d, base[i]]).filter(([, n]) => n > 0);
-}
 
 /* THE DOWNLOAD: every block of the plan, one row per day it runs. */
 export function planRows(state, wcs, origin){

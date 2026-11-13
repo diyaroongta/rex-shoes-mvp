@@ -180,7 +180,7 @@ export default function PlanSheet({ state, wcs, planWith = null, onApply = null,
 
         <div className="mt-3 flex items-center gap-2 flex-wrap">
           <button disabled={busy || !result.changes.length} onClick={apply}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-700 text-white disabled:opacity-50">
+            className="cta">
             {result.changes.length ? `Apply ${result.changes.length} change${result.changes.length === 1 ? "" : "s"} to the plan` : "Nothing to apply"}</button>
           {!result.changes.length && !result.skipped.length && <span className="text-xs text-slate-500">
             The sheet matches the plan as it was downloaded — nothing was changed in it.</span>}

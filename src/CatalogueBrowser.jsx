@@ -153,11 +153,11 @@ function FilterRow({ label, value, onChange, options, empty }){
     <span className="text-xs text-slate-500" style={{width:62}}>{label}</span>
     <button onClick={()=>onChange("")}
       className={`text-xs font-semibold rounded-lg px-2.5 py-1 border ${value===""
-        ?"bg-indigo-600 text-white border-indigo-600":"bg-white text-slate-600 border-slate-300"}`}>All</button>
+        ?"bg-slate-800 text-white border-slate-800":"bg-white text-slate-600 border-slate-300"}`}>All</button>
     {options.map(o=>(
       <button key={o} onClick={()=>onChange(value===o?"":o)}
         className={`text-xs font-semibold rounded-lg px-2.5 py-1 border ${value===o
-          ?"bg-indigo-600 text-white border-indigo-600":"bg-white text-slate-600 border-slate-300"}`}>{o}</button>))}
+          ?"bg-slate-800 text-white border-slate-800":"bg-white text-slate-600 border-slate-300"}`}>{o}</button>))}
     {empty && <span className="text-xs text-slate-400">{empty}</span>}
   </div>;
 }

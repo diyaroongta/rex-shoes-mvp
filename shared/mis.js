@@ -51,6 +51,22 @@ function worstStage(order) {
     || (Number(b.queue_wait_days) || 0) - (Number(a.queue_wait_days) || 0))[0];
 }
 
+/* ONE DEFINITION OF AN ORDER'S HEALTH, for every list that prints one. The
+   dashboard had it and the Order Book did not, so the planner and the dispatch
+   clerk — who never open the dashboard — could not see that an order was at
+   risk on the one screen they work from. Both read this now, so the two lists
+   cannot call the same order two different things. */
+export function orderHealth(order) {
+  /* Every job card closed: production is done and the order waits for the
+     lorry, which is not "waiting for a job card". */
+  const health = order && order.production_complete
+    ? { key: "on_track", label: "Made — awaiting dispatch" }
+    : (STATUS[order && order.sla] || STATUS.waiting);
+  const worst = worstStage(order || {});
+  return { key: health.key, label: health.label,
+    bottleneck: worst && worst.stage || null, slip_days: worst ? Number(worst.slip_days) || 0 : 0 };
+}
+
 function dispatchByOrder(dispatches) {
   const out = {};
   for (const event of dispatches || []) {
@@ -107,12 +123,7 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
     const rawBalance = Math.max(0, qty - dispatched);
     const pending = shipment.closesOrder ? 0 : rawBalance;
     const shortage = shipment.closesOrder ? rawBalance : 0;
-    /* Every job card closed: production is done and the order waits for the
-       lorry, which is not "waiting for a job card". */
-    const health = order.production_complete
-      ? { key: "on_track", label: "Made — awaiting dispatch" }
-      : (STATUS[order.sla] || STATUS.waiting);
-    const bottleneck = worstStage(order);
+    const health = orderHealth(order);
     const completed=shipment.closesOrder||dispatched>=qty;
     const completedOn=completed?(shipment.closedDate||shipment.latestDate):null;
     const orderedOn=dayNumber(order.order_date),completedDay=dayNumber(completedOn);
@@ -135,8 +146,8 @@ export function buildMisSnapshot(state, dispatches = [], options = {}) {
       lead_days: Number(order.lead_days) || 0,
       status: health.key,
       status_label: health.label,
-      bottleneck: bottleneck && bottleneck.stage || null,
-      slip_days: bottleneck ? Number(bottleneck.slip_days) || 0 : 0,
+      bottleneck: health.bottleneck,
+      slip_days: health.slip_days,
     };
   });
 

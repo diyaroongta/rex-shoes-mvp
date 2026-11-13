@@ -159,7 +159,7 @@ export default function BulkOrderTab({ onImported }){
               unpick than a corrected sheet. Fix the rows above and upload again.
             </div>
           : <button disabled={busy||!result.orders.length} onClick={commit}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+              className="cta">
               {busy?"Importing…":`Import ${plural(result.orders.length,"order")}`}</button>}
       </div>
     )}

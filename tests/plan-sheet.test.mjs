@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { compute, dayIndex, fromDay, normalizeOverride } from "../shared/engine.js";
 import { planRows, sheetRows, helpRows, sheetDate, parsePlanSheet, planFromSheet, settle, COLUMNS,
          weeklyLayout, layoutValues, parseWeeklySheet, looksWeekly, jobLabels, jobList, colName } from "../shared/plan-sheet.js";
-import { checkMove, unlockStage, mergeOverrides, boardRows, boardSpan, weeklySheets, unlockAll } from "../shared/plan-board.js";
+import { checkMove, unlockStage, mergeOverrides, boardRows, boardSpan, weeklySheets, unlockAll, dropRow } from "../shared/plan-board.js";
 import { INPUTS } from "../shared/inputs.js";
 
 const { articles, materials, workcenters: wcs, origin } = INPUTS;
@@ -376,6 +376,57 @@ test("unlock all hands every locked stage of a job back, and keeps a set duratio
     daily:{ DISPATCH:{ "2026-07-24":1500 } }, days:{ STITCHING:2 } } });
   assert.deepEqual(unlockAll(state.units[0]), { machine:{ MOLDING:"MOLDING_PVC_VERTICAL" }, days:{ STITCHING:2 } });
   assert.deepEqual(unlockAll(plan([A], { JO1:{ at:{ PACKING:"2026-07-20" } } }).units[0]), {});
+});
+
+console.log("\nI — dragging a row of the sheet");
+const blockOf = (state, id) => boardRows(state, wcs).flatMap(r => r.blocks).find(b => b.id === id);
+test("the row that is dragged is the row that moves; the job's other days stay where they are", () => {
+  /* 1,500 pairs on a 1,200-a-day machine: two rows, 1,200 then 300. */
+  const state = plan([A]), block = blockOf(state, "JO1::MOLDING");
+  const [first, second] = Object.keys(block.days).map(Number).sort((a, z) => a - z).map(d => fromDay(d, origin));
+  const to = nextOpen(later(second, 2));
+  const out = dropRow(state, block, second, to, null, ctx);
+  assert.equal(out.ok, true);
+  assert.deepEqual([out.pairs, out.from, out.to], [300, second, to]);
+  assert.deepEqual(out.days, { [first]:1200, [to]:300 });
+  assert.deepEqual(out.override, { at:{ MOLDING:first }, daily:{ MOLDING:{ [first]:1200, [to]:300 } } });
+  /* …and the plan then says exactly that: nothing lands on a day nobody dropped anything on. */
+  const after = plan([A], { JO1:out.override });
+  const days = blockOf(after, "JO1::MOLDING").days;
+  assert.deepEqual(Object.fromEntries(Object.entries(days).map(([d, n]) => [fromDay(Number(d), origin), Math.round(n)])), { [first]:1200, [to]:300 });
+});
+test("a row dropped on a day the job already runs is added to that day", () => {
+  const state = plan([A]), block = blockOf(state, "JO1::MOLDING");
+  const [first, second] = Object.keys(block.days).map(Number).sort((a, z) => a - z).map(d => fromDay(d, origin));
+  const out = dropRow(state, block, second, first, null, ctx);
+  assert.deepEqual(out.days, { [first]:1500 });
+});
+test("a row put back where it came from moves nothing and locks nothing", () => {
+  const state = plan([A]), block = blockOf(state, "JO1::CUTTING");
+  assert.deepEqual(dropRow(state, block, block.start_date, block.start_date, null, ctx), { ok:true, noop:true });
+  assert.deepEqual(dropRow(state, block, block.start_date, block.start_date, block.work_center, ctx), { ok:true, noop:true });
+});
+test("the same day on another machine moves the stage to that machine", () => {
+  const state = plan([A]), block = blockOf(state, "JO1::MOLDING");
+  const out = dropRow(state, block, block.start_date, block.start_date, "MOLDING_PVC_VERTICAL", ctx);
+  assert.equal(out.ok, true);
+  assert.equal(out.override.machine.MOLDING, "MOLDING_PVC_VERTICAL");
+  assert.equal(stageOf(plan([A], { JO1:out.override }), "JO1", "MOLDING").work_center, "MOLDING_PVC_VERTICAL");
+});
+test("a row may not be dragged in front of the stage before it, or onto a machine that cannot make it", () => {
+  const state = plan([A]), stitch = blockOf(state, "JO1::STITCHING");
+  const early = dropRow(state, stitch, stitch.start_date, stageOf(state, "JO1", "CUTTING").start_date, null, ctx);
+  assert.equal(early.ok, false);
+  assert.match(early.reason, /STITCHING of JO1 cannot start/);
+  const mould = blockOf(state, "JO1::MOLDING");
+  assert.match(dropRow(state, mould, mould.start_date, mould.start_date, "MOLDING_EVA", ctx).reason, /PVC article and cannot run on EVA molding/);
+});
+test("a row dropped on a Sunday is carried out, and the cost is said", () => {
+  const state = plan([A]), block = blockOf(state, "JO1::PACKING");
+  let sunday = later(block.start_date, 1); while(!isSunday(sunday)) sunday = later(sunday, 1);
+  const out = dropRow(state, block, block.start_date, sunday, null, ctx);
+  assert.equal(out.ok, true);
+  assert.match(out.warning, /normally a closed day/);
 });
 
 console.log("\nI — saving");

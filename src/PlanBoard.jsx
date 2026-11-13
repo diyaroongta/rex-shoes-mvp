@@ -3,7 +3,7 @@ import { REF as INPUTS } from "./lib/refdata.js";
 import { todayIso } from "./lib/today.js";
 import { dayIndex, fromDay, workCalendar, normalizeOverride } from "../shared/engine.js";
 import { boardRows, boardSpan, checkMove, lockAsIs, unlockStage, unlockAll, cleanOverride, moveEffects,
-         dropTargets, weeklySheets } from "../shared/plan-board.js";
+         dropTargets, weeklySheets, dropRow } from "../shared/plan-board.js";
 import { productionActualKey } from "../shared/production-actuals.js";
 import { STAGE_TINTS } from "../shared/plan-sheet.js";
 import PlanSheet from "./PlanSheet.jsx";
@@ -20,7 +20,7 @@ const shortName = b => b.card_no ? `JC ${b.card_no}` : b.order_no;
 const LINE = "#cfd6e0", HEAD = "#eef1f5", TODAY = "#f3f6ff", OVER = "#fff7e0", CLOSED = "#f4f5f7";
 const TH = { border:`1px solid ${LINE}`, background:HEAD, padding:"6px 8px", fontSize:11, fontWeight:700,
              textAlign:"left", verticalAlign:"bottom", color:"#1f2937" };
-const TD = { border:`1px solid ${LINE}`, padding:0, verticalAlign:"top", minWidth:170 };
+const TD = { border:`1px solid ${LINE}`, padding:0, verticalAlign:"top", minWidth:200, maxWidth:260 };
 const BTN = "text-xs font-semibold px-3 py-1 rounded-lg border border-slate-300 bg-white disabled:opacity-50";
 const WEEKS_AT_A_TIME = 4;
 
@@ -75,7 +75,8 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
   const [earlier, setEarlier] = useState(0);          // weeks shown before the current one
   const [shown, setShown] = useState(WEEKS_AT_A_TIME);
   const [selected, setSelected] = useState(null);     // block id
-  const [dragging, setDragging] = useState(null);
+  const [dragging, setDragging] = useState(null);     // { block, date } — the job, and which day's row was picked up
+  const [over, setOver] = useState(null);             // the cell the drag is over, "work centre|date"
   const [refusal, setRefusal] = useState("");
   const [effects, setEffects] = useState(null);
   const [note, setNote] = useState("");
@@ -118,7 +119,7 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
   const end = Math.min(lastWeek, mondayOf(anchor) + 7 * (shown - 1));
   const weeks = weeklySheets(rows, start, end + 6, origin);
   const lockedBlocks = [...blocks.values()].filter(b => b.locked);
-  const valid = dragging ? new Set(dropTargets(units.get(dragging.unit_key) || {}, dragging.stage, wcs, INPUTS.articles)) : null;
+  const valid = dragging ? new Set(dropTargets(units.get(dragging.block.unit_key) || {}, dragging.block.stage, wcs, INPUTS.articles)) : null;
   const overDays = rows.reduce((n, r) => n + r.over_days.filter(o => o.day >= start && o.day <= end + 6).length, 0);
   const lateJobs = new Set([...blocks.values()].filter(b => b.late).map(b => b.unit_key)).size;
 
@@ -134,6 +135,22 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
     if(!out.ok){ setRefusal(out.reason); setEffects(null); setNote(""); setUndo(null); return; }
     apply(block, out.override, `${nameOf(block)} ${block.stage} moved to ${nice(out.start_date)}`
       + (work_center && work_center !== block.work_center ? ` on ${wcs[work_center].name}` : "") + " and locked there."
+      + (out.warning ? ` ⚠ ${out.warning}` : ""));
+  }
+  /* A DROP MOVES THE ROW THAT WAS PICKED UP — its pairs go to the day it was
+     dropped on and the job's other days stay put (shared/plan-board.js
+     `dropRow`). A row put back where it came from does nothing at all. */
+  function drop(date, work_center){
+    const d = dragging;
+    setDragging(null); setOver(null);
+    if(!d) return;
+    const out = dropRow(state, d.block, d.date, date, work_center, ctx);
+    if(out.noop) return;
+    if(!out.ok){ setRefusal(out.reason); setEffects(null); setNote(""); setUndo(null); return; }
+    const onto = work_center && work_center !== d.block.work_center ? ` on ${wcs[work_center].name}` : "";
+    apply(d.block, out.override, (out.pairs
+      ? `${nameOf(d.block)} ${d.block.stage}: ${fmt(out.pairs)} pairs moved from ${nice(out.from)} to ${nice(out.to)}${onto}. Its days are now fixed as shown.`
+      : `${nameOf(d.block)} ${d.block.stage} moved to ${nice(out.start_date)}${onto} and locked there.`)
       + (out.warning ? ` ⚠ ${out.warning}` : ""));
   }
   function setDays(block){
@@ -173,32 +190,32 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
   }
 
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm mb-4" data-print-area>
-    {/* ---- title, and the things a planner does to the whole plan ---- */}
-    <div className="mb-2">
-      <div className="text-base font-semibold text-slate-800">Weekly production plan</div>
-      <div className="text-xs text-slate-500">
-        {canEdit ? "Click a job to move, resize or lock it — or drag it to another day or machine."
-                 : "Read-only — only the Production Planner or an administrator can change the plan."}</div>
-    </div>
+    {/* ---- ONE ROW: what a planner does to the whole plan, and the plan at a
+        glance. The screen's heading already names it, so there is no second
+        title here; four boxed figures said in a card each what fits on a line. */}
     <PlanSheet state={state} wcs={wcs} planWith={planWith} onApply={onApplySheet}>
       {canEdit && <button className={BTN} onClick={replan} title="Run the automatic planner again around every locked job">Re-plan</button>}
       <button className={BTN} onClick={() => window.print()}>Print</button>
+      <div role="group" aria-label="Plan at a glance" className="ml-auto flex items-baseline gap-x-4 gap-y-1 flex-wrap text-xs text-slate-500">
+        <Figure label="jobs on the plan" value={fmt(units.size)} />
+        <Figure label="running late" value={fmt(lateJobs)} tone={lateJobs ? "#be123c" : null} title="Jobs that miss their dispatch promise" />
+        <Figure label={`day${overDays === 1 ? "" : "s"} over capacity`} value={fmt(overDays)} tone={overDays ? "#b45309" : null} title="In the weeks shown" />
+        <Figure label="locked by a planner" value={fmt(lockedBlocks.length)} tone={lockedBlocks.length ? "#1d4ed8" : null}
+          title={lockedBlocks.length ? "Re-planning works around these" : "Everything is planned automatically"}
+          action={canEdit && onApplySheet && lockedBlocks.length
+            ? <button onClick={unlockEverything} className="text-[11px] font-semibold text-indigo-700 underline" data-noprint>Unlock all</button> : null} />
+      </div>
     </PlanSheet>
+    {!canEdit && <div className="mb-2 text-xs text-slate-500">Read-only — only the Production Planner or an administrator can change the plan.</div>}
 
-    {/* ---- the plan at a glance ---- */}
-    <div className="grid gap-2 mb-3" style={{ gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))" }}>
-      <Figure label="Jobs on the plan" value={fmt(units.size)} />
-      <Figure label="Running late" value={fmt(lateJobs)} tone={lateJobs ? "#be123c" : null} hint="miss their dispatch promise" />
-      <Figure label="Days over capacity" value={fmt(overDays)} tone={overDays ? "#b45309" : null} hint="in the weeks shown" />
-      <Figure label="Locked by a planner" value={fmt(lockedBlocks.length)} tone={lockedBlocks.length ? "#1d4ed8" : null}
-        hint={lockedBlocks.length ? "re-planning works around these" : "everything is planned automatically"}
-        action={canEdit && onApplySheet && lockedBlocks.length
-          ? <button onClick={unlockEverything} className="text-[11px] font-semibold text-indigo-700 underline" data-noprint>Unlock all</button> : null} />
-    </div>
-
-    {refusal && <div role="alert" className="mb-3 text-xs font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+    {/* PINNED under the page header. A job dropped in the third week down got
+        its answer — moved, or refused and why — above tables a screen away,
+        so the drag looked as though it had done nothing. */}
+    {refusal && <div role="alert" className="mb-3 text-xs font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 shadow-sm"
+      style={{ position:"sticky", top:72, zIndex:6 }}>
       Not moved. {refusal}</div>}
-    {note && !refusal && <div role="status" className="mb-3 text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2" data-noprint>
+    {note && !refusal && <div role="status" className="mb-3 text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 shadow-sm" data-noprint
+      style={{ position:"sticky", top:72, zIndex:6 }}>
       <span>{note}</span>
       {undo && canEdit && <button onClick={undoLast} className="ml-2 font-semibold text-indigo-700 underline">Undo</button>}
       {effects && (effects.length
@@ -258,18 +275,22 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
               {rows.map(r => {
                 const cell = d.cells[r.work_center];
                 const cap = r.capacity_per_day, used = cell ? cell.pairs : 0;
-                const over = used > cap + 1e-6, greyed = valid && !valid.has(r.work_center);
+                const overCap = used > cap + 1e-6, greyed = valid && !valid.has(r.work_center);
                 return <td key={r.work_center} role="gridcell" aria-label={`${r.name} ${d.date}`}
-                  onDragOver={e => { if(dragging && !greyed) e.preventDefault(); }}
-                  onDrop={e => { e.preventDefault(); if(dragging){ move(dragging, d.date, r.work_center); setDragging(null); } }}
-                  style={{ ...TD, background:over ? OVER : rowBg, opacity:greyed ? 0.35 : 1 }}>
+                  onDragOver={e => { if(dragging && !greyed){ e.preventDefault(); if(over !== `${r.work_center}|${d.date}`) setOver(`${r.work_center}|${d.date}`); } }}
+                  onDragLeave={() => { if(over === `${r.work_center}|${d.date}`) setOver(null); }}
+                  onDrop={e => { e.preventDefault(); drop(d.date, r.work_center); }}
+                  /* The cell the job will land in is outlined while it is over
+                     it — a drop with no target shown is a guess. */
+                  style={{ ...TD, background:overCap ? OVER : rowBg, opacity:greyed ? 0.35 : 1,
+                           boxShadow:over === `${r.work_center}|${d.date}` ? "inset 0 0 0 2px #2563eb" : "none" }}>
                   {cell && cell.jobs.map(({ block:b, pairs }) => {
                     const actual = actualBy.get(productionActualKey({ production_on:d.date, work_center:b.work_center, stage:b.stage,
                       order_no:b.order_no, unit_key:b.unit_key }));
                     const isPicked = selected === b.id;
                     return <div key={b.id} role="button" tabIndex={0} draggable={canEdit}
-                      onDragStart={ev => { setDragging(b); setRefusal(""); try{ ev.dataTransfer.setData("text/plain", b.id); ev.dataTransfer.effectAllowed = "move"; }catch(_){ } }}
-                      onDragEnd={() => setDragging(null)}
+                      onDragStart={ev => { setDragging({ block:b, date:d.date }); setRefusal(""); try{ ev.dataTransfer.setData("text/plain", b.id); ev.dataTransfer.effectAllowed = "move"; }catch(_){ } }}
+                      onDragEnd={() => { setDragging(null); setOver(null); }}
                       onClick={() => setSelected(isPicked ? null : b.id)}
                       onKeyDown={e => { if(e.key === "Enter" || e.key === " "){ e.preventDefault(); setSelected(isPicked ? null : b.id); } }}
                       aria-pressed={isPicked}
@@ -278,22 +299,23 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
                       style={{ display:"block", padding:"4px 8px", borderBottom:`1px solid ${LINE}`, cursor:canEdit ? "grab" : "pointer",
                         borderLeft:`3px solid ${b.locked ? "#2563eb" : "transparent"}`,
                         background:isPicked ? "#e0e7ff" : b.locked ? "#f1f6ff" : "transparent" }}>
+                      {/* Two lines, as on the downloaded sheet: the job and its
+                          pairs, then who it is for. */}
                       <div style={{ display:"flex", alignItems:"baseline", gap:6 }}>
                         <span className="mono" style={{ fontWeight:700, color:"#111827", whiteSpace:"nowrap" }}>{b.locked ? "🔒 " : ""}{shortName(b)}</span>
-                        {(b.late || b.precedence_broken) && <span style={{ fontSize:10, fontWeight:700, color:"#be123c" }}>
-                          {b.precedence_broken ? "out of order" : "late"}</span>}
-                        <span className="mono" style={{ marginLeft:"auto", fontWeight:700 }}>{fmt(Math.round(pairs))}</span>
+                        <span style={{ color:"#334155", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", minWidth:0 }}>{b.article}</span>
+                        <span className="mono" style={{ marginLeft:"auto", paddingLeft:6, fontWeight:700 }}>{fmt(Math.round(pairs))}</span>
                       </div>
-                      <div style={{ fontSize:11, color:"#475569", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:230 }}>
-                        {b.article}</div>
-                      <div style={{ fontSize:10, color:"#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:230 }}>
+                      <div style={{ fontSize:10.5, color:"#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:250 }}>
+                        {(b.late || b.precedence_broken) && <span style={{ fontWeight:700, color:"#be123c" }}>
+                          {b.precedence_broken ? "out of order" : "late"} · </span>}
                         {b.party}{actual ? <span style={{ color:"#047857", fontWeight:600 }}> · made {fmt(Number(actual.actual_pairs))}</span> : null}</div>
                     </div>;
                   })}
                   {cell
-                    ? <div className="mono" style={{ padding:"3px 8px", fontSize:10, textAlign:"right", color:over ? "#b45309" : "#94a3b8", fontWeight:over ? 700 : 400 }}>
+                    ? <div className="mono" style={{ padding:"3px 8px", fontSize:10, textAlign:"right", color:overCap ? "#b45309" : "#94a3b8", fontWeight:overCap ? 700 : 400 }}>
                         {cell.jobs.length > 1 ? `${fmt(Math.round(used))} · ` : ""}{Math.round(100 * used / cap)}% of {fmt(cap)}
-                        {over ? ` · +${fmt(Math.round(used - cap))} over` : ""}</div>
+                        {overCap ? ` · +${fmt(Math.round(used - cap))} over` : ""}</div>
                     : <div style={{ padding:"4px 8px" }}>&nbsp;</div>}
                 </td>;
               })}
@@ -313,6 +335,7 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
       <span className="ml-2 text-xs text-slate-500">The plan runs to {nice(fromDay(span.last, origin))}.</span></div>}
 
     <div className="flex gap-x-5 gap-y-1 flex-wrap text-[11px] text-slate-500" data-noprint>
+      {canEdit && <span>Click a job to move, resize or lock it, or drag it to another day or machine.</span>}
       <span>The figure beside a job is its pairs for that day.</span>
       <span><span style={{ borderLeft:"3px solid #2563eb", paddingLeft:4 }}>🔒 locked</span> — a planner put it there; re-planning works around it</span>
       <span><b style={{ color:"#be123c" }}>late</b> — the job misses its dispatch promise</span>
@@ -321,13 +344,12 @@ export default function PlanBoard({ state, caps, actuals = [], setPlanOverride =
   </div>;
 }
 
-function Figure({ label, value, tone, hint, action }){
-  return <div style={{ border:`1px solid ${LINE}`, borderRadius:8, padding:"8px 10px" }}>
-    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-    <div className="flex items-baseline gap-2">
-      <div className="text-xl font-bold mono" style={{ color:tone || "#0f172a" }}>{value}</div>{action}</div>
-    {hint && <div className="text-[10px] text-slate-400">{hint}</div>}
-  </div>;
+/* A figure in the line at the top: the number, then what it counts. Grey
+   until there is something to act on. */
+function Figure({ label, value, tone, title, action }){
+  return <span title={title} className="whitespace-nowrap">
+    <b className="mono text-sm" style={{ color:tone || "#0f172a" }}>{value}</b> {label}{action ? <> {action}</> : null}
+  </span>;
 }
 
 /* ONE JOB, OPENED. What it is on the left, in a plain two-column table; what
@@ -347,7 +369,7 @@ function JobBox({ block, unit, wcs, form, setForm, canEdit, targets, onMove, onD
         {row("Pairs", <span className="mono">{fmt(block.pairs)} — {Object.entries(block.days)
           .map(([d, n]) => `${nice(fromDay(Number(d), INPUTS.origin))}: ${fmt(Math.round(n))}`).join(" · ")}</span>)}
         {row("Planning", block.locked
-          ? <span><span style={{ color:"#1d4ed8", fontWeight:600 }}>🔒 Locked — {block.from_sheet ? "set by an uploaded planning sheet" : "a planner moved it or locked it here"}.</span>
+          ? <span><span style={{ color:"#1d4ed8", fontWeight:600 }}>🔒 Locked — {block.from_sheet ? "its days were set by hand: a row was dragged here, or it came from an uploaded planning sheet" : "a planner moved it or locked it here"}.</span>
               {" "}<span style={{ color:"#475569" }}>Re-planning will not move it until it is unlocked.</span></span>
           : "Automatic — the planner places it and may move it when the plan changes.")}
       </tbody></table>
@@ -357,7 +379,7 @@ function JobBox({ block, unit, wcs, form, setForm, canEdit, targets, onMove, onD
         {targets.length > 1 && <label className="text-xs text-slate-600">Machine
           <select value={form.work_center} onChange={e => setForm({ ...form, work_center:e.target.value })} aria-label="Run this job on" className={`${input} block mt-0.5`}>
             {targets.map(code => <option key={code} value={code}>{wcs[code].name}</option>)}</select></label>}
-        <button onClick={onMove} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-700 text-white">Move and lock</button>
+        <button onClick={onMove} className="cta">Move and lock</button>
         <label className="text-xs text-slate-600">Run in days
           <input type="number" min="1" value={form.days} onChange={e => setForm({ ...form, days:e.target.value })} placeholder="auto"
             aria-label="Run this job in days" className={`${input} block mt-0.5 w-20`} /></label>

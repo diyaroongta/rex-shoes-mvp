@@ -61,7 +61,7 @@ export default function StockSheetImport({ onLoaded }){
           <span><b>{plan.file}</b>{plan.parsed.month && <> · {plan.parsed.month}</>} — <b>{plan.parsed.items.length}</b> items read:{" "}
             {Object.entries(byCategory).map(([c, n]) => `${c} ${n}`).join(", ")}</span>
           <button disabled={busy || (!plan.create.length && !plan.changes.length)} onClick={apply}
-            className="ml-auto text-xs font-semibold text-white bg-amber-700 rounded-lg px-3 py-1.5 disabled:opacity-50">
+            className="cta cta-warn ml-auto">
             {busy ? "Loading…" : `Add ${plan.create.length} new · update ${plan.changes.length}`}</button>
           <button onClick={() => setPlan(null)} className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-1.5">Cancel</button>
         </div>

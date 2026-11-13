@@ -413,10 +413,10 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
             no material for moulding or packing. If the sole compound should be on the BOM, add it under Data &amp; BOM.</div>
         : <StockAtHand article={order&&order.article_code} lines={lines}
             jobs={order&&order.stock_status?[]:(jobs||[])} finishedMoves={order&&order.stock_status?[]:finishedMoves}/>}
-      <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="text-xs font-semibold text-white rounded-lg px-4 py-1.5 bg-indigo-600 disabled:opacity-50">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
+      <div className="flex gap-2 items-center mt-3"><button onClick={generate} disabled={!ready} className="cta">{card?(stale?"Update the preview":"Preview again"):"Preview Job Order"}</button>{stale&&<span className="text-[11px] text-amber-800 font-semibold">Inputs changed — update the preview before creating.</span>}{!who&&<span className="text-[11px] text-slate-500">Choose Rex Internal or New Durga Line.</span>}</div>
     </div>}
 
-    {card&&<div ref={cardBox} className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800 disabled:opacity-40">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><CardSwitch value={cardKind} onChange={setCardKind}/>{cardKind==="CUTTING"?<JobCard card={card} article={article}/>:<StageJobCard card={card} article={article} kind={cardKind}/>}</div>}
+    {card&&<div ref={cardBox} className="rounded-2xl border border-slate-300 bg-white p-3 shadow-sm"><div data-noprint className="flex items-center gap-2 flex-wrap mb-2"><div className="text-sm font-semibold text-slate-800">4 · Issue slip</div><span className="text-[11px] text-slate-500">The note's step 3: the system generates the issue slip. Receiving and payment are steps 4 and 5, in Job Orders Database.</span><button onClick={issue} disabled={busy||stale||!!card.card_no} className="cta ml-auto">{card.card_no?`Created as ${card.card_no}`:busy?"Creating…":"Confirm & Create Job Order"}</button><button onClick={print} disabled={stale} className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white disabled:opacity-40">Print / Save PDF</button></div><CardSwitch value={cardKind} onChange={setCardKind}/>{cardKind==="CUTTING"?<JobCard card={card} article={article}/>:<StageJobCard card={card} article={article} kind={cardKind}/>}</div>}
   </div>;
 }
 
@@ -484,7 +484,7 @@ function NewFabricator({ draft, setDraft, existing=[], onSaved, onError }){
     {!!problems.length&&draft.name&&<ul className="text-[11px] text-rose-700 mt-2 list-disc pl-4">
       {problems.map(p=><li key={p}>{p}</li>)}</ul>}
     <button onClick={save} disabled={saving||!!problems.length||!draft.name.trim()}
-      className="mt-2 text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-indigo-600 disabled:opacity-50">
+      className="cta mt-2">
       {saving?"Saving…":"Save fabricator"}</button>
   </div>;
 }

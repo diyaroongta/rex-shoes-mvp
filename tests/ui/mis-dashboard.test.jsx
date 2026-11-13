@@ -82,6 +82,9 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.queryByText("Orders needing attention")).toBeNull();
     /* What the attention list added — how far it has slipped, and where — is on the row. */
     expect(screen.getByText("MOLDING · 2d slip")).toBeInTheDocument();
+    /* What has left is ONE column: so many of so many, and what is owed. */
+    expect(within(screen.getByText("Complete order health").closest("section")).getAllByRole("columnheader").map(h=>h.textContent)).toEqual(["Order / PI","Party","Article","Ordered","Health","Planned dispatch","Dispatched"]);
+    expect(screen.getByText("O-RISK").closest("tr")).toHaveTextContent(/150 of 200.*50 short/);
     /* A zero is grey: a red nought says "look here" about nothing. */
     expect(tiles[1].querySelector(".mono")).toHaveStyle({color:"rgb(148, 163, 184)"});
     expect(tiles[4].querySelector(".mono")).toHaveStyle({color:"rgb(190, 18, 60)"});
@@ -114,7 +117,8 @@ describe("Executive MIS dashboard",()=>{
     expect(screen.getAllByText("Waiting for job card").length).toBeGreaterThan(0);
     /* It has no production days yet — a dash, not a nought nobody measured. */
     const row=screen.getByText("JO2171").closest("tr");
-    expect(within(row).getAllByRole("cell")[7]).toHaveTextContent(/^—$/);
+    await user.click(within(row).getByText("JO2171"));
+    expect(screen.getByText("Days start to finish").parentElement).toHaveTextContent(/—$/);
   });
 });
 

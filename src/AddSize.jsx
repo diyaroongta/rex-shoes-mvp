@@ -87,7 +87,7 @@ export default function AddSize({ articleCode, articleType, lines, onChange }){
       )}
 
       <button disabled={!canAdd} onClick={add}
-        className="text-xs font-semibold px-3 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+        className="cta">
         Add size</button>
     </div>
 

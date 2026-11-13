@@ -97,6 +97,10 @@ export default function RepairTab({ orders = [], dispatches = [], onChanged }){
   async function remove(id){
     setBusy(true); setErr(""); setMsg("");
     try{ await api.deleteRepair(id); setConfirmDel(null); await load();
+         /* Recording a movement told the app; removing one did not, so the
+            Dispatch Book went on holding back pairs that were no longer on
+            the repair bench. */
+         if(onChanged) await onChanged();
          setMsg("That movement was removed from the repair record."); }
     catch(e){ setErr(e.message||String(e)); }
     finally{ setBusy(false); }
@@ -153,7 +157,7 @@ export default function RepairTab({ orders = [], dispatches = [], onChanged }){
             placeholder="What was wrong with them"
             className="block mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white text-sm"/></label>
         <button onClick={record} disabled={busy||!ready}
-          className="text-xs font-semibold text-white rounded-lg px-4 py-2 bg-indigo-600 disabled:opacity-50">
+          className="cta">
           {busy?"Recording…":"Record"}</button>
       </div>
 
@@ -257,7 +261,7 @@ export default function RepairTab({ orders = [], dispatches = [], onChanged }){
                       <span className="block mt-0.5">The totals above recalculate. Record a fresh movement to correct it.</span>
                     </span>
                     <button disabled={busy} onClick={()=>remove(e.id)}
-                      className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-700 text-white disabled:opacity-50">Remove</button>
+                      className="cta cta-warn ml-auto">Remove</button>
                     <button onClick={()=>setConfirmDel(null)}
                       className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Cancel</button>
                   </div></td></tr>}

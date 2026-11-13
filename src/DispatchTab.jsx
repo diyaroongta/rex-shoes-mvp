@@ -371,7 +371,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                   {rec.shortfall>0 && <div className="text-xs text-rose-700 mono">−{fmt(rec.shortfall)} short</div>}</td>
                 <td className="text-right">
                   {rec.total_pending>0 && !rec.closed && <button onClick={()=>open===rec.order.order_no?setOpen(null):startReport(rec)}
-                    className="text-xs font-semibold text-indigo-700 hover:underline">
+                    className="cta-row">
                     {open===rec.order.order_no?"Cancel":"Packing report"}</button>}
                   {rec.total_pending>0 && !rec.closed && isMts(rec.order) && open!==rec.order.order_no &&
                     <button onClick={()=>startReport(rec)} className="block ml-auto mt-0.5 text-xs font-semibold text-sky-700 hover:underline">
@@ -514,7 +514,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                         title={!preview?"Generate the packing list first"
                           :stale?"Something changed — update the preview"
                           :sheetProblems(rec).length?"The packing list and the dispatch do not agree":""}
-                        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
+                        className="cta">
                         {busy?"Recording…":"Record dispatch"}</button>
                       {isMts(rec.order) && <button disabled={busy} onClick={()=>moveToStock(rec)}
                         title="MTS order: the pairs leave the order book and are added to finished stock, size by size"
@@ -568,7 +568,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
             <span className="mono">{viewing.order_no}</span>
           </div>
           <button onClick={printPackingList}
-            className="ml-auto text-xs font-semibold text-white rounded-lg px-3 py-1.5 bg-slate-800">
+            className="cta ml-auto">
             Print / Save PDF</button>
           <button onClick={()=>setViewing(null)}
             className="text-xs font-semibold rounded-lg px-3 py-1.5 border border-slate-300 bg-white">Close</button>
@@ -631,7 +631,7 @@ export default function DispatchTab({ orders, dispatches = [], onChanged, onOpen
                         <button disabled={busy} onClick={()=>undoDispatch(d)}
                           aria-label={`Undo the ${d.order_no} dispatch and put the pairs back`}
                           title="The report was wrong. The pairs go back to pending."
-                          className="font-semibold text-white bg-rose-700 rounded px-2 py-0.5 disabled:opacity-50">
+                          className="cta cta-danger cta-sm">
                           Undo dispatch — pairs go back</button>
                         <button disabled={busy} onClick={()=>hideDispatch(d)}
                           aria-label={`Remove the ${d.order_no} report from the history only`}
@@ -862,7 +862,7 @@ function SharedCartonBuilder({ sheet, setSheet, built }){
             </div>))}
           <div className="flex items-center gap-2 mt-1.5">
             <button type="button" onClick={add} disabled={!parts.length}
-              className="text-[11px] font-semibold rounded-lg px-2.5 py-1 bg-indigo-600 text-white disabled:opacity-40">
+              className="cta cta-sm">
               Add this box{total ? ` — ${total} pairs` : ""}</button>
             <button type="button" onClick={()=>{setDraft({});setOpen(false);}}
               className="text-[11px] font-semibold rounded-lg px-2 py-1 border border-slate-300 bg-white">Cancel</button>

@@ -35,8 +35,8 @@ export default function ProfilesTab(){
     .reduce((sum,[role,target])=>sum+Math.min(target,activeByRole[role]||0),0);
   return <div className="space-y-4">
     <section className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-semibold text-slate-800">Profiles & access</div>
-        <p className="text-xs text-slate-500 mt-1">Create the factory's named logins and tick every access role each one needs. A login with several roles can do whatever any of them allows.</p></div>
+      <div className="flex items-start justify-between gap-3"><div>
+        <p className="text-xs text-slate-500">Create the factory's named logins and tick every access role each one needs. A login with several roles can do whatever any of them allows.</p></div>
         <div className="rounded-lg bg-indigo-50 text-indigo-800 px-3 py-2 text-xs"><b className="mono">{filled} / {recommendedTotal}</b> recommended seats filled</div></div>
       <div className="overflow-x-auto mt-4">
         <table className="w-full text-xs" style={{minWidth:760}}><thead><tr className="sign text-slate-500">
@@ -60,7 +60,7 @@ export default function ProfilesTab(){
       </div>
       <div className="text-xs text-slate-600 mt-3">Access roles <span className="text-slate-400">(tick one or more)</span></div>
       <RolePicker value={draft.roles} onChange={v=>set("roles",v)} />
-      <div className="flex items-center gap-3 mt-3"><button disabled={busy||!draft.display_name||!draft.username||draft.password.length<8||!draft.roles.length} onClick={create} className="text-xs font-semibold px-4 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50">{busy?"Saving…":"Create profile"}</button>
+      <div className="flex items-center gap-3 mt-3"><button disabled={busy||!draft.display_name||!draft.username||draft.password.length<8||!draft.roles.length} onClick={create} className="cta">{busy?"Saving…":"Create profile"}</button>
         <span className="text-[11px] text-slate-500">The person can change this temporary password after signing in.</span></div>
       {message&&<div className="text-xs text-slate-600 mt-3">{message}</div>}
       </div>
@@ -104,13 +104,13 @@ function ProfileRow({profile,busy,onToggle,onUpdate}){
     {mode==="roles"&&<tr><td colSpan={6} className="pb-3">
       <RolePicker value={roles} onChange={setRoles} />
       <div className="flex gap-3 mt-2"><button disabled={busy||!roles.length} onClick={async()=>{if(await onUpdate({roles},`Access changed for ${profile.username}.`))close();}}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">Save access</button>
+        className="cta">Save access</button>
         <button onClick={close} className="text-xs text-slate-600">Cancel</button></div>
     </td></tr>}
     {mode==="password"&&<tr><td colSpan={6} className="pb-3">
       <div className="flex items-end gap-3 max-w-md"><Field label={`New temporary password for ${profile.username}`} type="password" value={password} onChange={setPassword} />
         <button disabled={busy||password.length<8} onClick={async()=>{if(await onUpdate({password},`Password reset for ${profile.username}. Give them the new temporary password.`))close();}}
-          className="text-xs font-semibold px-3 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50 whitespace-nowrap">Set password</button>
+          className="cta whitespace-nowrap">Set password</button>
         <button onClick={close} className="text-xs text-slate-600 pb-2">Cancel</button></div>
     </td></tr>}
   </>;

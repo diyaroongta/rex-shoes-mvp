@@ -166,11 +166,11 @@ export default function GatePassTab({ dispatches = [], orders = [], onChanged, f
                             onChange={e => setFields(f => ({ ...f, [k]: e.target.value }))}
                             className={`block mt-0.5 text-sm border border-slate-300 rounded px-2 py-1 bg-white ${w}`} /></label>))}
                       <button onClick={save} disabled={busy || !dirty || !check.ok}
-                        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+                        className="cta">
                         {busy ? "Saving…" : "Save"}</button>
                       <button onClick={print} disabled={dirty}
                         title={dirty ? "Save first, so a reprint reads the same as this slip" : "Print or save as PDF"}
-                        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-800 text-white disabled:opacity-40">
+                        className="cta">
                         Print / Save PDF</button>
                       {dirty && <span className="text-[11px] text-amber-700">Unsaved — save before printing.</span>}
                     </div>

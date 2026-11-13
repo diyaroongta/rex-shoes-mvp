@@ -41,11 +41,10 @@ export default function FormatsTab({ state, orders = [], jobs = [], moves = [], 
     <div className="flex gap-2 flex-wrap items-end">{children}</div>
   </div>;
   const Btn = ({onClick, children, disabled}) => <button disabled={disabled} onClick={onClick}
-    className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{children}</button>;
+    className="cta">{children}</button>;
 
   return <div className="space-y-4">
     <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-      <div className="text-sm font-semibold text-slate-800 mb-1">Formats &amp; sheets</div>
       <p className="text-xs text-slate-500 mb-4">Each sheet is filled from the system as it stands now. Blank columns are for the floor to fill.</p>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Card title="1 · Production planning sheet" note="Machine by machine, day by day, for one Monday–Saturday week. Sundays and holidays are marked shut. Fill Achieved pairs on Daily plan vs achievement.">

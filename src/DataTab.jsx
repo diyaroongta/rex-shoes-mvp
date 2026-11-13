@@ -188,14 +188,13 @@ export default function DataTab({ onChanged }){
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
     <div className="text-base font-semibold text-slate-800 mb-1">BOM workbook upload</div>
     <p className="text-xs text-slate-500 mb-3">
-      This is the existing Factory OS article-master format: article code, sole type, size range, stage, material,
-      UOM, rate per pair, packing quantity and optional catalogue/MRP details. Uploading only previews the changes;
-      nothing reaches the database until you confirm below.
+      The article-master workbook: articles, size ranges, materials and rates, packing and MRP.
+      Choosing a file only previews the changes — nothing is saved until you confirm.
     </p>
     <div className="flex gap-3 items-center flex-wrap mb-3">
       <a href="/Factory_OS_Reference_Upload_Template.xlsx" download
         className="text-xs font-semibold border border-slate-300 bg-white rounded-lg px-3 py-2">Download exact BOM template</a>
-      <label className="text-xs font-semibold bg-indigo-600 text-white rounded-lg px-3 py-2 cursor-pointer">
+      <label className="cta">
         Choose completed workbook
         <input type="file" accept=".xlsx,.xls" onChange={e=>pickMaster(e.target.files&&e.target.files[0])} className="sr-only" />
       </label>
@@ -439,7 +438,7 @@ export default function DataTab({ onChanged }){
                           ||(masterPreview.warnings.some(w=>/treated .+ as /i.test(w))&&!mappingConfirm)
                           ||(bomMode==="replace"&&masterPreview.replacements.length&&!masterConfirm)
                           ||(bomMode==="replace"&&(masterPreview.removals||[]).length&&!removeConfirm)} onClick={commitMaster}
-          className={`text-xs font-semibold px-4 py-2 rounded-lg text-white disabled:opacity-40 ${bomMode==="replace"?"bg-rose-700":"bg-indigo-600"}`}>
+          className={`cta ${bomMode==="replace"?"cta-danger":""}`}>
           {busy?"Saving everything…":bomMode==="replace"&&masterPreview.replacements.length
             ?`Replace ${masterPreview.replacements.join(", ")} BOM and save`
             :`Save ${masterArticles.length} article${masterArticles.length===1?"":"s"}`}</button>
@@ -486,9 +485,7 @@ function BomCoverage(){
   return <div className="border-t border-slate-200 pt-4 mt-5">
     <div className="text-sm font-semibold text-slate-700 mb-1">BOM coverage</div>
     <p className="text-xs text-slate-500 mb-3">
-      What the article master actually holds, family by family — so an entry tracker
-      marked <b>Done</b> can be checked against the data rather than trusted. Nothing here
-      fills a gap; it counts what is loaded and names what is not.
+      What is actually loaded, family by family. It counts what is there and names what is not.
     </p>
 
     <div className="flex flex-wrap gap-2 mb-3 text-xs">
@@ -623,15 +620,13 @@ function ProductCodes({ onChanged }){
   return <div className="border-t border-slate-200 pt-4 mt-5">
     <div className="text-sm font-semibold text-slate-700 mb-1">Product codes</div>
     <p className="text-xs text-slate-500 mb-3">
-      One code family per product, numbered per variant — the eighteen Jacks read
-      JACK01 to JACK18. A code is given once and then kept, so a code already printed
-      on a job card or a PI never moves to a different article.
+      One code per variant, by product family (JACK01 to JACK18). A code is given once and then kept.
     </p>
     {err && <div className="text-xs whitespace-pre-line rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-2">{err}</div>}
     {msg && <div className="text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2 mb-2">{msg}</div>}
     <div className="flex items-center gap-3 flex-wrap mb-3">
       <button disabled={busy||!uncoded.length} onClick={assign}
-        className="text-xs font-semibold px-3 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
+        className="cta">
         {busy?"Assigning…":uncoded.length?`Assign codes to ${uncoded.length} article${uncoded.length===1?"":"s"}`:"All articles are coded"}</button>
       <button onClick={()=>setOpen(o=>!o)} className="text-xs font-semibold text-indigo-700 hover:underline">
         {open?"Hide":`Show ${familyNames.length} famil${familyNames.length===1?"y":"ies"}`}</button>
@@ -720,7 +715,7 @@ function ReferenceHistory({ onChanged }){
                     <span className="block mt-0.5">Anything saved since then is undone. Orders are not affected.</span>
                   </div>
                   <button disabled={busy===r.revision_id} onClick={()=>restore(r.revision_id)}
-                    className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-700 text-white disabled:opacity-50">
+                    className="cta cta-warn ml-auto">
                     {busy===r.revision_id?"Restoring…":"Restore"}</button>
                 </div></td></tr>}
             </React.Fragment>))}

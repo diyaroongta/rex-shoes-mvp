@@ -107,8 +107,8 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
   return <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-4" data-noprint={!detail||undefined}>
     <div className="flex items-center gap-2 flex-wrap mb-3" data-noprint>
       <div className="text-sm font-semibold text-slate-800 mr-2">Purchase orders</div>
-      {canCreate&&<button onClick={()=>setScreen("upload")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="upload"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>Upload PO Excel</button>}
-      <button onClick={()=>setScreen("register")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="register"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-300"}`}>PO register</button>
+      {canCreate&&<button onClick={()=>setScreen("upload")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="upload"?"bg-slate-800 text-white border-slate-800":"bg-white border-slate-300"}`}>Upload PO Excel</button>}
+      <button onClick={()=>setScreen("register")} className={`text-xs font-semibold rounded-lg px-3 py-1.5 border ${screen==="register"?"bg-slate-800 text-white border-slate-800":"bg-white border-slate-300"}`}>PO register</button>
       <span className="ml-auto text-xs text-slate-500">{live.filter(o=>["open","partial"].includes(o.status)).length} open</span>
     </div>
     {error&&<div role="alert" className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 mb-3" data-noprint>{error}</div>}
@@ -119,7 +119,7 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
       <p className="text-xs text-slate-600 mt-1 mb-3">Download the buying list — supplier, supplier rate and dispatch location come straight from the stock register, one PO group per supplier. Check dates and quantities, then upload it here. Materials with no supplier on the register are left blank for you to fill.</p>
       <div className="flex gap-2 flex-wrap items-center">
         <button onClick={downloadTemplate} className="text-xs font-semibold rounded-lg px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50">Download prefilled PO template</button>
-        <label className="text-xs font-semibold rounded-lg px-3 py-2 bg-indigo-600 text-white cursor-pointer">Upload completed Excel
+        <label className="cta">Upload completed Excel
           <input key={uploadKey} aria-label="Upload purchase order Excel" type="file" accept=".xlsx,.xls" className="sr-only" onChange={e=>inspectWorkbook(e.target.files?.[0])}/>
         </label>
         <span className="text-xs text-slate-500">{uploadName||`${materials.length} current shortfall line${materials.length===1?"":"s"} in the template`}</span>
@@ -129,7 +129,7 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
         <div className="text-xs text-slate-600 mt-1">{uploadPreview.purchase_orders.length} PO group{uploadPreview.purchase_orders.length===1?"":"s"} · {uploadPreview.row_count} material line{uploadPreview.row_count===1?"":"s"}</div>
         {!!uploadPreview.errors.length&&<div role="alert" className="mt-2 rounded bg-rose-50 border border-rose-200 p-2 text-xs text-rose-800"><b>Fix these in Excel and upload again:</b><ul className="list-disc ml-5 mt-1">{uploadPreview.errors.map(message=><li key={message}>{message}</li>)}</ul></div>}
         {!uploadPreview.errors.length&&<div className="mt-2 overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-slate-500"><th className="text-left">Group</th><th className="text-left">Supplier</th><th className="text-left">PO date</th><th className="text-left">Expected</th><th className="text-right">Materials</th><th className="text-right">Quantity</th></tr></thead><tbody>{uploadPreview.purchase_orders.map(order=><tr key={order.upload_group} className="border-t border-slate-100"><td className="py-1.5 mono">{order.upload_group}</td><td>{order.supplier}</td><td className="mono">{order.po_date}</td><td className="mono">{order.expected_on||"—"}</td><td className="text-right">{order.lines.length}</td><td className="text-right mono">{fmt(order.lines.reduce((sum,line)=>sum+line.ordered_qty,0))}</td></tr>)}</tbody></table></div>}
-        <button disabled={busy||!!uploadPreview.errors.length||!uploadPreview.purchase_orders.length} onClick={importWorkbook} className="mt-3 text-xs font-semibold rounded-lg px-3 py-2 bg-emerald-700 text-white disabled:opacity-40">{busy?"Creating POs…":`Create ${uploadPreview.purchase_orders.length} purchase order${uploadPreview.purchase_orders.length===1?"":"s"}`}</button>
+        <button disabled={busy||!!uploadPreview.errors.length||!uploadPreview.purchase_orders.length} onClick={importWorkbook} className="cta mt-3">{busy?"Creating POs…":`Create ${uploadPreview.purchase_orders.length} purchase order${uploadPreview.purchase_orders.length===1?"":"s"}`}</button>
       </div>}
     </div>}
 
@@ -163,7 +163,7 @@ export default function PurchaseOrders({materials=[],allMaterials=materials,canC
             <div className="flex gap-3 flex-wrap mb-2"><label className="text-xs text-slate-600">Receipt date<input aria-label="Receipt date" type="date" value={receiptDate} onChange={e=>setReceiptDate(e.target.value)} className="block mt-1 border border-slate-300 rounded px-2 py-1"/></label>
               {order.lines.filter(l=>l.balance_qty>0).map(l=><label key={l.material_key} className="text-xs text-slate-600">{l.name} · max {fmt(l.balance_qty)} {l.uom}<input aria-label={`${l.name} received quantity`} type="number" min="0" max={l.balance_qty} step="any" value={receiptQty[l.material_key]||""} onChange={e=>setReceiptQty(q=>({...q,[l.material_key]:e.target.value}))} className="block mt-1 w-28 border border-slate-300 rounded px-2 py-1 text-right mono"/></label>)}</div>
             <label className="text-xs text-slate-600 block">Receipt note<input aria-label="Receipt note" value={receiptNote} onChange={e=>setReceiptNote(e.target.value)} className="block mt-1 w-full border border-slate-300 rounded px-2 py-1"/></label>
-            <div className="mt-2 flex gap-2"><button disabled={busy} onClick={()=>receive(order)} className="text-xs font-semibold bg-emerald-700 text-white rounded px-3 py-1.5 disabled:opacity-40">{busy?"Saving…":"Save receipt & update stock"}</button><button onClick={()=>setReceiving(null)} className="text-xs border border-slate-300 bg-white rounded px-3 py-1.5">Cancel</button></div>
+            <div className="mt-2 flex gap-2"><button disabled={busy} onClick={()=>receive(order)} className="cta">{busy?"Saving…":"Save receipt & update stock"}</button><button onClick={()=>setReceiving(null)} className="text-xs border border-slate-300 bg-white rounded px-3 py-1.5">Cancel</button></div>
           </td></tr>}</React.Fragment>)}</tbody>
       </table></div>}
     </div>}

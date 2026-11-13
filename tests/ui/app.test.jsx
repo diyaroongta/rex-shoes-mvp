@@ -37,6 +37,7 @@ const mocks=vi.hoisted(()=>({
   nextPiNumber:vi.fn(),
   previewPartyTerms:vi.fn(),applyPartyTerms:vi.fn(),readPi:vi.fn(),setPlanOverride:vi.fn(),
   releasePiParts:vi.fn(),listFabricators:vi.fn(),listJobWork:vi.fn(),issueJobWork:vi.fn(),
+  receiveJobWork:vi.fn(),
 }));
 
 vi.mock("../../src/lib/client.js",()=>({
@@ -600,12 +601,36 @@ describe("critical UI contracts",()=>{
     }));
   });
 
+  /* THE PLAN IS BUILT FROM JOB CARDS. Receiving work on the Job Orders
+     Database reloaded that screen's own list and nothing else, so the
+     Production plan, the dashboard and the Order Book went on showing the plan
+     from before until somebody reloaded the page. */
+  it("work received on the Job Orders Database reloads the job cards the plan is built from",async()=>{
+    const order={order_no:"JO-L1",order_date:"2026-09-21",article_code:"SPIKE",priority:2,party:"Linked",
+      lines:[{combo:"7X10S",qty:48}],pi:{},version:1};
+    mocks.listOrders.mockResolvedValue([order]);
+    mocks.listJobWork.mockResolvedValue([{...issuedJob(order,800),fabricator:"Rex Internal",qty:48,received:0,outstanding:48,status:"issued",slip:"Internal Issue Slip"}]);
+    mocks.receiveJobWork.mockResolvedValue({fabricator:"Rex Internal",received:48,qty:48,shortage:0});
+    const user=userEvent.setup();
+    render(<App/>);
+    await goTo(user, "Job Orders Database");
+    await user.click(await screen.findByRole("button",{name:"Receive"}));
+    const forPlan=()=>mocks.listJobWork.mock.calls.filter(c=>c[0]===true).length;   // the app's own load, archived cards included
+    const ordersBefore=mocks.listOrders.mock.calls.length, jobsBefore=forPlan();
+    const back=screen.getByLabelText("Pieces back from Rex Internal");
+    await user.clear(back); await user.type(back,"48");
+    await user.click(screen.getByRole("button",{name:"Record"}));
+    await waitFor(()=>expect(forPlan()).toBe(jobsBefore+1));
+    expect(mocks.listOrders.mock.calls.length).toBe(ordersBefore+1);
+  });
+
   it("uses Job Orders Database as the single issued-order register",async()=>{
     const user=userEvent.setup();
     render(<App/>);
     await goTo(user, "Job Orders Database");
     expect(await screen.findByRole("heading",{name:"Job Orders Database"})).toBeInTheDocument();
-    expect(screen.getByText("Issued Job Orders")).toBeInTheDocument();
+    /* The screen's heading names it once; a box under it used to say so again. */
+    expect(screen.queryByText("Issued Job Orders")).toBeNull();
   });
 
   /* The schedule is computed from the capacities saved in settings. The
@@ -1398,6 +1423,12 @@ describe("live orders exclude completed work",()=>{
     const row=(await screen.findByText("JO9500")).closest("tr");
     expect(row).toHaveTextContent("1,000");
     expect(row).toHaveTextContent("500");
+    /* The Order Book says how the order is doing, in the dashboard's own
+       words — the planner and the dispatch clerk never open the dashboard. */
+    const heads=within(row.closest("table")).getAllByRole("columnheader").map(h=>h.textContent);
+    expect(heads.slice(0,9)).toEqual(["Order","Party","Article","Ordered","On job cards","Health","Planned dispatch","Dispatched","Priority"]);
+    expect(within(row).getAllByRole("cell")[5]).toHaveTextContent(/On time|At risk|Delayed/);
+    expect(within(row).getAllByRole("cell")[6]).toHaveTextContent(/\d+ days? from order/);
     expect(row).toHaveTextContent("500 waiting for a card");
     expect(row).toHaveTextContent("425");
     expect(row).toHaveTextContent("575 to go");

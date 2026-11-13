@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildMisSnapshot } from "../shared/mis.js";
+import { buildMisSnapshot, orderHealth } from "../shared/mis.js";
 
 console.log("\nMIS — executive dashboard contracts");
 
@@ -124,3 +124,12 @@ assert.equal(unreleased.status.on_track.count, 0);
 assert.equal(unreleased.orders[0].status_label, "Waiting for job card");
 
 console.log("  pass  partial and unreleased orders retain their full commercial quantity\n");
+
+/* ONE definition of an order's health, shared by the dashboard and the Order
+   Book — so the two lists cannot call one order two different things. */
+assert.deepEqual(orderHealth({ sla:"at_risk", stages:[{ stage:"CUTTING", slip_days:0 }, { stage:"MOLDING", slip_days:2 }] }),
+  { key:"at_risk", label:"At risk", bottleneck:"MOLDING", slip_days:2 });
+assert.deepEqual(orderHealth({ sla:null, stages:[] }), { key:"waiting", label:"Waiting for job card", bottleneck:null, slip_days:0 });
+assert.equal(orderHealth({ sla:"breach", production_complete:true, stages:[] }).label, "Made — awaiting dispatch");
+for(const row of unreleased.orders) assert.equal(row.status, orderHealth({ sla:null, stages:[] }).key);
+console.log("  pass  one definition of order health, for the dashboard and the Order Book\n");

@@ -8,7 +8,7 @@ const BLANK = { name:"", city:"", discount_pct:40, gst_pct:5, payment_split_pct:
 /* Party master. These terms are the agreement with the customer, so they are
    set here and shown read-only on the invoice — a PI must not be able to
    quietly deviate from them. */
-export default function PartiesTab(){
+export default function PartiesTab({ onChanged=null }){
   const [parties,setParties]=useState([]);
   const [edit,setEdit]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -25,7 +25,7 @@ export default function PartiesTab(){
     const name=edit.name.trim();
     try{
       await api.saveParty(edit);
-      await load(); setEdit(null); setMsg("Saved. New orders for this party use these terms.");
+      await load(); if(onChanged) onChanged(); setEdit(null); setMsg("Saved. New orders for this party use these terms.");
       // Existing orders keep the terms they were issued under. Offer to bring
       // them forward rather than doing it silently — see applyToExisting.
       try{
@@ -52,7 +52,7 @@ export default function PartiesTab(){
   }
   async function remove(name){
     if(!confirm(`Deactivate ${name}? Existing orders keep their terms.`)) return;
-    try{ await api.removeParty(name); await load(); }catch(e){ setErr(String(e.message||e)); }
+    try{ await api.removeParty(name); await load(); if(onChanged) onChanged(); }catch(e){ setErr(String(e.message||e)); }
   }
 
   const setD=(i,k,v)=>setEdit(e=>({...e,deductions:e.deductions.map((d,j)=>j===i?{...d,[k]:v}:d)}));
@@ -60,14 +60,13 @@ export default function PartiesTab(){
   return <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
     <div className="flex items-center gap-3 mb-1">
       <div>
-        <div className="text-sm font-semibold text-slate-700">Parties &amp; terms</div>
         <div className="text-xs text-slate-500">
           Discount, deductions and payment terms per customer. Invoices read these — they cannot be
           changed on an individual PI.
         </div>
       </div>
       <button onClick={()=>{setEdit({...BLANK}); setMsg("");}}
-        className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white">Add party</button>
+        className="cta ml-auto">Add party</button>
     </div>
 
     {err && <div className="text-xs rounded-lg border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 my-2">{err}</div>}
@@ -92,7 +91,7 @@ export default function PartiesTab(){
         </div>
         <div className="flex gap-2">
           <button disabled={busy} onClick={applyToExisting}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-700 text-white disabled:opacity-50">
+            className="cta cta-warn">
             {busy?"Applying…":`Re-price ${apply.orders} order${apply.orders===1?"":"s"}`}</button>
           <button onClick={()=>setApply(null)}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">
@@ -134,7 +133,7 @@ export default function PartiesTab(){
         </div>
         <div className="flex gap-2">
           <button disabled={busy} onClick={save}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50">
+            className="cta">
             {busy?"Saving…":"Save party"}</button>
           <button onClick={()=>setEdit(null)}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white">Cancel</button>

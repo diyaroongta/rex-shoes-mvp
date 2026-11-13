@@ -35,12 +35,12 @@ export default function StatusTab({ state, jobs = [], dispatches = [] }){
   return <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
     <div className="flex items-center gap-3 flex-wrap mb-2">
       <div className="text-sm font-semibold text-slate-700">
-        Production status · {nice(today)} {week && <span className="text-slate-400 mono">{week.label}</span>}
+        {nice(today)} {week && <span className="text-slate-400 mono">{week.label}</span>}
       </div>
       <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
         {[["units","Job cards"],["orders","Orders"]].map(([key,label])=>(
           <button key={key} onClick={()=>setLevel(key)}
-            className={`px-2.5 py-1 font-semibold ${level===key?"bg-indigo-600 text-white":"bg-white text-slate-600"}`}>
+            className={`px-2.5 py-1 font-semibold ${level===key?"bg-slate-800 text-white":"bg-white text-slate-600"}`}>
             {label}</button>))}
       </div>
       <label className="text-xs text-slate-600 flex items-center gap-1.5">
@@ -48,19 +48,16 @@ export default function StatusTab({ state, jobs = [], dispatches = [] }){
         Only work behind the plan</label>
     </div>
 
-    {/* What this board is and is not. The distinction is the feature. */}
-    <div className="text-xs text-slate-500 mb-3 leading-relaxed">
-      A card sits in the stage of its <b>last recorded movement</b> — a job card issued, work received
-      back, a dispatch keyed in. Work nobody has keyed yet sits where the <b>plan</b> expects it and is
-      marked <span className="rounded px-1 mono" style={{fontSize:10,background:"#f1f5f9",color:"#64748b"}}>planned</span>,
-      because that is a forecast, not a report from the floor.
-    </div>
-
     <div className="flex gap-3 flex-wrap mb-3 text-xs">
       <Count label="on the board" value={board.counts.total} />
       <Count label="with a recorded movement" value={board.counts.recorded} tone="#065f46" />
       <Count label="never keyed in" value={board.counts.nothing_recorded} tone="#92400e" />
       <Count label="behind the plan" value={board.counts.behind} tone="#b91c1c" />
+      {/* What this board is and is not, in one line: the distinction is the
+          feature, but it does not need a paragraph every time it is opened. */}
+      <span className="self-center text-slate-500">A card sits where its last recorded movement put it.{" "}
+        <span className="rounded px-1 mono" style={{fontSize:10,background:"#f1f5f9",color:"#64748b"}}>planned</span>{" "}
+        = nothing keyed yet, so it is where the plan expects it.</span>
     </div>
 
     <div className="overflow-x-auto">

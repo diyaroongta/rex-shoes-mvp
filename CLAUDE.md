@@ -284,6 +284,19 @@ per week (`weeklySheets`): a row a day, a column a work centre, each cell the
 jobs running there with that day's pairs, a `n% of capacity` foot and a week
 total — the layout of their `WEEKLY PLANNING` workbook. Things worth keeping:
 
+- **A dragged ROW moves; the job's other days stay.** A job that runs Tuesday
+  and Wednesday is two rows. Dragging one used to mean "start the whole job on
+  the day it was dropped", so the Wednesday row dropped on Thursday started the
+  job on Thursday, the Tuesday row leapt after it, and — a job with a day to
+  itself needs fewer days — the pairs often landed on a day nothing had been
+  dropped on. `dropRow` (`shared/plan-board.js`) moves the row's own pairs to
+  the day it was dropped on and writes the job's day-by-day split (`daily`),
+  exactly as cutting and pasting a row in the downloaded workbook does. A row
+  put back where it came from is a `noop` and locks nothing; the cell under
+  the drag is outlined; and the result ("300 pairs moved from 11 Nov to 12
+  Nov", or why not) is PINNED under the page header, because a job dropped in
+  the third week down used to get its answer a screen away. "Move and lock" in
+  the opened job still moves the whole block.
 - **A lock explains itself and is one click to take back.** Any move locks, so
   a slip of the mouse locks. Every change shows an **Undo**; the opened job
   says in words why it is locked (moved by hand, or set by an uploaded sheet);
@@ -566,6 +579,54 @@ calculation logic", not above each table. Two rules it now follows: **a zero
 is grey** (a red nought says "look here" about nothing), and **an unreleased
 order shows a dash for production days**, not a 0 nobody measured. The
 `data-testid`s (`kpi-…`) are unchanged.
+
+**A screen's heading is said once, and its help is one line.** A pass over
+every screen (stores excepted — they were being rebuilt) found the same three
+faults again and again, so they are rules now:
+
+- **No second title.** The page header names the screen; a card inside it that
+  opens with the same words (`Weekly production plan`, `Issued Job Orders`,
+  `Parties & terms`, `Formats & sheets`, `Daily plan vs achievement`) is a row
+  of nothing. The plan's view switch sits IN the header beside the name.
+- **Figures on a line, not a box each.** The plan's four counts are one line
+  beside its buttons (`role="group"` "Plan at a glance").
+- **A paragraph of explanation becomes one line, or goes behind a disclosure.**
+  The per-order planning logic under the By order chart is one closed
+  `<details>`; Production status explains `planned` in a sentence.
+- **The Order Book prints the dashboard's health** (`orderHealth` in
+  `shared/mis.js` — one definition), because the planner and the dispatch clerk
+  never open the dashboard. The dashboard's order table is seven columns: what
+  has left is ONE column (so many of so many, and what is owed), and order date
+  and production days are in the row when it is opened.
+
+**Every screen is cut from the same data, so whatever changes it has to tell
+the app.** `state = compute(orders, job cards, …)` feeds every screen, and
+`syncAll()` in `src/App.jsx` reloads orders, dispatches, production entries,
+job cards and finished stock together. Three things had slipped past it:
+
+- **The Job Orders Database told nobody.** Receiving work, closing a card
+  short, archiving or deleting one reloaded that screen's own list only — and
+  job cards are what the plan is built from, so the Production plan, the
+  dashboard and the Order Book showed the plan from before until the page was
+  reloaded. It takes `onChanged` now, like every other screen that writes.
+- **The stock register was not reloaded after a job card.** Raising a card
+  books its material out on the server, deleting one takes it back
+  (`syncWithStock` reloads the reference too), or Procurement nets against
+  stock the card has already taken.
+- **The one-minute background refresh skipped job cards and finished stock**,
+  so a card another clerk raised did not appear on this screen's plan.
+
+A screen that writes and takes no `onChanged` is a bug waiting to be found by
+someone looking at a different screen. PI generation stays mounted, so it is
+told when a customer's terms change in Setup (`partiesVersion`).
+
+**One look for the thing to press.** `src/index.css` defines `.cta` (the main
+action of a form: solid, the menu's blue, grey when it cannot be pressed),
+`.cta-danger`, `.cta-warn` (an override, "do it anyway") and `.cta-row` (an
+action on one row of a table — Receive, Packing report, Decide, Adjust — as a
+small outlined button rather than a link). Sixty-five buttons had sixty-five
+hand-written class strings in a purple that was nobody's brand colour; a new
+primary action uses `.cta`, not another string.
 
 There are exactly **two job-order screens** after the Order Book. **Create Job
 Order** reads every active Order Book row live and accepts the date, destination
@@ -866,6 +927,8 @@ Each of these was a real bug found in production. Most have a regression test no
 | A download nobody could edit | "Download the plan, change it, upload it" shipped as a flat list with a `Ref (do not change)` column, in ISO dates, unstyled. It round-tripped perfectly and no planner could use it: moving a job meant retyping a date, and one slip in `Ref` broke the row. A file a person is asked to edit has to be laid out for the PERSON — theirs, a block a week and a row a day — and the machine does the work of reading it. |
 | A load strip that started at day zero | The Capacity strips drew every day from the planner's ORIGIN to the last dispatch, so on live data the booked days were a sliver at the far right of months of empty bar. They run from the first booked day (or today) now, and the load comes BEFORE the targets, lead times and calendar — the settings used to push the answer a screen and a half down. |
 | Eleven cards to say two things | "On the floor today" gave every machine a card, and most of them said "Nothing scheduled today". A machine that is running gets a card; the idle ones are named on one line with what is next. |
+| A date column printed as a timestamp | A Postgres `date` reaches the browser as the SERVER's midnight in ISO — `2026-11-10T00:00:00.000Z` on Vercel, `2026-11-09T18:30:00.000Z` from a machine in India. The Job Orders Database and the printed issue slip showed that string raw, and "As issued on" sliced its first ten characters, which is a day early whenever the server is east of Greenwich. `localDay()` in `shared/valid.js` reads the day it falls on locally. Never print a date field without formatting it, and never `slice(0,10)` a timestamp. |
+| A bare unit where a number should be | The Order Book printed `{o.lead_days}d` for an order with no job card — a lone "d". A figure that does not exist yet is a dash. |
 | Two numbers read as one | The order-health table right-aligned Production days hard against the left-aligned Dispatch completion, so "8" and "0 / 1,500" printed as "80 / 1,500". A right-aligned number followed by a left-aligned column needs room between them. |
 | A card's override the server threw away | `PATCH /api/orders` normalised `plan_override` with `normalizeOverride`, which keeps the order's own fields and drops every other key — `units` among them, which is where a JOB CARD's override lives. The plan runs job cards, so every Adjust (and every block locked on the board) was stored as an empty override: it showed for as long as the browser's own copy lasted and was gone on the next refresh. Found by reloading the page, not by any test — the mocked test asserted the order-level shape only. Each `units[key]` is normalised and kept now; an empty one is dropped. |
 | An undo that re-reserved | Undoing a dispatch that shipped from finished goods wrote a fresh `reserve` row. The pairs were back, but the ledger then read "granted 120, consumed 60", so an edit that later shrank the order could never release them. An undo NEGATES the row it undoes (same kind, opposite sign). Only a real Postgres run showed it. |

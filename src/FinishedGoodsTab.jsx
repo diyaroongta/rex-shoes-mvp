@@ -199,7 +199,7 @@ function EnterStock({ orders, onSaved }){
       : <div className="text-xs text-amber-700 mb-3">This article has no size ranges on file.</div>)}
     <div className="flex gap-2 items-center flex-wrap">
       <button disabled={busy||!total} onClick={submit}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white disabled:opacity-40">
+        className="cta">
         {busy?"Saving…":`Record ${fmt(total)} pairs`}</button>
       <label className={`text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white ${busy?"opacity-50":"cursor-pointer"}`}>
         Upload MTS stock sheet

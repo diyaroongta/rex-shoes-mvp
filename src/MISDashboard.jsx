@@ -167,7 +167,7 @@ function OrderWhy({detail,order,fmt,niceDate}){
       {[["Customer",detail.party||"—"],["Article",detail.article],["Pairs",fmt(detail.qty)],
         ["Ordered",niceDate(detail.order_date)],["Released",niceDate(detail.release_date)],
         ["Planned dispatch",niceDate(detail.dispatch_date)],
-        ["Days start to finish",`${fmt(detail.lead_days)}`]].map(([k,v])=>
+        ["Days start to finish",order.status==="waiting"||detail.lead_days==null?"—":`${fmt(detail.lead_days)}`]].map(([k,v])=>
         <div key={k}><div className="sign text-slate-400" style={{fontSize:9}}>{k}</div>
           <div className="mono text-slate-800">{v}</div></div>)}
     </div>
@@ -245,14 +245,11 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
   },[openOrder,state]);
 
   return <div className="space-y-4" aria-label="Executive MIS dashboard">
-    {/* One quiet line: when this is as of, and which figures are measured
-        and which are still the plan. The screen's own heading already says
-        what it is. */}
+    {/* One quiet line: when this is as of. Which figures are measured and
+        which are still the plan is said beside those figures (the Production
+        band, the footnote), not as two pills over everything. */}
     <div className="flex flex-wrap gap-2 items-center text-xs">
       <span className="mono text-slate-600">As of {niceDate(snapshot.as_of)}</span>
-      <span className="rounded-full px-2.5 py-1" style={{background:"#ECFDF5",color:"#047857"}}>Dispatch: recorded actual</span>
-      <span className="rounded-full px-2.5 py-1" style={{background:production.recorded_rows?"#ECFDF5":"#EFF6FF",color:production.recorded_rows?"#047857":"#1D4ED8"}}>
-        Production: {production.recorded_rows?"recorded actual":"current schedule"}</span>
       {onRefresh && <button onClick={onRefresh} disabled={dispatchLoading} className="ml-auto rounded-lg border border-slate-300 bg-white text-slate-700 px-3 py-1 font-semibold disabled:opacity-50">
         {dispatchLoading?"Refreshing…":"Refresh live data"}
       </button>}
@@ -290,9 +287,9 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
             className="text-xs font-semibold text-indigo-700">Clear</button>}
         </div>
       </div>
-      <table className="w-full text-xs" style={{minWidth:1000}}>
+      <table className="w-full text-xs" style={{minWidth:820}}>
         <thead><tr className="sign text-slate-400" style={{fontSize:9}}>
-          <th className="text-left py-2">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th><th className="text-right pr-5">Pairs</th><th className="text-left">Health</th><th className="text-left">Order date</th><th className="text-left">Planned dispatch</th><th className="text-right pr-5">Production days</th><th className="text-left">Dispatch completion</th><th className="text-right">Pending / shortage</th>
+          <th className="text-left py-2">Order / PI</th><th className="text-left">Party</th><th className="text-left">Article</th><th className="text-right pr-5">Ordered</th><th className="text-left">Health</th><th className="text-left">Planned dispatch</th><th className="text-left" style={{width:"24%"}}>Dispatched</th>
         </tr></thead>
         <tbody>{visible.map(order=><React.Fragment key={order.order_no}>
           <tr onClick={()=>setOpenOrder(openOrder===order.order_no?null:order.order_no)}
@@ -301,11 +298,17 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
           <td className="py-2"><div className="mono font-semibold">{order.order_no}</div><div className="mono text-slate-400">{order.pi_no||"No PI"}</div></td>
           <td>{order.party||"—"}</td><td>{order.article}</td><td className="mono text-right pr-5">{fmt(order.qty)}</td>
           <td><StatusPill status={order.status}/>{order.bottleneck&&<div className="text-slate-400 mt-1">{order.bottleneck}{order.slip_days>0?` · ${order.slip_days}d slip`:""}</div>}</td>
-          <td className="mono">{niceDate(order.order_date)}</td><td className="mono">{niceDate(order.dispatch_date)}</td><td className="mono text-right pr-5">{order.status==="waiting"?"—":fmt(order.lead_days,1)}</td>
-          <td><div className="flex justify-between gap-2 mb-1"><span className="mono">{fmt(order.dispatched)} / {fmt(order.qty)}</span><span className="mono text-slate-400">{pct(order.completion_pct)}</span></div><Progress value={order.completion_pct} color={order.completion_pct>=100?"#047857":"#0B6BCB"}/></td>
-          <td className="mono text-right"><div className={order.pending?"text-amber-700":"text-emerald-700"}>{fmt(order.pending)} pending</div>{order.shortage>0&&<div className="text-rose-700">{fmt(order.shortage)} short</div>}</td>
+          <td className="mono">{niceDate(order.dispatch_date)}</td>
+          {/* ONE column for what has left: so many of so many, the bar, and
+              what is still owed. It used to be a completion column and a
+              pending column saying the same thing twice. */}
+          <td><div className="flex justify-between gap-2 mb-1"><span className="mono">{fmt(order.dispatched)} of {fmt(order.qty)}</span>
+              <span className="mono">{order.shortage>0?<span className="text-rose-700">{fmt(order.shortage)} short</span>
+                :order.pending>0?<span className="text-amber-700">{fmt(order.pending)} to go</span>
+                :<span className="text-emerald-700">complete</span>}</span></div>
+            <Progress value={order.completion_pct} color={order.completion_pct>=100?"#047857":"#0B6BCB"}/></td>
         </tr>
-        {openOrder===order.order_no && <tr><td colSpan={10} className="px-3 pb-3" style={{background:"#F6F8FA"}}>
+        {openOrder===order.order_no && <tr><td colSpan={7} className="px-3 pb-3" style={{background:"#F6F8FA"}}>
           <OrderWhy detail={openDetail} order={order} fmt={fmt} niceDate={niceDate}/>
         </td></tr>}
         </React.Fragment>)}</tbody>
@@ -380,7 +383,7 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
         <span className="text-[11px] text-slate-400">by financial week · reported rows only</span>
       </div>
       {!vs.reported
-        ? <div className="text-sm text-slate-500 py-6 text-center">
+        ? <div className="text-xs text-slate-500 py-1">
             No achievement has been reported yet, so there is nothing to compare the plan against.
           </div>
         : <>
@@ -423,7 +426,7 @@ export default function MISDashboard({state,dispatches=[],productionActuals=[],d
         <span className="text-[11px] text-slate-400">production plan against what was made · up to {adherence.as_of}</span>
       </div>
       {!adherence.reported
-        ? <div className="text-sm text-slate-500 py-6 text-center">No production has been reported against a past plan day yet.</div>
+        ? <div className="text-xs text-slate-500 py-1">No production has been reported against a past plan day yet.</div>
         : <>
           <div className="flex gap-6 flex-wrap text-xs mb-3">
             <Figure label="Plan adherence" value={pct(adherence.totals.adherence)}

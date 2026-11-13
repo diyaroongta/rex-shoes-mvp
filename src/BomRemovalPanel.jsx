@@ -227,7 +227,7 @@ export default function BomRemovalPanel({ onDone, onCancel }){
 
       <div className="flex gap-2 mt-3">
         <button type="button" disabled={busy || !confirmed || blocked} onClick={commit}
-          className="text-xs font-semibold rounded-lg px-3 py-2 bg-rose-600 text-white disabled:opacity-50">
+          className="cta cta-danger">
           {busy ? "Removing…" : `Remove ${preview.plan.totals.rates} material rate${preview.plan.totals.rates===1?"":"s"}`}
         </button>
         <button type="button" disabled={busy} onClick={reset}

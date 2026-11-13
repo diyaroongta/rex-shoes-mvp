@@ -162,6 +162,62 @@ export function checkMove(state, move, { wcs, articles, origin, calendar } = {})
     override:cleanOverride({ ...ov, machine, daily, at:{ ...(ov.at || {}), [st.stage]:move.date } }) };
 }
 
+/* A block's pairs per day as WHOLE numbers that still add up to the block.
+   The engine spreads a forced run evenly — 1,000 pairs over three days is
+   333.33 a day — and a sheet of fractions is one nobody can plan from. */
+export function wholeDays(days){
+  const keys = Object.keys(days || {}).map(Number).sort((a, z) => a - z);
+  const total = Math.round(keys.reduce((a, d) => a + days[d], 0));
+  const base = keys.map(d => Math.floor(days[d] + 1e-9));
+  let short = total - base.reduce((a, n) => a + n, 0);
+  const byRemainder = keys.map((d, i) => [days[d] - base[i], i]).sort((a, z) => z[0] - a[0] || a[1] - z[1]);
+  for(const [, i] of byRemainder){ if(short <= 0) break; base[i]++; short--; }
+  return keys.map((d, i) => [d, base[i]]).filter(([, n]) => n > 0);
+}
+
+/* A ROW OF THE SHEET, DRAGGED TO ANOTHER DAY.
+   On the weekly sheet a job that runs Tuesday and Wednesday is two rows, each
+   with that day's pairs. Dragging one used to mean "start the whole job on
+   the day it was dropped": the Wednesday row dropped on Thursday started the
+   job on Thursday, the Tuesday row leapt after it, and — because a job that
+   has a day to itself needs fewer days — the pairs often ended up on a day
+   nobody had dropped anything on. What is dropped is now what is seen:
+
+     the ROW moves. Its pairs go to the day it was dropped on; the job's
+     other days stay exactly where they are.
+
+   That is the same thing cutting a row and pasting it under another day does
+   in the downloaded workbook, and it is written the same way — the job's
+   day-by-day split, `daily: {STAGE: {date: pairs}}`, which the engine books
+   exactly. Dropped on another machine of its stage, the whole stage goes to
+   that machine (a job runs a stage on one work centre) with the row moved.
+
+   A row put back where it came from answers `noop`: a drag that moves nothing
+   must not lock anything. Everything a move may not do — stage order, a
+   machine that cannot make the article, a locked job in the way — is
+   `checkMove`'s, asked about the job's new first day. */
+export function dropRow(state, block, grabbed, dropped, work_center, { wcs, articles, origin, calendar } = {}){
+  const target = work_center || block.work_center;
+  if(grabbed === dropped && target === block.work_center) return { ok:true, noop:true };
+  const split = Object.fromEntries(wholeDays(block.days).map(([d, n]) => [fromDay(d, origin), n]));
+  const pairs = split[grabbed];
+  /* Not a row of this block (a stale drag): move the block whole. */
+  if(!pairs) return checkMove(state, { unit_key:block.unit_key, stage:block.stage, date:dropped, work_center:target }, { wcs, articles, origin, calendar });
+  delete split[grabbed];
+  split[dropped] = (split[dropped] || 0) + pairs;
+  const first = Object.keys(split).sort()[0];
+  const check = checkMove(state, { unit_key:block.unit_key, stage:block.stage, date:first, work_center:target }, { wcs, articles, origin, calendar });
+  if(!check.ok) return check;
+  const ov = normalizeOverride(check.override);
+  const days = { ...ov.days };
+  delete days[block.stage];                  // the day-by-day split replaces a forced duration
+  const { off } = workCalendar(calendar || (state && state.calendar) || null, origin);
+  const closed = off(dayIndex(dropped, origin));
+  return { ok:true, pairs, from:grabbed, to:dropped, days:split, start_date:first,
+    ...(closed ? { warning:`${dropped} is normally a closed day (Sunday or holiday). ${block.stage} will run on it — make sure the line is staffed.` } : {}),
+    override:cleanOverride({ ...ov, days, daily:{ ...(ov.daily || {}), [block.stage]:split } }) };
+}
+
 /* Freeze a block exactly where the engine put it, without moving it. */
 export function lockAsIs(unit, stage){
   const st = (unit.stages || []).find(s => s.stage === stage);

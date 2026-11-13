@@ -60,7 +60,7 @@ export default function StockDecisions({ orders = [], canDecide = false, onChang
               {s && <span className="font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
                 Ready stock: {fmt(s.ready_pairs)} pairs · {s.sizes_with_stock} of {s.sizes} sizes</span>}
               <button onClick={() => setOpen(open === o.order_no ? null : o.order_no)}
-                className="ml-auto font-semibold text-indigo-700 hover:underline">
+                className="cta-row ml-auto">
                 {open === o.order_no ? "Close" : canDecide ? "Decide" : "View"}</button>
             </div>
             {open === o.order_no && <StockDecisionPanel order={o} canDecide={canDecide} onDone={done} />}
@@ -198,7 +198,7 @@ export function StockDecisionPanel({ order, canDecide, onDone }){
     {canDecide
       ? <div className="mt-3 flex items-center gap-2 flex-wrap">
           <button disabled={busy || over.length > 0} onClick={() => decide(false)}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-700 text-white disabled:opacity-50">Use selected stock</button>
+            className="cta">Use selected stock</button>
           <button disabled={busy} onClick={() => decide(true)}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50">Ignore stock, plan full order</button>
           <span className="text-xs text-slate-500">Used stock is reserved for {order.order_no}; job orders are raised for the balance only.</span>
