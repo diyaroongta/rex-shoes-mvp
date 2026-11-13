@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { validateUpperMoves, upperStock, upperPositions, upperLedger, onHandBySize, effectOf,
          checkApproval, checkDelete, movingStatus, validateTag, outsideFabrication, upperShortage,
          rejectionRatios, countAdjustments, normalizeUpperRules, upperAlerts, ageBucket, daysBetween, qcQueue, sizeRank,
-         DEFAULT_MOVING_DAYS } from "../shared/upper-store.js";
+         DEFAULT_MOVING_DAYS, upperColourOf, otherColoursBySize } from "../shared/upper-store.js";
+import { orderColour } from "../shared/stock-plan.js";
 
 let passed = 0, failed = 0;
 function test(name, fn){
@@ -232,8 +233,8 @@ test("nothing is overdue until the factory sets a turnaround", () => {
 console.log("\nH — shortage: order need against available uppers");
 
 test("need is ordered less what was issued against that order, net of returns", () => {
-  const orders = [{ order_no:"JO1", article_code:"SPIKE", lines:[{ combo:"7X10", qty:60, sizes:{ "8":40, "9":20 } }] },
-                  { order_no:"JO2", article_code:"SPIKE", lines:[{ combo:"7X10", qty:30, sizes:{ "8":30 } }] }];
+  const orders = [{ order_no:"JO1", article_code:"SPIKE", pi:{ upper_colour:"blue" }, lines:[{ combo:"7X10", qty:60, sizes:{ "8":40, "9":20 } }] },
+                  { order_no:"JO2", article_code:"SPIKE", pi:{ upper_colour:"Blue" }, lines:[{ combo:"7X10", qty:30, sizes:{ "8":30 } }] }];
   const log = [IN("8", 50), OUT("8", 30), { ...OUT("8", 5), kind:"returned" }];
   const s = upperShortage(orders, log);
   const r8 = s.rows.find(r => r.size === "8");
@@ -249,6 +250,35 @@ test("a range ordered without sizes is counted apart, never split evenly", () =>
   const s = upperShortage([{ order_no:"JO3", article_code:"GOLA", lines:[{ combo:"6X9", qty:72 }] }], []);
   assert.deepEqual(s.rows, []);
   assert.deepEqual(s.sizes_unknown, [{ article:"GOLA", pairs:72, orders:["JO3"] }]);
+});
+
+/* ONE COLOUR RULE. The store's alert matched article and size only, while the
+   job order's uppers check and the stock decision matched colour too — so the
+   same black order read "short" on the job order and "fine" in the store with
+   white uppers on the shelf. All three now ask upperColourOf() and count only
+   that colour; the other colours are named, never counted. */
+test("only uppers of the order's own colour count; the others are named", () => {
+  const orders = [{ order_no:"JO5", article_code:"SPIKE", pi:{ upper_colour:"black" }, lines:[{ qty:40, sizes:{ "8":40 } }] }];
+  const s = upperShortage(orders, [IN("8", 50), IN("8", 10, { colour:"Black" })]);
+  const r = s.rows[0];
+  assert.deepEqual([r.colour, r.need, r.available, r.short], ["BLACK", 40, 10, 30]);
+  assert.deepEqual(r.other_colours, [{ colour:"BLUE", pairs:50 }]);
+  const alert = upperAlerts({ shortage:s }).find(a => a.kind === "low_stock");
+  assert.match(alert.text, /^SPIKE BLACK: 30 uppers short for live orders \(sizes 8\) — 50 of other colours on the shelf, not counted$/);
+});
+test("with no colour on the PI, the article master's upper colour is the one", () => {
+  const orders = [{ order_no:"JO6", article_code:"SPIKE", lines:[{ qty:20, sizes:{ "8":20 } }] }];
+  assert.equal(upperShortage(orders, [IN("8", 50)], new Set(), { SPIKE:{ upper_colour:"blue" } }).rows[0].short, 0);
+  /* Neither says: nothing is guessed, and the blue on the shelf is named. */
+  const unknown = upperShortage(orders, [IN("8", 50)]).rows[0];
+  assert.deepEqual([unknown.colour, unknown.short, unknown.other_colours], ["", 20, [{ colour:"BLUE", pairs:50 }]]);
+});
+test("the store, the job order and the stock decision use the same colour", () => {
+  const order = { pi:{ upper_colour:" sky blue " } }, article = { upper_colour:"RED" };
+  assert.equal(upperColourOf(order, article), "SKY BLUE");
+  assert.equal(orderColour(order, article), upperColourOf(order, article));
+  assert.equal(upperColourOf({}, article), "RED");
+  assert.deepEqual(otherColoursBySize([IN("8", 5), IN("9", 3, { colour:"red" })], "SPIKE", "red"), { "8":[{ colour:"BLUE", pairs:5 }] });
 });
 
 test("finished orders need no uppers", () => {
@@ -347,7 +377,7 @@ test("rules default to the client's 7 days and invent no other threshold", () =>
 test("every alert fires only on what was recorded", () => {
   const log = [VIN("8", 100), { ...FAIL("8", 10) }];
   log[0].moved_on = "2026-09-01";
-  const orders = [{ order_no:"JO9", article_code:"SPIKE", lines:[{ qty:200, sizes:{ "8":200 } }] }];
+  const orders = [{ order_no:"JO9", article_code:"SPIKE", pi:{ upper_colour:"blue" }, lines:[{ qty:200, sizes:{ "8":200 } }] }];
   const repair = { articles:[{ article:"SPIKE", sent:50, rejected:5, ratio:10 }] };
   const base = { moving: movingStatus(log, [], "2026-10-29"), shortage: upperShortage(orders, log),
                  fabrication: outsideFabrication(jobs, "2026-10-29"), ratios: rejectionRatios(log), repair };

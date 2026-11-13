@@ -4,10 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks=vi.hoisted(()=>({
-  listFabricators:vi.fn(), listJobWork:vi.fn(), issueJobWork:vi.fn()}));
+  listFabricators:vi.fn(), listJobWork:vi.fn(), issueJobWork:vi.fn(), listUpperStore:vi.fn()}));
 vi.mock("../../src/lib/client.js",()=>({
   listFabricators:mocks.listFabricators, listJobWork:mocks.listJobWork,
-  issueJobWork:mocks.issueJobWork }));
+  issueJobWork:mocks.issueJobWork, listUpperStore:mocks.listUpperStore }));
 import JobCardTab from "../../src/JobCardTab.jsx";
 
 /* STOCK FIRST, where the job order is raised. An order still waiting for its
@@ -92,4 +92,20 @@ it("a full-routing card does not carry a start stage",async()=>{
   expect(sent.qty).toBe(200);
   expect(sent.card.start_stage).toBeUndefined();
   expect(sent.card.lines[0].from_stage).toBeUndefined();
+});
+
+/* ONE COLOUR RULE with the upper store's shortage report and the stock
+   decision: only uppers of the order's own colour count, and the others on the
+   shelf are named rather than counted — "short, blue on the shelf", not "none". */
+it("checks a moulding card's uppers in the order's own colour and names the others",async()=>{
+  const IN=(colour,qty)=>({ id:qty, kind:"in", article:"SPIKE", colour, size:"8s", qty, source_type:"line",
+    source:"New Durga Line", mts:true, moved_on:"2026-10-01", status:"approved" });
+  mocks.listUpperStore.mockResolvedValue({ moves:[IN("BLUE",50), IN("BLACK",10)], tags:[] });
+  const user=userEvent.setup();
+  render(<JobCardTab orders={[{ ...DECIDED, pi:{ upper_colour:"Black" } }]} />);
+  await choose(user);
+  await user.click(await screen.findByLabelText("Card starting at moulding from upper stock"));
+  const alert=await screen.findByText(/Uppers are short in the upper store/);
+  expect(alert.parentElement).toHaveTextContent("SPIKE · BLACK");
+  expect(alert.parentElement).toHaveTextContent("size 8s — 40 wanted, 10 on the shelf (not counted: 50 BLUE)");
 });

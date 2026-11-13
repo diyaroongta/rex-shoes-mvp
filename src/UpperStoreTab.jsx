@@ -70,7 +70,7 @@ export default function UpperStoreTab({ orders = [], jobs = [], dispatches = [],
   },[]);
   const stock = useMemo(()=>upperStock(moves,{articleRank}),[moves,articleRank]);
   const moving = useMemo(()=>movingStatus(moves,tags,today,rules.moving_days),[moves,tags,today,rules.moving_days]);
-  const shortage = useMemo(()=>upperShortage(orders,moves,done),[orders,moves,done]);
+  const shortage = useMemo(()=>upperShortage(orders,moves,done,INPUTS.articles||{}),[orders,moves,done]);
   const fabrication = useMemo(()=>outsideFabrication(jobs,today,rules.fabrication_due_days),[jobs,today,rules.fabrication_due_days]);
   const ratios = useMemo(()=>rejectionRatios(moves),[moves]);
   const repair = useMemo(()=>repairRejection(repairs,orders),[repairs,orders]);
@@ -516,15 +516,18 @@ function Reports({ moving, shortage, fabrication, ratios, repair, rules, setRule
 
     <section>
       <div className="text-sm font-semibold text-slate-700">Shortage — what live orders still need against the store</div>
-      <div className="text-xs text-slate-500 mt-1 mb-2">Ordered, less what has been issued against that order (net of returns), by article and size.
+      <div className="text-xs text-slate-500 mt-1 mb-2">Ordered, less what has been issued against that order (net of returns), by article, colour and size.
+        Only uppers of the order's own colour count; other colours on the shelf are named, not counted.
         Orders that have shipped or closed are left out.</div>
       {!shortage.rows.length ? <div className="text-xs text-slate-500">No live order is waiting on uppers by size.</div>
         : <table className="w-full text-xs" style={{minWidth:640}}><thead><tr className="sign text-slate-500">
-            <th className={th}>Article</th><th className={th}>Size</th><th className={thr}>Need</th><th className={thr}>In store</th>
+            <th className={th}>Article</th><th className={th}>Colour</th><th className={th}>Size</th><th className={thr}>Need</th><th className={thr}>In store</th>
             <th className={thr}>Short</th><th className={th}>Orders</th></tr></thead>
-          <tbody>{shortage.rows.map(r=><tr key={`${r.article}|${r.size}`} className="border-t border-slate-100" style={{background:r.short>0?"#fff7ed":undefined}}>
-            <td className="px-2 py-1">{r.article}</td><td className="px-2 mono">{r.size}</td><td className="px-2 mono text-right">{fmt(r.need)}</td>
-            <td className="px-2 mono text-right">{fmt(r.available)}{r.colours.length?<span className="text-slate-400"> ({r.colours.join(", ")})</span>:""}</td>
+          <tbody>{shortage.rows.map(r=><tr key={`${r.article}|${r.colour}|${r.size}`} className="border-t border-slate-100" style={{background:r.short>0?"#fff7ed":undefined}}>
+            <td className="px-2 py-1">{r.article}</td>
+            <td className="px-2">{r.colour||<span className="text-amber-700">not recorded</span>}</td><td className="px-2 mono">{r.size}</td><td className="px-2 mono text-right">{fmt(r.need)}</td>
+            <td className="px-2 mono text-right">{fmt(r.available)}{r.other_colours.length>0&&<span className="block text-[11px] text-slate-400 font-sans">
+              not counted: {r.other_colours.map(x=>`${fmt(x.pairs)} ${x.colour}`).join(", ")}</span>}</td>
             <td className={`px-2 mono text-right font-semibold ${r.short>0?"text-amber-700":"text-emerald-700"}`}>{fmt(r.short)}</td>
             <td className="px-2 mono text-slate-500">{r.orders.join(", ")}</td></tr>)}</tbody></table>}
       {shortage.sizes_unknown.length>0 && <div className="text-xs text-amber-700 mt-2">

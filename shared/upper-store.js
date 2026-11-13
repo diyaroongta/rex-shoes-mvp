@@ -358,6 +358,23 @@ export function onHandBySize(moves, article, colour){
   return out;
 }
 
+/* THE COLOUR AN ORDER'S UPPERS MUST BE — what the PI recorded, else the
+   article master's own upper colour. ONE definition: the store's shortage
+   alert, the job order's uppers check and the stock-first decision all ask
+   here, so the three cannot disagree about whether an order is short. */
+export const upperColourOf = (order, article) =>
+  colourOf(((order && order.pi) || {}).upper_colour || (article && article.upper_colour) || "");
+
+/* Uppers of this article in OTHER colours, per size: never counted towards an
+   order, but named, so "nothing offered" is not read as "nothing there". */
+export function otherColoursBySize(moves, article, colour){
+  const out = {};
+  for(const p of upperPositions(moves).values())
+    if(p.article === clean(article) && p.colour !== colourOf(colour) && p.on_hand > 0)
+      (out[p.size] = out[p.size] || []).push({ colour:p.colour || "(no colour)", pairs:p.on_hand });
+  return out;
+}
+
 /* THE STOCK IN / OUT LEDGER, oldest first with the running balance of that
    article / colour / size after each line, then returned newest first. */
 export function upperLedger(moves = []){
@@ -457,14 +474,19 @@ export function outsideFabrication(jobs = [], today, dueDays = null){
 
 /* SHORTAGE — what live orders still need against what the store holds.
    Per order and size: ordered, less what has already been issued against
-   that order (net of returns). Matched to the store by article and size; the
-   colour is reported, not matched, because the article master already names
-   the colourway in most articles and a colour typed differently on a receipt
-   would otherwise read as a shortage. A line ordered as a RANGE with no sizes
-   cannot be put against any one size, so its pairs are counted separately
-   instead of being split evenly across the range. `done` names orders that no
-   longer need uppers (shipped, closed, production complete). */
-export function upperShortage(orders = [], moves = [], done = new Set()){
+   that order (net of returns). Matched to the store by article, COLOUR and
+   size — the rule the client gave for stock first ("same article, variant,
+   colour and size"). It used to match article and size only, so the store
+   said nothing was short while the job order screen and the stock decision,
+   which do match colour, said the same order was. Uppers in another colour
+   are never counted; they are named (`other_colours`) so a black order with
+   white uppers on the shelf reads as "short, white on the shelf", not "none".
+   `articles` supplies the master's upper colour when the PI recorded none.
+   A line ordered as a RANGE with no sizes cannot be put against any one size,
+   so its pairs are counted separately instead of being split evenly across
+   the range. `done` names orders that no longer need uppers (shipped, closed,
+   production complete). */
+export function upperShortage(orders = [], moves = [], done = new Set(), articles = {}){
   const issued = {};
   for(const m of moves || []){
     if(!counts(m) || !m.order_no) continue;
@@ -472,17 +494,19 @@ export function upperShortage(orders = [], moves = [], done = new Set()){
     if(m.kind === "out") issued[k] = (issued[k] || 0) + tally(m.qty);
     if(m.kind === "returned") issued[k] = (issued[k] || 0) - tally(m.qty);
   }
-  const available = {}, colours = {};
+  const available = {}, byArticleSize = {};
   for(const p of upperPositions(moves).values()){
-    const k = `${p.article}||${p.size}`;
+    const k = `${p.article}||${p.colour}||${p.size}`;
     available[k] = (available[k] || 0) + Math.max(0, p.on_hand);
-    if(p.on_hand > 0 && p.colour) (colours[k] = colours[k] || new Set()).add(p.colour);
+    if(p.on_hand > 0) (byArticleSize[`${p.article}||${p.size}`] = byArticleSize[`${p.article}||${p.size}`] || [])
+      .push({ colour:p.colour, pairs:p.on_hand });
   }
   const need = new Map(), unsized = new Map();
   for(const o of orders || []){
     if(!o || o.active === false || done.has(o.order_no)) continue;
     const article = clean(o.article_code || o.article);
     if(!article) continue;
+    const colour = upperColourOf(o, (articles || {})[article]);
     for(const line of o.lines || []){
       const sizes = Object.entries(line.sizes || {}).filter(([, q]) => tally(q) > 0);
       if(!sizes.length){
@@ -499,8 +523,8 @@ export function upperShortage(orders = [], moves = [], done = new Set()){
         const left = Math.max(0, tally(q) - Math.max(0, issued[k] || 0));
         issued[k] = Math.max(0, (issued[k] || 0) - tally(q));   // a pair issued is used once
         if(left <= 0) continue;
-        const nk = `${article}||${clean(size)}`;
-        const r = need.get(nk) || { article, size:clean(size), need:0, orders:[] };
+        const nk = `${article}||${colour}||${clean(size)}`;
+        const r = need.get(nk) || { article, colour, size:clean(size), need:0, orders:[] };
         r.need += left; if(!r.orders.includes(o.order_no)) r.orders.push(o.order_no);
         need.set(nk, r);
       }
@@ -508,8 +532,10 @@ export function upperShortage(orders = [], moves = [], done = new Set()){
   }
   const rows = [...need.entries()].map(([k, r]) => {
     const have = available[k] || 0;
-    return { ...r, available:have, short:Math.max(0, r.need - have), colours:[...(colours[k] || [])] };
-  }).sort((a, z) => z.short - a.short || a.article.localeCompare(z.article) || bySize(a.size, z.size));
+    const other_colours = (byArticleSize[`${r.article}||${r.size}`] || []).filter(x => x.colour !== r.colour)
+      .map(x => ({ colour:x.colour || "(no colour)", pairs:x.pairs }));
+    return { ...r, available:have, short:Math.max(0, r.need - have), other_colours };
+  }).sort((a, z) => z.short - a.short || a.article.localeCompare(z.article) || a.colour.localeCompare(z.colour) || bySize(a.size, z.size));
   return { rows, short_pairs: rows.reduce((n, r) => n + r.short, 0),
            articles_short: [...new Set(rows.filter(r => r.short > 0).map(r => r.article))],
            sizes_unknown: [...unsized.values()] };
@@ -607,11 +633,15 @@ export function upperAlerts({ moving, shortage, fabrication, ratios, repair, rul
       out.push({ kind:"non_moving", text:`${r.article}${r.colour ? " " + r.colour : ""}: ${r.on_hand} pairs non-moving — ${r.reason}` });
   const short = new Map();
   for(const r of (shortage && shortage.rows) || []) if(r.short > 0){
-    const s = short.get(r.article) || { short:0, sizes:[] };
-    s.short += r.short; s.sizes.push(r.size); short.set(r.article, s);
+    const name = `${r.article}${r.colour ? " " + r.colour : ""}`;
+    const s = short.get(name) || { short:0, sizes:[], other:0 };
+    s.short += r.short; s.sizes.push(r.size);
+    s.other += (r.other_colours || []).reduce((n, x) => n + x.pairs, 0);
+    short.set(name, s);
   }
-  for(const [article, s] of short)
-    out.push({ kind:"low_stock", text:`${article}: ${s.short} uppers short for live orders (sizes ${s.sizes.join(", ")})` });
+  for(const [name, s] of short)
+    out.push({ kind:"low_stock", text:`${name}: ${s.short} uppers short for live orders (sizes ${s.sizes.join(", ")})`
+      + (s.other ? ` — ${s.other} of other colours on the shelf, not counted` : "") });
   for(const r of (fabrication && fabrication.rows) || []) if(r.overdue)
     out.push({ kind:"fabrication_overdue",
       text:`${r.fabricator}${r.card_no ? " — " + r.card_no : ""}: ${r.pending} of ${r.sent} still out after ${r.days_out} days` });

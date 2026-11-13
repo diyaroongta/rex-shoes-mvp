@@ -32,7 +32,7 @@
  * Pure: no database, no clock.
  */
 import { finishedStock } from "./finished-stock.js";
-import { upperPositions } from "./upper-store.js";
+import { upperPositions, upperColourOf } from "./upper-store.js";
 import { partyKey } from "./customer-history.js";
 
 export const STORES = { FG:"Finished goods", UPPER:"Upper stock" };
@@ -104,9 +104,10 @@ export function orderDemand(order){
 }
 
 /* The colour an order's uppers must be: what the PI recorded, else the
-   article master's own upper colour. */
-export const orderColour = (order, article) =>
-  colourOf(((order && order.pi) || {}).upper_colour || (article && article.upper_colour) || "");
+   article master's own upper colour. Defined once, in shared/upper-store.js,
+   because the store's shortage alert and the job order's uppers check ask the
+   same question and must get the same answer. */
+export const orderColour = upperColourOf;
 
 /* UPPERS HELD FOR THE ORDER THEY WERE STITCHED FOR.
    Received against an order number (not MTS) and not yet issued back out

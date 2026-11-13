@@ -15,8 +15,7 @@ import { productionOrder, awaitingDecision, allocationSummary } from "../shared/
 import { materialTotals } from "../shared/bom-components.js";
 import StockAtHand from "./StockAtHand.jsx";
 import { materialCheck } from "../shared/can-we-make-it.js";
-import { onHandBySize } from "../shared/upper-store.js";
-import { orderColour } from "../shared/stock-plan.js";
+import { onHandBySize, otherColoursBySize, upperColourOf } from "../shared/upper-store.js";
 import { upperShortage } from "../shared/store-register.js";
 
 const fmt = n => n==null||isNaN(n) ? "—" : Number(n).toLocaleString("en-IN");
@@ -157,7 +156,11 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
       .then(d=>live&&setUpperMoves((d&&d.moves)||[])).catch(()=>live&&setUpperMoves([]));
     return ()=>{live=false;};
   },[active,fromUppers,order&&order.order_no]);
-  const upperColour=order?orderColour(order,(INPUTS.articles||{})[order.article_code]):"";
+  /* The same colour rule as the upper store's shortage report and the stock
+     decision (shared/upper-store.js): only this colour counts; others are named. */
+  const upperColour=order?upperColourOf(order,(INPUTS.articles||{})[order.article_code]):"";
+  const otherColours=useMemo(()=>fromUppers&&order&&upperMoves
+    ? otherColoursBySize(upperMoves,order.article_code,upperColour) : {},[fromUppers,order,upperMoves,upperColour]);
   const uppersShort=useMemo(()=>fromUppers&&order&&upperMoves
     ? upperShortage(lines,onHandBySize(upperMoves,order.article_code,upperColour)) : [],
     [fromUppers,order,upperMoves,lines,upperColour]);
@@ -403,7 +406,9 @@ export default function JobCardTab({ orders=[], initialOrderNo="", embedded=fals
         : uppersShort.length
           ? <div role="alert" className="mt-3 text-xs rounded-lg border-2 border-rose-300 bg-rose-50 text-rose-900 px-3 py-2">
               <b>Uppers are short in the upper store</b>{upperColour&&<> ({order.article_code} · {upperColour})</>}:{" "}
-              {uppersShort.map(r=>`size ${r.size} — ${fmt(r.wanted)} wanted, ${fmt(Math.max(0,r.on_hand))} on the shelf`).join("; ")}.
+              {uppersShort.map(r=>`size ${r.size} — ${fmt(r.wanted)} wanted, ${fmt(Math.max(0,r.on_hand))} on the shelf`
+                + ((otherColours[r.size]||[]).length?` (not counted: ${otherColours[r.size].map(x=>`${fmt(x.pairs)} ${x.colour}`).join(", ")})`:"")).join("; ")}.
+              {!upperColour&&<>{" "}No upper colour is recorded on this order's PI or on the article, so only uppers received with no colour count.</>}
               {" "}The job order can still be created; moulding cannot start on those pairs until the uppers are received.</div>
           : <div className="mt-3 text-xs rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-2">
               Uppers for every size on this card are in the upper store{upperColour&&<> ({upperColour})</>}.</div>)}
